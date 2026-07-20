@@ -8,7 +8,10 @@ RUN npm install
 COPY . .
 
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN npm run build
+ENV CI=true
+ENV NODE_OPTIONS=--max-old-space-size=4096
+
+RUN npm run build 2>&1
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
