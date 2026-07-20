@@ -5,6 +5,7 @@ import {
   createDirectCdpBrowserCommandRunner,
   createOpenCliCommandRouter
 } from "../lib/adapters/opencli-direct-cdp";
+import * as xiaohongshuAdapter from "../lib/adapters/opencli-xiaohongshu";
 
 test("skips OpenCLI stealth injection for isolated direct CDP targets", async () => {
   const bridge = new DirectCdpBridge();
@@ -28,6 +29,9 @@ test("runs browser open, eval, and close through an isolated CDP target", async 
     }
   };
   const bridge = {
+    setCommandTimeout(timeout: number) {
+      calls.push({ type: "command-timeout", value: timeout });
+    },
     async connect(options: { cdpEndpoint?: string }) {
       calls.push({ type: "connect", value: options.cdpEndpoint });
       return page;
@@ -52,21 +56,33 @@ test("runs browser open, eval, and close through an isolated CDP target", async 
     fetch
   });
 
-  await run(["browser", "collect-1", "open", "https://www.xiaohongshu.com/explore", "--window", "background"]);
-  const output = await run(["browser", "collect-1", "eval", "document.title", "--window", "background"]);
-  await run(["browser", "collect-1", "close"]);
+  await run(["browser", "collect-1", "open", "https://www.xiaohongshu.com/explore", "--window", "background"], 60_000);
+  const output = await run(["browser", "collect-1", "eval", "document.title", "--window", "background"], 150_000);
+  await run(["browser", "collect-1", "close"], 20_000);
 
   assert.equal(output, JSON.stringify({ title: "小红书" }));
   assert.deepEqual(calls, [
     { type: "create-target", value: "http://10.42.0.1:9223/json/new?about%3Ablank" },
+    { type: "command-timeout", value: 60_000 },
     { type: "connect", value: "ws://10.42.0.1:9223/devtools/page/target-1" },
     { type: "goto", value: "https://www.xiaohongshu.com/explore" },
     { type: "disconnect" },
+    { type: "command-timeout", value: 150_000 },
     { type: "connect", value: "ws://10.42.0.1:9223/devtools/page/target-1" },
     { type: "evaluate", value: "document.title" },
     { type: "disconnect" },
     { type: "close-target", value: "http://10.42.0.1:9223/json/close/target-1" }
   ]);
+});
+
+test("detects the Xiaohongshu search login wall", () => {
+  const detector = (xiaohongshuAdapter as unknown as {
+    isXiaohongshuLoginWall?: (text: string) => boolean;
+  }).isXiaohongshuLoginWall;
+
+  assert.equal(typeof detector, "function");
+  assert.equal(detector?.("登录后查看搜索结果"), true);
+  assert.equal(detector?.("防晒 - 小红书搜索"), false);
 });
 
 test("routes browser commands through direct CDP when an endpoint is configured", async () => {

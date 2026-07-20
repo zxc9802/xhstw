@@ -6,6 +6,7 @@ type DirectCdpPage = {
 };
 
 type DirectCdpBridgeLike = {
+  setCommandTimeout?(timeoutMs: number): void;
   connect(options: { cdpEndpoint?: string; timeout?: number }): Promise<DirectCdpPage>;
   close(): Promise<void>;
 };
@@ -23,11 +24,17 @@ type DirectCdpDependencies = {
 type OpenCliCommandRunner = (args: string[], timeout: number) => Promise<string>;
 
 export class DirectCdpBridge extends CDPBridge {
+  private commandTimeoutMs?: number;
+
+  setCommandTimeout(timeoutMs: number) {
+    this.commandTimeoutMs = timeoutMs;
+  }
+
   override async send(method: string, params: Record<string, unknown> = {}, timeoutMs?: number) {
     if (method === "Page.addScriptToEvaluateOnNewDocument") {
       return { identifier: "direct-cdp-stealth-skipped" };
     }
-    return super.send(method, params, timeoutMs);
+    return super.send(method, params, timeoutMs ?? this.commandTimeoutMs);
   }
 }
 
@@ -57,10 +64,11 @@ export function createDirectCdpBrowserCommandRunner(endpoint: string, dependenci
     }
   }
 
-  async function withPage<T>(session: string, operation: (page: DirectCdpPage) => Promise<T>) {
+  async function withPage<T>(session: string, timeout: number, operation: (page: DirectCdpPage) => Promise<T>) {
     const target = targets.get(session);
     if (!target) throw new Error(`CDP browser session "${session}" is not open`);
     const bridge = createBridge();
+    bridge.setCommandTimeout?.(timeout);
     try {
       const page = await bridge.connect({ cdpEndpoint: target.webSocketDebuggerUrl, timeout: 10 });
       return await operation(page);
@@ -69,7 +77,7 @@ export function createDirectCdpBrowserCommandRunner(endpoint: string, dependenci
     }
   }
 
-  return async function runDirectCdpBrowserCommand(args: string[]) {
+  return async function runDirectCdpBrowserCommand(args: string[], timeout = 90_000) {
     if (args[0] !== "browser") throw new Error("Direct CDP runner only supports browser commands");
     const session = args[1];
     const command = args[2];
@@ -85,7 +93,7 @@ export function createDirectCdpBrowserCommandRunner(endpoint: string, dependenci
       if (!target.id || !target.webSocketDebuggerUrl) throw new Error("CDP target response is missing id or webSocketDebuggerUrl");
       targets.set(session, target as DirectCdpTarget);
       try {
-        await withPage(session, (page) => page.goto(url, { settleMs: 2_000 }));
+        await withPage(session, timeout, (page) => page.goto(url, { settleMs: 2_000 }));
       } catch (error) {
         await closeTarget(session).catch(() => undefined);
         throw error;
@@ -96,7 +104,7 @@ export function createDirectCdpBrowserCommandRunner(endpoint: string, dependenci
     if (command === "eval") {
       const script = args[3];
       if (!script) throw new Error("Direct CDP browser eval requires a script");
-      const result = await withPage(session, (page) => page.evaluate(script));
+      const result = await withPage(session, timeout, (page) => page.evaluate(script));
       return JSON.stringify(result);
     }
 

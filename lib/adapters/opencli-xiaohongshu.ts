@@ -64,6 +64,11 @@ const DEFAULT_QUERY = "小红书 爆款 图文";
 const OPENCLI_PROFILE = process.env.OPENCLI_PROFILE || "";
 const OPENCLI_CDP_ENDPOINT = process.env.OPENCLI_CDP_ENDPOINT?.trim() || "";
 const XHS_BROWSER_SESSION = process.env.OPENCLI_XHS_BROWSER_SESSION || "content-production-xhs";
+const XHS_LOGIN_REQUIRED_MESSAGE = "共享 Chrome 未登录小红书，请先登录后再抓取。";
+
+export function isXiaohongshuLoginWall(text: string) {
+  return String(text || "").includes("登录后查看搜索结果");
+}
 
 function collectionTime() {
   const date = new Date();
@@ -887,6 +892,8 @@ function browserSearchScript(options: {
   const options = ${JSON.stringify(options)};
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+  const isLoginWall = ${isXiaohongshuLoginWall.toString()};
+  const loginRequiredMessage = ${JSON.stringify(XHS_LOGIN_REQUIRED_MESSAGE)};
   const noteKey = (value) => {
     const text = String(value || "");
     const match = text.match(/(?:explore|discovery\\/item|search_result)\\/([0-9a-fA-F]+)/) || text.match(/\\/([0-9a-fA-F]{16,32})(?:[?#]|$)/);
@@ -941,6 +948,7 @@ function browserSearchScript(options: {
   };
   const waitForCards = async () => {
     for (let i = 0; i < 24; i += 1) {
+      if (isLoginWall(document.body?.innerText || "")) throw new Error(loginRequiredMessage);
       if (document.querySelectorAll("section.note-item, .note-item").length) return true;
       await sleep(500);
     }
