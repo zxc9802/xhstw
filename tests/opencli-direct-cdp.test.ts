@@ -1,9 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  DirectCdpBridge,
   createDirectCdpBrowserCommandRunner,
   createOpenCliCommandRouter
 } from "../lib/adapters/opencli-direct-cdp";
+
+test("skips OpenCLI stealth injection for isolated direct CDP targets", async () => {
+  const bridge = new DirectCdpBridge();
+
+  const result = await bridge.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: "window.__opencliStealth = true"
+  });
+
+  assert.deepEqual(result, { identifier: "direct-cdp-stealth-skipped" });
+});
 
 test("runs browser open, eval, and close through an isolated CDP target", async () => {
   const calls: Array<{ type: string; value?: unknown }> = [];

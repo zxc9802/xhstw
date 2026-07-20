@@ -5,7 +5,7 @@ type DirectCdpPage = {
   evaluate<T>(script: string): Promise<T>;
 };
 
-type DirectCdpBridge = {
+type DirectCdpBridgeLike = {
   connect(options: { cdpEndpoint?: string; timeout?: number }): Promise<DirectCdpPage>;
   close(): Promise<void>;
 };
@@ -16,11 +16,20 @@ type DirectCdpTarget = {
 };
 
 type DirectCdpDependencies = {
-  createBridge?: () => DirectCdpBridge;
+  createBridge?: () => DirectCdpBridgeLike;
   fetch?: typeof fetch;
 };
 
 type OpenCliCommandRunner = (args: string[], timeout: number) => Promise<string>;
+
+export class DirectCdpBridge extends CDPBridge {
+  override async send(method: string, params: Record<string, unknown> = {}, timeoutMs?: number) {
+    if (method === "Page.addScriptToEvaluateOnNewDocument") {
+      return { identifier: "direct-cdp-stealth-skipped" };
+    }
+    return super.send(method, params, timeoutMs);
+  }
+}
 
 export function createOpenCliCommandRouter(
   endpoint: string,
@@ -34,7 +43,7 @@ export function createOpenCliCommandRouter(
 
 export function createDirectCdpBrowserCommandRunner(endpoint: string, dependencies: DirectCdpDependencies = {}) {
   const baseUrl = endpoint.replace(/\/$/, "");
-  const createBridge = dependencies.createBridge ?? (() => new CDPBridge());
+  const createBridge = dependencies.createBridge ?? (() => new DirectCdpBridge());
   const fetchImpl = dependencies.fetch ?? fetch;
   const targets = new Map<string, DirectCdpTarget>();
 
