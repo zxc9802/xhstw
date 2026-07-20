@@ -1,0 +1,16 @@
+node_modules
+.next
+.git
+.github
+.gitignore
+README.md
+.env.local
+.env.example
+xiaohongshu-downloads
+outputs
+assets
+logs
+backups
+exports
+.open-next
+*.md
