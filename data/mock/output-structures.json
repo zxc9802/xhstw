@@ -1,0 +1,41 @@
+{
+  "imageTextProject": {
+    "examplePath": "outputs/xhs_01_baitao_yangfuji/2026-07-08/001_夏天通勤防晒喷雾/",
+    "folders": ["images/"],
+    "files": [
+      "title.txt",
+      "copy.txt",
+      "hashtags.txt",
+      "image_prompts.json",
+      "reference_sources.json",
+      "check_report.json",
+      "review_notes.txt",
+      "metadata.json"
+    ],
+    "metadata": {
+      "projectId": "mock_image_001",
+      "platform": "小红书",
+      "accountId": "xhs_01_baitao_yangfuji",
+      "contentType": "image-text",
+      "mockMode": true
+    }
+  },
+  "videoProject": {
+    "examplePath": "outputs/video/2026-07-08/001_防晒补涂口播视频/",
+    "folders": ["shots/"],
+    "files": [
+      "selected_shots.json",
+      "script.txt",
+      "shot_prompts.json",
+      "voiceover.txt",
+      "check_report.json",
+      "metadata.json"
+    ],
+    "metadata": {
+      "projectId": "mock_video_001",
+      "platform": "小红书",
+      "contentType": "video",
+      "mockMode": true
+    }
+  }
+}

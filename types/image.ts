@@ -1,0 +1,14 @@
+export type ImageProvider = "Image 2.0" | "GPT Image" | "Nano Banana 2" | "仅生成提示词，不直接生图";
+
+export interface ImagePlanItem {
+  page: number;
+  type: string;
+  use: string;
+  title: string;
+  copy: string;
+  prompt: string;
+  negativePrompt: string;
+  referencePath: string;
+  included: boolean;
+  status: "done" | "generating" | "pending" | "failed";
+}

@@ -1,0 +1,14 @@
+node_modules
+.next
+.open-next
+*.tsbuildinfo
+tmp-*.png
+out
+dist
+.env.local
+*.log
+logs/
+outputs/
+backups/
+exports/
+xiaohongshu-downloads/
