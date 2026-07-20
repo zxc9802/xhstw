@@ -6,6 +6,10 @@ tmp-*.png
 out
 dist
 .env.local
+.dev.vars
+.wrangler
+.sites-package-stage-*
+site-artifact-*.tgz
 *.log
 logs/
 outputs/
