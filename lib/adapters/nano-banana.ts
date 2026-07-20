@@ -13,6 +13,7 @@ type NanoBananaInput = {
 
 const YUNWU_CHAT_URL = process.env.YUNWU_CHAT_URL || "https://yunwu.ai/v1/chat/completions";
 const NANO_BANANA_MODEL = process.env.NANO_BANANA_MODEL || "gemini-3.1-flash-image";
+export const NANO_BANANA_REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
 
 function asRecord(input: unknown): NanoBananaInput {
   return input && typeof input === "object" ? input as NanoBananaInput : {};
@@ -101,7 +102,8 @@ export async function generateWithNanoBanana(input: unknown) {
           ]
         }
       ]
-    })
+    }),
+    signal: AbortSignal.timeout(NANO_BANANA_REQUEST_TIMEOUT_MS)
   });
 
   const count = Math.max(1, Math.min(10, Number(body.count) || 1));

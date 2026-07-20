@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils/cn";
 import { persistImageRefs } from "@/lib/utils/image-store";
 import { appendMaterialLibrary, createLibraryAsset, getAssetBlob, readMaterialLibrary, type LibraryAsset } from "@/lib/utils/material-library";
 import { readProductLibrary, type ProductLibraryItem } from "@/lib/utils/product-library";
+import { pollImageGenerationJob, type ImageGenerationJobSnapshot } from "@/lib/image-generation-job-client";
 import type { ImagePlanItem, ImageProvider } from "@/types/image";
 import type { VideoProvider, VideoScriptRow, VideoShotPlan } from "@/types/video";
 
@@ -1240,7 +1241,23 @@ export default function ContentPage() {
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data?.ok === false) throw new Error(data?.message || data?.error || "图片接口返回异常");
-      const imageUrls = extractGeneratedImageUrls(data?.data?.images ?? data?.data ?? data);
+      let result = data?.data ?? data;
+      if (response.status === 202 && typeof data?.jobId === "string") {
+        const completedJob = await pollImageGenerationJob(data.jobId, async (jobId) => {
+          const jobResponse = await fetch(`/api/image/generate/${encodeURIComponent(jobId)}`);
+          const jobData = await jobResponse.json().catch(() => ({}));
+          if (!jobResponse.ok || jobData?.ok === false) {
+            throw new Error(jobData?.message || jobData?.error || "图片生成任务状态查询失败");
+          }
+
+          const job = jobData?.job as ImageGenerationJobSnapshot;
+          if (job.status === "queued") setFeedback(`P${page} 图片任务已提交，正在排队。`);
+          if (job.status === "processing") setFeedback(`P${page} 正在通过 ${provider} 生成图片。`);
+          return job;
+        });
+        result = completedJob.result;
+      }
+      const imageUrls = extractGeneratedImageUrls((result as { images?: unknown } | undefined)?.images ?? result);
       if (!imageUrls.length && !provider.includes("仅生成提示词")) throw new Error("模型接口已返回，但未解析到图片 URL / base64。请查看服务日志中的 raw 返回格式。");
       const nextImages = (imageUrls.length ? imageUrls : Array.from({ length: count }, (_, index) => mockSvg(`P${page}-${index + 1}`, index % 2 ? "#ecfeff" : "#fff7ed"))).slice(0, count).map((url, index) => ({
         id: `generated_${page}_${Date.now()}_${index}`,

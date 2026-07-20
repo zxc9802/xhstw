@@ -17,6 +17,7 @@ const IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-2";
 const MAX_IMAGES_PER_REQUEST = 4;
 const MAX_IMAGES_PER_RUN = 10;
 const MAX_PARALLEL_IMAGE_REQUESTS = Math.max(1, Math.min(10, Number(process.env.OPENAI_IMAGE_PARALLEL_REQUESTS) || 4));
+export const IMAGE_PROVIDER_TIMEOUT_MS = 5 * 60 * 1000;
 
 function asRecord(input: unknown): ImageInput {
   return input && typeof input === "object" ? input as ImageInput : {};
@@ -105,7 +106,8 @@ async function generateImageEdit(body: ImageInput, apiKey: string, promptParts: 
       Accept: "application/json",
       Authorization: `Bearer ${apiKey}`
     },
-    body: form
+    body: form,
+    signal: AbortSignal.timeout(IMAGE_PROVIDER_TIMEOUT_MS)
   });
   const data = await response.json().catch(() => ({}));
   logImageProviderResponse({
@@ -131,7 +133,8 @@ async function generateImageBatch(payload: Record<string, unknown>, apiKey: stri
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(IMAGE_PROVIDER_TIMEOUT_MS)
   });
 
   const data = await response.json().catch(() => ({}));
