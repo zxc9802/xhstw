@@ -19,4 +19,4 @@ ENV PORT=3000
 
 EXPOSE 3000
 
-CMD ["node", "server.js"]
+CMD ["sh", "-c", "pwd && ls -la && echo '--- starting server.js ---' && node server.js"]
