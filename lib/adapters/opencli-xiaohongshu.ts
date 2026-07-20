@@ -2,6 +2,10 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
+import {
+  createDirectCdpBrowserCommandRunner,
+  createOpenCliCommandRouter
+} from "@/lib/adapters/opencli-direct-cdp";
 import type { Topic } from "@/types/topic";
 
 const execFileAsync = promisify(execFile);
@@ -58,6 +62,7 @@ type OpenCliFieldRow = {
 
 const DEFAULT_QUERY = "小红书 爆款 图文";
 const OPENCLI_PROFILE = process.env.OPENCLI_PROFILE || "";
+const OPENCLI_CDP_ENDPOINT = process.env.OPENCLI_CDP_ENDPOINT?.trim() || "";
 const XHS_BROWSER_SESSION = process.env.OPENCLI_XHS_BROWSER_SESSION || "content-production-xhs";
 
 function collectionTime() {
@@ -96,7 +101,7 @@ function withOpenCliProfile(args: string[]) {
   return OPENCLI_PROFILE ? ["--profile", OPENCLI_PROFILE, ...args] : args;
 }
 
-async function runOpenCliCommand(args: string[], timeout = 90_000) {
+async function runOpenCliCommandFallback(args: string[], timeout: number) {
   const invocation = resolveOpenCliInvocation(withOpenCliProfile(args));
   const { stdout } = await execFileAsync(
     invocation.file,
@@ -104,6 +109,17 @@ async function runOpenCliCommand(args: string[], timeout = 90_000) {
     { timeout, windowsHide: true, shell: invocation.shell, maxBuffer: 1024 * 1024 * 50 }
   );
   return stdout;
+}
+
+const runDirectCdpBrowserCommand = createDirectCdpBrowserCommandRunner(OPENCLI_CDP_ENDPOINT);
+const routeOpenCliCommand = createOpenCliCommandRouter(
+  OPENCLI_CDP_ENDPOINT,
+  runDirectCdpBrowserCommand,
+  runOpenCliCommandFallback
+);
+
+async function runOpenCliCommand(args: string[], timeout = 90_000) {
+  return routeOpenCliCommand(args, timeout);
 }
 
 async function runOpenCli(args: string[], timeout = 90_000) {
