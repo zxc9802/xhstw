@@ -133,6 +133,7 @@ test("names selected images 1 through 4 without extensions", async (t) => {
   installFeishuEnv(t);
   const originalFetch = globalThis.fetch;
   const uploadedFileNames: string[] = [];
+  const uploadParentTypes: string[] = [];
   let recordFields: Record<string, unknown> | undefined;
   t.after(() => { globalThis.fetch = originalFetch; });
 
@@ -148,8 +149,10 @@ test("names selected images 1 through 4 without extensions", async (t) => {
       ] } });
     }
     if (url.endsWith("/drive/v1/medias/upload_all")) {
-      const fileName = String((init?.body as FormData).get("file_name"));
+      const form = init?.body as FormData;
+      const fileName = String(form.get("file_name"));
       uploadedFileNames.push(fileName);
+      uploadParentTypes.push(String(form.get("parent_type")));
       return jsonResponse({ data: { file_token: `file-token-${fileName}` } });
     }
     if (url.endsWith("/records")) {
@@ -170,6 +173,12 @@ test("names selected images 1 through 4 without extensions", async (t) => {
 
   assert.equal(response.status, 200);
   assert.deepEqual(uploadedFileNames, ["1", "2", "3", "4"]);
+  assert.deepEqual(uploadParentTypes, [
+    "bitable_file",
+    "bitable_file",
+    "bitable_file",
+    "bitable_file"
+  ]);
   assert.deepEqual(recordFields?.图片或视频, [
     { file_token: "file-token-1" },
     { file_token: "file-token-2" },

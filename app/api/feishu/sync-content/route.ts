@@ -91,7 +91,7 @@ async function uploadImageToFeishu(imageUrl: string, index: number, appToken: st
   const { blob, fileName } = await imageToBlob(imageUrl, index);
   const form = new FormData();
   form.append("file_name", fileName);
-  form.append("parent_type", "bitable_image");
+  form.append("parent_type", "bitable_file");
   form.append("parent_node", appToken);
   form.append("size", String(blob.size));
   form.append("file", blob, fileName);

@@ -234,3 +234,61 @@ Expected: build succeeds, diff check is clean, and only the planned route, test,
 git add -- app/api/feishu/sync-content/route.ts tests/feishu-sync-content-route.test.ts docs/superpowers/plans/2026-07-21-feishu-attachment-order.md
 git commit -m "fix: preserve Feishu attachment upload order"
 ```
+
+### Task 3: Preserve extensionless names with the Base file upload point
+
+**Files:**
+- Modify: `tests/feishu-sync-content-route.test.ts`
+- Modify: `app/api/feishu/sync-content/route.ts:94`
+
+- [x] **Step 1: Add a failing upload-point assertion**
+
+In the existing `names selected images 1 through 4 without extensions` test, collect `parent_type` from every upload form and assert:
+
+```ts
+assert.deepEqual(uploadParentTypes, [
+  "bitable_file",
+  "bitable_file",
+  "bitable_file",
+  "bitable_file"
+]);
+```
+
+- [x] **Step 2: Run the focused test and verify RED**
+
+Run:
+
+```powershell
+.\node_modules\.bin\tsx.cmd --test --test-name-pattern "names selected images" tests\feishu-sync-content-route.test.ts
+```
+
+Expected: FAIL because the route currently submits `bitable_image`.
+
+- [x] **Step 3: Make the minimal production change**
+
+Change only the upload-point value:
+
+```ts
+form.append("parent_type", "bitable_file");
+```
+
+- [x] **Step 4: Verify GREEN and the full project**
+
+Run:
+
+```powershell
+.\node_modules\.bin\tsx.cmd --test --test-name-pattern "names selected images" tests\feishu-sync-content-route.test.ts
+npm.cmd test
+npm.cmd run build
+git diff --check
+```
+
+Expected: the focused test, full suite, and production build pass; the diff check produces no output.
+
+- [x] **Step 5: Commit and push the approved fix**
+
+```powershell
+git add -- app/api/feishu/sync-content/route.ts tests/feishu-sync-content-route.test.ts docs/superpowers/specs/2026-07-21-feishu-attachment-order-design.md docs/superpowers/plans/2026-07-21-feishu-attachment-order.md
+git commit -m "fix: upload Feishu images as files"
+git push origin HEAD:main
+```

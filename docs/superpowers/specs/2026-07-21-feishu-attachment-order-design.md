@@ -38,3 +38,7 @@
 4. 现有单图上传、全部图片失败、字段别名等测试继续通过。
 
 实施后运行目标测试、完整测试和生产构建。代码验证通过只证明本地链路正确；上线后还需要用一条按顺序选择四张真实素材的成品执行同步，确认飞书中实际显示的文件名和从左到右顺序均为 `1`、`2`、`3`、`4`。
+
+## 2026-07-21 validated upload-type addendum
+
+Live verification showed that `bitable_image` can replace an extensionless numeric name with the source image name. Use `parent_type=bitable_file` while keeping the original image bytes, numeric `file_name`, serial upload, and ordered token collection unchanged. A direct Feishu upload/download check confirmed that the requested name `1` is returned unchanged and that the downloaded bytes have the same size and SHA-256 hash as the uploaded image.
