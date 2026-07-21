@@ -1,4 +1,5 @@
 import { ok, readJson } from "@/lib/utils/api";
+import { buildFeishuBaseUrl } from "@/lib/adapters/feishu-target";
 import { NextResponse } from "next/server";
 
 type SyncPayload = {
@@ -168,7 +169,7 @@ export async function POST(request: Request) {
       body: JSON.stringify({ fields: recordFields })
     }, token);
 
-    return ok({ appToken, tableId, fields: recordFields, warnings: uploadWarnings, result });
+    return ok({ appToken, tableId, baseUrl: buildFeishuBaseUrl(appToken, tableId), fields: recordFields, warnings: uploadWarnings, result });
   } catch (error) {
     return NextResponse.json({ ok: false, message: error instanceof Error ? error.message : "飞书同步失败" }, { status: 500 });
   }
