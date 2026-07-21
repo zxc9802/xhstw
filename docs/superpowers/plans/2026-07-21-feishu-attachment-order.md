@@ -293,6 +293,63 @@ git commit -m "fix: upload Feishu images as files"
 git push origin HEAD:main
 ```
 
+### Task 5: Add JPG extensions for Feishu image recognition
+
+**Files:**
+- Modify: `tests/feishu-sync-content-route.test.ts`
+- Modify: `app/api/feishu/sync-content/route.ts:61-83`
+
+- [x] **Step 1: Change the filename expectation first**
+
+Rename the existing filename test to describe JPG names and assert:
+
+```ts
+assert.deepEqual(uploadedFileNames, ["1.jpg", "2.jpg", "3.jpg", "4.jpg"]);
+```
+
+Keep the `bitable_image`, serial-upload, and ordered-token assertions unchanged.
+
+- [x] **Step 2: Run the focused test and verify RED**
+
+Run:
+
+```powershell
+.\node_modules\.bin\tsx.cmd --test --test-name-pattern "JPG filenames" tests\feishu-sync-content-route.test.ts
+```
+
+Expected: FAIL because the route currently submits `1`, `2`, `3`, and `4` without extensions.
+
+- [x] **Step 3: Add the JPG extension in both image branches**
+
+In both return branches of `imageToBlob`, use:
+
+```ts
+fileName: `${index + 1}.jpg`
+```
+
+Do not change the Blob bytes or MIME type.
+
+- [x] **Step 4: Verify the focused test, full suite, build, and diff**
+
+Run:
+
+```powershell
+.\node_modules\.bin\tsx.cmd --test --test-name-pattern "JPG filenames" tests\feishu-sync-content-route.test.ts
+npm.cmd test
+npm.cmd run build
+git diff --check
+```
+
+Expected: the focused test, full suite, and production build pass; the diff check produces no output.
+
+- [x] **Step 5: Commit and push to remote main**
+
+```powershell
+git add -- app/api/feishu/sync-content/route.ts tests/feishu-sync-content-route.test.ts docs/superpowers/specs/2026-07-21-feishu-attachment-order-design.md docs/superpowers/plans/2026-07-21-feishu-attachment-order.md
+git commit -m "fix: add jpg extensions to Feishu images"
+git push origin HEAD:main
+```
+
 ### Task 4: Restore the Base image upload point
 
 **Files:**

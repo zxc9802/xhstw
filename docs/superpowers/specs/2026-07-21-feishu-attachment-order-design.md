@@ -41,4 +41,4 @@
 
 ## 2026-07-21 upload-type decision
 
-Live verification showed that `bitable_file` preserves the extensionless name `1` and the original image bytes. The final user decision is nevertheless to use `parent_type=bitable_image` so Feishu continues treating each upload as an image material. Keep the numeric `file_name`, serial upload, and ordered token collection unchanged. This choice accepts the observed risk that Feishu may replace an extensionless numeric name with the source image name.
+Live verification showed that extensionless names prevent Feishu from reliably recognizing `bitable_image` uploads. The final user decision is to keep `parent_type=bitable_image` and name the selected images `1.jpg`, `2.jpg`, `3.jpg`, and `4.jpg`. Keep serial upload, the original image Blob/MIME content, and ordered token collection unchanged so Feishu can render image thumbnails while preserving selection order. A direct upload/download check confirmed that Feishu returned `filename="1.jpg"`, classified the material as `image/jpeg`, and preserved the uploaded bytes exactly.

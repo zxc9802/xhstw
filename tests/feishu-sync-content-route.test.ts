@@ -129,7 +129,7 @@ test("does not create a text-only record when every requested image upload fails
   assert.equal(recordCreateCalls, 0);
 });
 
-test("names selected images 1 through 4 without extensions", async (t) => {
+test("names selected images with JPG filenames", async (t) => {
   installFeishuEnv(t);
   const originalFetch = globalThis.fetch;
   const uploadedFileNames: string[] = [];
@@ -172,7 +172,7 @@ test("names selected images 1 through 4 without extensions", async (t) => {
   }));
 
   assert.equal(response.status, 200);
-  assert.deepEqual(uploadedFileNames, ["1", "2", "3", "4"]);
+  assert.deepEqual(uploadedFileNames, ["1.jpg", "2.jpg", "3.jpg", "4.jpg"]);
   assert.deepEqual(uploadParentTypes, [
     "bitable_image",
     "bitable_image",
@@ -180,10 +180,10 @@ test("names selected images 1 through 4 without extensions", async (t) => {
     "bitable_image"
   ]);
   assert.deepEqual(recordFields?.图片或视频, [
-    { file_token: "file-token-1" },
-    { file_token: "file-token-2" },
-    { file_token: "file-token-3" },
-    { file_token: "file-token-4" }
+    { file_token: "file-token-1.jpg" },
+    { file_token: "file-token-2.jpg" },
+    { file_token: "file-token-3.jpg" },
+    { file_token: "file-token-4.jpg" }
   ]);
 });
 
@@ -236,9 +236,9 @@ test("uploads selected images one at a time in attachment order", async (t) => {
   assert.equal(response.status, 200);
   assert.equal(maxActiveUploads, 1);
   assert.deepEqual(recordFields?.图片或视频, [
-    { file_token: "file-token-1" },
-    { file_token: "file-token-2" },
-    { file_token: "file-token-3" },
-    { file_token: "file-token-4" }
+    { file_token: "file-token-1.jpg" },
+    { file_token: "file-token-2.jpg" },
+    { file_token: "file-token-3.jpg" },
+    { file_token: "file-token-4.jpg" }
   ]);
 });

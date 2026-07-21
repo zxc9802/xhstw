@@ -73,7 +73,7 @@ async function imageToBlob(url: string, index: number) {
   if (parsed) {
     return {
       blob: new Blob([parsed.buffer], { type: parsed.mime }),
-      fileName: String(index + 1)
+      fileName: `${index + 1}.jpg`
     };
   }
 
@@ -83,7 +83,7 @@ async function imageToBlob(url: string, index: number) {
   const contentType = response.headers.get("content-type") || "image/jpeg";
   return {
     blob: new Blob([arrayBuffer], { type: contentType }),
-    fileName: String(index + 1)
+    fileName: `${index + 1}.jpg`
   };
 }
 
