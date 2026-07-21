@@ -13,6 +13,7 @@ import { persistImageRefs } from "@/lib/utils/image-store";
 import { appendMaterialLibrary, createLibraryAsset, getAssetBlob, readMaterialLibrary, type LibraryAsset } from "@/lib/utils/material-library";
 import { readProductLibrary, type ProductLibraryItem } from "@/lib/utils/product-library";
 import { loadGeneratedImages, saveGeneratedImages } from "@/lib/utils/image-generation-history";
+import { pollImageGenerationJob } from "@/lib/utils/image-generation-job-client";
 import type { ImagePlanItem, ImageProvider } from "@/types/image";
 import type { VideoProvider, VideoScriptRow, VideoShotPlan } from "@/types/video";
 
@@ -1253,7 +1254,15 @@ export default function ContentPage() {
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data?.ok === false) throw new Error(data?.message || data?.error || "图片接口返回异常");
-      const result = data?.data ?? data;
+      let result: unknown = data?.data ?? data;
+      if (response.status === 202) {
+        const jobId = result && typeof result === "object" && "jobId" in result && typeof (result as { jobId?: unknown }).jobId === "string"
+          ? (result as { jobId: string }).jobId
+          : "";
+        if (!jobId) throw new Error("图片接口未返回任务 ID");
+        setFeedback(`P${page} 图片任务已提交，正在等待 ${provider} 生成结果。`);
+        result = await pollImageGenerationJob(jobId);
+      }
       const imageUrls = extractGeneratedImageUrls((result as { images?: unknown } | undefined)?.images ?? result);
       if (!imageUrls.length && !provider.includes("仅生成提示词")) throw new Error("模型接口已返回，但未解析到图片 URL / base64。请查看服务日志中的 raw 返回格式。");
       const nextImages = (imageUrls.length ? imageUrls : Array.from({ length: count }, (_, index) => mockSvg(`P${page}-${index + 1}`, index % 2 ? "#ecfeff" : "#fff7ed"))).slice(0, count).map((url, index) => ({
