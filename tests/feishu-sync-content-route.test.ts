@@ -177,3 +177,59 @@ test("names selected images 1 through 4 without extensions", async (t) => {
     { file_token: "file-token-4" }
   ]);
 });
+
+test("uploads selected images one at a time in attachment order", async (t) => {
+  installFeishuEnv(t);
+  const originalFetch = globalThis.fetch;
+  let activeUploads = 0;
+  let maxActiveUploads = 0;
+  let recordFields: Record<string, unknown> | undefined;
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (url.endsWith("/auth/v3/tenant_access_token/internal")) {
+      return jsonResponse({ tenant_access_token: "tenant-token" });
+    }
+    if (url.endsWith("/fields")) {
+      return jsonResponse({ data: { items: [
+        { field_name: "标题", type: 1 },
+        { field_name: "图片或视频", type: 17 }
+      ] } });
+    }
+    if (url.endsWith("/drive/v1/medias/upload_all")) {
+      const fileName = String((init?.body as FormData).get("file_name"));
+      activeUploads += 1;
+      maxActiveUploads = Math.max(maxActiveUploads, activeUploads);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return jsonResponse({ data: { file_token: `file-token-${fileName}` } });
+      } finally {
+        activeUploads -= 1;
+      }
+    }
+    if (url.endsWith("/records")) {
+      recordFields = (JSON.parse(String(init?.body)) as { fields: Record<string, unknown> }).fields;
+      return jsonResponse({ data: { record: { record_id: "record-1" } } });
+    }
+    throw new Error(`Unexpected Feishu request: ${url}`);
+  }) as typeof fetch;
+
+  const response = await POST(new Request("http://localhost/api/feishu/sync-content", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      title: "串行上传",
+      images: Array.from({ length: 4 }, () => "data:image/png;base64,AA==")
+    })
+  }));
+
+  assert.equal(response.status, 200);
+  assert.equal(maxActiveUploads, 1);
+  assert.deepEqual(recordFields?.图片或视频, [
+    { file_token: "file-token-1" },
+    { file_token: "file-token-2" },
+    { file_token: "file-token-3" },
+    { file_token: "file-token-4" }
+  ]);
+});

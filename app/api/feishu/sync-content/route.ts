@@ -129,15 +129,14 @@ export async function POST(request: Request) {
     }
 
     if (attachmentFieldName && payload.images?.length) {
-      const uploaded = await Promise.all((payload.images ?? []).slice(0, 9).map(async (url, index) => {
+      for (const [index, url] of payload.images.slice(0, 9).entries()) {
         try {
-          return await uploadImageToFeishu(url, index, appToken, token);
+          const fileToken = await uploadImageToFeishu(url, index, appToken, token);
+          attachmentValues.push({ file_token: fileToken });
         } catch (error) {
           uploadWarnings.push(error instanceof Error ? error.message : "图片上传飞书失败");
-          return "";
         }
-      }));
-      attachmentValues = uploaded.filter(Boolean).map((fileToken) => ({ file_token: fileToken }));
+      }
     }
 
     if (attachmentFieldName && payload.images?.length && !attachmentValues.length) {
