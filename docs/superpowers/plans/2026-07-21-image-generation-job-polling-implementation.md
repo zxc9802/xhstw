@@ -344,4 +344,3 @@ Report separately:
 - Confirmed locally: POST/GET task contract, lifecycle/error/expiry logic, client polling, full tests, production build.
 - Requires deployment: a real four-image generation request through Cloudflare to confirm the live 524 is gone.
 - Known selected limitation: restarting/redeploying the single Zeabur process loses in-flight in-memory jobs and the UI asks the user to retry.
-
