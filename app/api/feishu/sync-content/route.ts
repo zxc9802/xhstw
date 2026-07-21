@@ -1,6 +1,7 @@
 import { ok, readJson } from "@/lib/utils/api";
 import { resolveFeishuContentFieldNames } from "@/lib/adapters/feishu-content-fields";
 import { buildFeishuBaseUrl } from "@/lib/adapters/feishu-target";
+import { getFeishuUploadDateValue } from "@/lib/utils/feishu-upload-date";
 import { NextResponse } from "next/server";
 
 type SyncPayload = {
@@ -111,6 +112,7 @@ async function uploadImageToFeishu(imageUrl: string, index: number, appToken: st
 
 export async function POST(request: Request) {
   try {
+    const uploadedAt = Date.now();
     const payload = await readJson(request) as SyncPayload;
     const appToken = parseAppToken(process.env.FEISHU_BASE_URL);
     if (!appToken) throw new Error("缺少 FEISHU_BASE_URL 或 FEISHU_APP_TOKEN");
@@ -147,6 +149,7 @@ export async function POST(request: Request) {
       平台: payload.platform ?? "",
       账号名称: payload.accountName ?? "",
       账号: payload.accountName ?? "",
+      上传日期: getFeishuUploadDateValue(fields, uploadedAt),
       图片: imageText,
       平台图片: imageText,
       图片链接: imageText,

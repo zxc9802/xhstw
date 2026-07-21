@@ -14,6 +14,7 @@
 
 **Files:**
 - Create: `tests/feishu-upload-date.test.ts`
+- Create: `lib/utils/feishu-upload-date.ts`
 - Modify: `app/api/feishu/sync-content/route.ts:114-161`
 
 - [ ] **Step 1: Write the failing unit tests**
@@ -23,7 +24,7 @@ Create `tests/feishu-upload-date.test.ts`:
 ```ts
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getFeishuUploadDateValue } from "../app/api/feishu/sync-content/route";
+import { getFeishuUploadDateValue } from "../lib/utils/feishu-upload-date";
 
 const uploadedAt = 1_784_633_845_678;
 
@@ -52,16 +53,22 @@ Run:
 .\node_modules\.bin\tsx.cmd --test tests\feishu-upload-date.test.ts
 ```
 
-Expected: FAIL because `getFeishuUploadDateValue` is not exported by `app/api/feishu/sync-content/route.ts`.
+Expected: FAIL because `lib/utils/feishu-upload-date.ts` does not exist yet.
 
 - [ ] **Step 3: Add the minimal production behavior**
 
-In `app/api/feishu/sync-content/route.ts`, immediately after `isAttachmentField`, add:
+Create `lib/utils/feishu-upload-date.ts`:
 
 ```ts
 export function getFeishuUploadDateValue(fields: ReadonlyMap<string, number>, uploadedAt: number) {
   return fields.get("上传日期") === 5 ? uploadedAt : "";
 }
+```
+
+Import the helper in `app/api/feishu/sync-content/route.ts`:
+
+```ts
+import { getFeishuUploadDateValue } from "@/lib/utils/feishu-upload-date";
 ```
 
 At the beginning of the `try` block in `POST`, capture the timestamp once before the first `await`:
@@ -102,7 +109,7 @@ Expected: all tests pass and the Next.js production build exits with code 0.
 - [ ] **Step 6: Commit the tested code change**
 
 ```powershell
-git add -- app/api/feishu/sync-content/route.ts tests/feishu-upload-date.test.ts
+git add -- app/api/feishu/sync-content/route.ts lib/utils/feishu-upload-date.ts tests/feishu-upload-date.test.ts docs/superpowers/plans/2026-07-21-feishu-upload-timestamp.md
 git diff --cached --check
 git commit -m "feat: record Feishu material upload time"
 ```
@@ -183,6 +190,7 @@ Expected: type `5` and `property.date_formatter` equal to `yyyy/MM/dd HH:mm:ss`.
 
 **Files:**
 - Verify: `app/api/feishu/sync-content/route.ts`
+- Verify: `lib/utils/feishu-upload-date.ts`
 - Verify: `tests/feishu-upload-date.test.ts`
 
 - [ ] **Step 1: Run fresh verification**
@@ -200,7 +208,7 @@ Expected: no whitespace errors, all tests pass, build exits 0, and the worktree 
 
 ```powershell
 git show --stat --oneline HEAD
-git show --format=fuller -- app/api/feishu/sync-content/route.ts tests/feishu-upload-date.test.ts
+git show --format=fuller -- app/api/feishu/sync-content/route.ts lib/utils/feishu-upload-date.ts tests/feishu-upload-date.test.ts
 ```
 
 Confirm all changed production lines trace directly to timestamp capture, field-type validation, or the test. Do not include unrelated dependency upgrades or formatter changes in source code.
