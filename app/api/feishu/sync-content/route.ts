@@ -1,4 +1,5 @@
 import { ok, readJson } from "@/lib/utils/api";
+import { resolveFeishuContentFieldNames } from "@/lib/adapters/feishu-content-fields";
 import { buildFeishuBaseUrl } from "@/lib/adapters/feishu-target";
 import { NextResponse } from "next/server";
 
@@ -10,8 +11,6 @@ type SyncPayload = {
   body?: string;
   tags?: string[];
 };
-
-type FeishuFieldMap = Map<string, number>;
 
 const FEISHU_OPEN_API = "https://open.feishu.cn/open-apis";
 
@@ -112,10 +111,6 @@ async function uploadImageToFeishu(imageUrl: string, index: number, appToken: st
   return fileToken as string;
 }
 
-function isAttachmentField(fields: FeishuFieldMap, name: string) {
-  return fields.get(name) === 17;
-}
-
 export async function POST(request: Request) {
   try {
     const payload = await readJson(request) as SyncPayload;
@@ -125,13 +120,17 @@ export async function POST(request: Request) {
     const token = await getTenantAccessToken();
     const tableId = await getTableId(appToken, token);
     const fields = await getFieldNames(appToken, tableId, token);
+    const { titleFieldName, attachmentFieldName } = resolveFeishuContentFieldNames(fields);
     const imageText = (payload.images ?? []).filter(Boolean).join("\n");
     const tagText = (payload.tags ?? []).map((tag) => tag.startsWith("#") ? tag : `#${tag}`).join(" ");
-    const attachmentFieldNames = ["图片", "平台图片"].filter((name) => isAttachmentField(fields, name));
     const uploadWarnings: string[] = [];
     let attachmentValues: Array<{ file_token: string }> = [];
 
-    if (attachmentFieldNames.length && payload.images?.length) {
+    if (payload.images?.length && !attachmentFieldName) {
+      uploadWarnings.push("飞书表中未找到附件字段：图片或视频、图片、平台图片");
+    }
+
+    if (attachmentFieldName && payload.images?.length) {
       const uploaded = await Promise.all((payload.images ?? []).slice(0, 9).map(async (url, index) => {
         try {
           return await uploadImageToFeishu(url, index, appToken, token);
@@ -147,21 +146,24 @@ export async function POST(request: Request) {
       平台: payload.platform ?? "",
       账号名称: payload.accountName ?? "",
       账号: payload.accountName ?? "",
-      图片: attachmentValues.length && isAttachmentField(fields, "图片") ? attachmentValues : imageText,
-      平台图片: attachmentValues.length && isAttachmentField(fields, "平台图片") ? attachmentValues : imageText,
+      图片: imageText,
+      平台图片: imageText,
       图片链接: imageText,
       平台图片链接: imageText,
-      内容标题: payload.title ?? "",
       内容正文: payload.body ?? "",
       小红书tag: tagText
     };
+    if (titleFieldName) candidateFields[titleFieldName] = payload.title ?? "";
+    if (attachmentFieldName && attachmentValues.length) {
+      candidateFields[attachmentFieldName] = attachmentValues;
+    }
     const recordFields = Object.fromEntries(Object.entries(candidateFields).filter(([name, value]) => {
       if (!fields.has(name) || value === "") return false;
       const type = fields.get(name);
       return type !== 17 || Array.isArray(value);
     }));
     if (!Object.keys(recordFields).length) {
-      throw new Error("飞书表中未匹配到字段：平台、账号名称、图片、内容标题、内容正文、小红书tag");
+      throw new Error("飞书表中未匹配到字段：平台、账号名称、图片或视频、标题、内容正文、小红书tag");
     }
 
     const result = await feishuRequest(`/bitable/v1/apps/${appToken}/tables/${tableId}/records`, {
