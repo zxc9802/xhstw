@@ -84,3 +84,47 @@ test("uploads a browser image and title into the live Feishu fields", async (t) 
   assert.equal(recordFields?.标题, "浏览器素材标题");
   assert.deepEqual(recordFields?.图片或视频, [{ file_token: "file-token-1" }]);
 });
+
+test("does not create a text-only record when every requested image upload fails", async (t) => {
+  installFeishuEnv(t);
+  const originalFetch = globalThis.fetch;
+  let recordCreateCalls = 0;
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (url.endsWith("/auth/v3/tenant_access_token/internal")) {
+      return jsonResponse({ tenant_access_token: "tenant-token" });
+    }
+    if (url.endsWith("/fields")) {
+      return jsonResponse({ data: { items: [
+        { field_name: "标题", type: 1 },
+        { field_name: "内容正文", type: 1 },
+        { field_name: "图片或视频", type: 17 }
+      ] } });
+    }
+    if (url.endsWith("/drive/v1/medias/upload_all")) {
+      return jsonResponse({ code: 234001, msg: "media rejected" }, 400);
+    }
+    if (url.endsWith("/records")) {
+      recordCreateCalls += 1;
+      return jsonResponse({ data: { record: { record_id: "unexpected-record" } } });
+    }
+    throw new Error(`Unexpected Feishu request: ${url}`);
+  }) as typeof fetch;
+
+  const response = await POST(new Request("http://localhost/api/feishu/sync-content", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      title: "应当整体失败",
+      body: "不能只留下文字",
+      images: ["data:image/png;base64,AA=="]
+    })
+  }));
+  const payload = await response.json() as { message?: string };
+
+  assert.equal(response.status, 500);
+  assert.match(payload.message ?? "", /media rejected/);
+  assert.equal(recordCreateCalls, 0);
+});

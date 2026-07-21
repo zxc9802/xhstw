@@ -142,6 +142,10 @@ export async function POST(request: Request) {
       attachmentValues = uploaded.filter(Boolean).map((fileToken) => ({ file_token: fileToken }));
     }
 
+    if (attachmentFieldName && payload.images?.length && !attachmentValues.length) {
+      throw new Error(uploadWarnings[0] ?? "图片上传飞书失败");
+    }
+
     const candidateFields: Record<string, unknown> = {
       平台: payload.platform ?? "",
       账号名称: payload.accountName ?? "",
