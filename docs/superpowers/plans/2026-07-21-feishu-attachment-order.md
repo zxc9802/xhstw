@@ -292,3 +292,61 @@ git add -- app/api/feishu/sync-content/route.ts tests/feishu-sync-content-route.
 git commit -m "fix: upload Feishu images as files"
 git push origin HEAD:main
 ```
+
+### Task 4: Restore the Base image upload point
+
+**Files:**
+- Modify: `tests/feishu-sync-content-route.test.ts`
+- Modify: `app/api/feishu/sync-content/route.ts:94`
+
+- [x] **Step 1: Change the upload-point expectation first**
+
+Keep the existing numeric filename assertions. Change the four expected parent types to:
+
+```ts
+assert.deepEqual(uploadParentTypes, [
+  "bitable_image",
+  "bitable_image",
+  "bitable_image",
+  "bitable_image"
+]);
+```
+
+- [x] **Step 2: Run the focused test and verify RED**
+
+Run:
+
+```powershell
+.\node_modules\.bin\tsx.cmd --test --test-name-pattern "names selected images" tests\feishu-sync-content-route.test.ts
+```
+
+Expected: FAIL because the route currently submits `bitable_file`.
+
+- [x] **Step 3: Restore the image upload point**
+
+Change only the upload-point value:
+
+```ts
+form.append("parent_type", "bitable_image");
+```
+
+- [x] **Step 4: Verify the focused test, full suite, build, and diff**
+
+Run:
+
+```powershell
+.\node_modules\.bin\tsx.cmd --test --test-name-pattern "names selected images" tests\feishu-sync-content-route.test.ts
+npm.cmd test
+npm.cmd run build
+git diff --check
+```
+
+Expected: the focused test, full suite, and production build pass; the diff check produces no output.
+
+- [x] **Step 5: Commit and push to remote main**
+
+```powershell
+git add -- app/api/feishu/sync-content/route.ts tests/feishu-sync-content-route.test.ts docs/superpowers/specs/2026-07-21-feishu-attachment-order-design.md docs/superpowers/plans/2026-07-21-feishu-attachment-order.md
+git commit -m "fix: restore Feishu image uploads"
+git push origin HEAD:main
+```

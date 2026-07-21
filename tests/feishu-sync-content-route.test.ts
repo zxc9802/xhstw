@@ -174,10 +174,10 @@ test("names selected images 1 through 4 without extensions", async (t) => {
   assert.equal(response.status, 200);
   assert.deepEqual(uploadedFileNames, ["1", "2", "3", "4"]);
   assert.deepEqual(uploadParentTypes, [
-    "bitable_file",
-    "bitable_file",
-    "bitable_file",
-    "bitable_file"
+    "bitable_image",
+    "bitable_image",
+    "bitable_image",
+    "bitable_image"
   ]);
   assert.deepEqual(recordFields?.图片或视频, [
     { file_token: "file-token-1" },
