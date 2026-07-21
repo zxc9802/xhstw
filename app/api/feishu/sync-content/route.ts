@@ -64,8 +64,7 @@ function parseDataUrl(url: string) {
   const match = url.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
   if (!match) return null;
   const mime = match[1];
-  const ext = mime.split("/")[1]?.replace("jpeg", "jpg") || "jpg";
-  return { mime, ext, buffer: Buffer.from(match[2], "base64") };
+  return { mime, buffer: Buffer.from(match[2], "base64") };
 }
 
 async function imageToBlob(url: string, index: number) {
@@ -73,7 +72,7 @@ async function imageToBlob(url: string, index: number) {
   if (parsed) {
     return {
       blob: new Blob([parsed.buffer], { type: parsed.mime }),
-      fileName: `content-image-${index + 1}.${parsed.ext}`
+      fileName: String(index + 1)
     };
   }
 
@@ -81,10 +80,9 @@ async function imageToBlob(url: string, index: number) {
   if (!response.ok) throw new Error(`图片下载失败：HTTP ${response.status}`);
   const arrayBuffer = await response.arrayBuffer();
   const contentType = response.headers.get("content-type") || "image/jpeg";
-  const ext = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
   return {
     blob: new Blob([arrayBuffer], { type: contentType }),
-    fileName: `content-image-${index + 1}.${ext}`
+    fileName: String(index + 1)
   };
 }
 
