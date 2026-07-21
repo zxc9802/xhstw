@@ -8,6 +8,7 @@ import { DataTable } from "@/components/ui/DataTable";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { PlatformBadge } from "@/components/ui/PlatformBadge";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { feishuSyncPlatformOptions } from "@/lib/constants/platforms";
 import { accounts as productionAccounts } from "@/lib/mock/data";
 import { cn } from "@/lib/utils/cn";
 import { imageRefToUploadUrl, isStoredImageRef, resolveImageRefs } from "@/lib/utils/image-store";
@@ -173,7 +174,7 @@ const DELETED_CONTENT_STORAGE_KEY = "content-production-studio-xhs.deleted-conte
 const CUSTOM_FOLDERS_STORAGE_KEY = "content-production-studio-xhs.content-library-folders";
 
 const platformOptions = ["全部平台", "小红书"];
-const publishPlatformOptions = ["小红书"];
+const publishPlatformOptions = feishuSyncPlatformOptions;
 const fallbackPublishAccounts: Array<{ platform: string; name: string }> = [];
 const publishAccounts = [
   ...productionAccounts.map((account) => ({ platform: account.platform, name: account.name })),

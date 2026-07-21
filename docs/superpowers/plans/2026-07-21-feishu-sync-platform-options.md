@@ -17,7 +17,7 @@
 - Modify: `lib/constants/platforms.ts:1-5`
 - Modify: `app/content-library/page.tsx:3-14,176-177`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 import assert from "node:assert/strict";
@@ -30,13 +30,13 @@ test("offers all supported Feishu sync platforms without expanding global platfo
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails for the missing export**
+- [x] **Step 2: Run the test to verify it fails for the missing export**
 
 Run: `.\node_modules\.bin\tsx.cmd --test tests\feishu-sync-platform-options.test.ts`
 
 Expected: FAIL because `feishuSyncPlatformOptions` is not exported by `lib/constants/platforms.ts`.
 
-- [ ] **Step 3: Add the dedicated platform list**
+- [x] **Step 3: Add the dedicated platform list**
 
 Append to `lib/constants/platforms.ts`:
 
@@ -44,13 +44,13 @@ Append to `lib/constants/platforms.ts`:
 export const feishuSyncPlatformOptions = ["小红书", "TikTok", "Instagram", "Facebook"];
 ```
 
-- [ ] **Step 4: Run the focused test to verify it passes**
+- [x] **Step 4: Run the focused test to verify it passes**
 
 Run: `.\node_modules\.bin\tsx.cmd --test tests\feishu-sync-platform-options.test.ts`
 
 Expected: PASS with one passing test.
 
-- [ ] **Step 5: Wire the content library selector to the dedicated list**
+- [x] **Step 5: Wire the content library selector to the dedicated list**
 
 Add this import to `app/content-library/page.tsx`:
 
@@ -66,7 +66,7 @@ const publishPlatformOptions = feishuSyncPlatformOptions;
 
 Do not modify `syncContentToFeishu`; it already passes the selected value as `platform` to `/api/feishu/sync-content`.
 
-- [ ] **Step 6: Run focused and full verification**
+- [x] **Step 6: Run focused and full verification**
 
 Run:
 
@@ -78,7 +78,7 @@ npm.cmd run build
 
 Expected: the focused test passes, the complete test suite passes, and the production build completes successfully.
 
-- [ ] **Step 7: Review and commit the implementation**
+- [x] **Step 7: Review and commit the implementation**
 
 Run:
 
