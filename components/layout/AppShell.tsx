@@ -45,8 +45,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <DatabaseZap className="h-5 w-5" />
           </div>
           <div>
-            <p className="text-base font-semibold text-ink">小红书图文生产</p>
-            <p className="text-xs text-muted">Xiaohongshu Image Studio</p>
+            <p className="text-base font-semibold text-ink">图文生产中台</p>
+            <p className="text-xs text-muted">Content Production Studio</p>
           </div>
         </div>
 
@@ -81,7 +81,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
         <div className="border-t border-line p-4">
           <div className="rounded-lg bg-slate-50 p-3">
-            <p className="text-sm font-medium text-ink">小红书图文生产状态</p>
+            <p className="text-sm font-medium text-ink">图文生产状态</p>
             <p className="mt-1 text-xs leading-5 text-muted">专注图文选题、仿写、生成与归档。</p>
           </div>
         </div>
@@ -90,7 +90,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div className="pl-64">
         <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-line bg-white/90 px-7 backdrop-blur">
           <div>
-            <p className="text-sm font-medium text-ink">小红书图文生产状态</p>
+            <p className="text-sm font-medium text-ink">图文生产状态</p>
             <p className="text-xs text-muted">本地图文 workflow</p>
           </div>
           <div className="flex items-center gap-3">

@@ -1910,7 +1910,7 @@ export default function ContentPage() {
   return (
     <>
       <PageHeader
-        title="小红书图文生产状态"
+        title="图文生产状态"
         description="从公开参考链接解析、发布文案生成到图片生成，全流程仅在本地模拟与保存。"
       />
 
