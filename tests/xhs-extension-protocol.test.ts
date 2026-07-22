@@ -49,11 +49,21 @@ function topic(overrides: Record<string, unknown> = {}) {
     platform: "小红书",
     title: "夏日穿搭",
     contentType: "图文",
-    status: "公开",
+    likes: "100",
+    comments: "10",
+    saves: "20",
+    risk: "低",
+    priority: "P1",
+    status: "pending",
     sourceAccount: "账号",
     fetchedAt: "2026-07-22T00:00:00.000Z",
     ...overrides
   };
+}
+
+function defineHidden(object: object, key: PropertyKey, value: unknown) {
+  Object.defineProperty(object, key, { value, enumerable: false });
+  return object;
 }
 
 test("approved limits accepts a valid collection task", () => {
@@ -93,6 +103,27 @@ test("task validation fails closed for record shape and required fields", () => 
   const inherited = Object.create(task());
   assert.equal(protocol.validateTask(inherited).ok, false);
   for (const invalidTask of [null, "task", 1, []]) assert.equal(protocol.validateTask(invalidTask).ok, false);
+});
+
+test("task validation rejects hidden, symbol, and accessor fields without invoking getters", () => {
+  const hidden = defineHidden(task(), "hidden", true);
+  const symbolTask = task();
+  Object.defineProperty(symbolTask, Symbol("hidden"), { value: true, enumerable: true });
+  let getterCalls = 0;
+  const accessor = task();
+  Object.defineProperty(accessor, "requestId", {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      throw new Error("must not run");
+    }
+  });
+
+  for (const invalidTask of [hidden, symbolTask, accessor]) {
+    assert.doesNotThrow(() => protocol.validateTask(invalidTask));
+    assert.equal(protocol.validateTask(invalidTask).ok, false);
+  }
+  assert.equal(getterCalls, 0);
 });
 
 test("task validation rejects sparse and shadowed arrays without throwing", () => {
@@ -190,6 +221,67 @@ test("envelope validation rejects malformed records and never throws", () => {
   }
   assert.doesNotThrow(() => protocol.isEnvelope(extensionEnvelope("result", { topics: sparseTopics, message: "完成" }), "extension-to-page"));
   assert.equal(protocol.isEnvelope(extensionEnvelope("result", { topics: sparseTopics, message: "完成" }), "extension-to-page"), false);
+});
+
+test("envelope validation rejects hidden, symbol, and accessor fields without invoking getters", () => {
+  const hidden = defineHidden(envelope("ping", {}), "hidden", true);
+  const symbolEnvelope = envelope("ping", {});
+  Object.defineProperty(symbolEnvelope, Symbol("hidden"), { value: true, enumerable: true });
+  let getterCalls = 0;
+  const accessor = envelope("ping", {});
+  Object.defineProperty(accessor, "type", {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      return "collect";
+    }
+  });
+
+  for (const invalidMessage of [hidden, symbolEnvelope, accessor]) {
+    assert.doesNotThrow(() => protocol.isEnvelope(invalidMessage, "page-to-extension"));
+    assert.equal(protocol.isEnvelope(invalidMessage, "page-to-extension"), false);
+  }
+  assert.equal(getterCalls, 0);
+});
+
+test("result topics and media require exact safe object shapes", () => {
+  const validMedia = { type: "image", url: "https://ci.xiaohongshu.com/image.jpg", name: "封面", posterUrl: "https://ci.xiaohongshu.com/poster.jpg" };
+  assert.equal(protocol.isEnvelope(extensionEnvelope("result", { topics: [topic({ media: [validMedia] })], message: "完成" }), "extension-to-page"), true);
+
+  const hiddenTopic = defineHidden(topic(), "hidden", true);
+  const symbolTopic = topic();
+  Object.defineProperty(symbolTopic, Symbol("hidden"), { value: true, enumerable: true });
+  let getterCalls = 0;
+  const accessorTopic = topic();
+  Object.defineProperty(accessorTopic, "title", { enumerable: true, get: () => { getterCalls += 1; return "错误"; } });
+  const hiddenMedia = defineHidden({ ...validMedia }, "hidden", true);
+  const symbolMedia = { ...validMedia };
+  Object.defineProperty(symbolMedia, Symbol("hidden"), { value: true, enumerable: true });
+  const accessorMedia = { ...validMedia };
+  Object.defineProperty(accessorMedia, "url", { enumerable: true, get: () => { getterCalls += 1; return "https://ci.xiaohongshu.com/image.jpg"; } });
+  const invalidTopics = [
+    topic({ unexpected: true }),
+    topic({ risk: "未知" }),
+    topic({ priority: "P3" }),
+    topic({ status: "公开" }),
+    topic({ coverType: "gif" }),
+    topic({ mediaType: "直播" }),
+    topic({ url: "not a url" }),
+    topic({ media: [{ ...validMedia, extra: true }] }),
+    topic({ media: [{ ...validMedia, type: "gif" }] }),
+    topic({ media: [{ ...validMedia, url: "http://ci.xiaohongshu.com/image.jpg" }] }),
+    topic({ media: [hiddenMedia] }),
+    topic({ media: [symbolMedia] }),
+    topic({ media: [accessorMedia] }),
+    hiddenTopic,
+    symbolTopic,
+    accessorTopic
+  ];
+  for (const invalidTopic of invalidTopics) {
+    assert.doesNotThrow(() => protocol.isEnvelope(extensionEnvelope("result", { topics: [invalidTopic], message: "完成" }), "extension-to-page"));
+    assert.equal(protocol.isEnvelope(extensionEnvelope("result", { topics: [invalidTopic], message: "完成" }), "extension-to-page"), false);
+  }
+  assert.equal(getterCalls, 0);
 });
 
 test("manifest is an exact least-privilege template", () => {
