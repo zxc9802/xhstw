@@ -754,15 +754,17 @@ function RowActions({ item, onDetail, onEdit, onCopy, onExport, onArchive, onMor
       <IconButton title="导出内容包" icon={<Download className="h-4 w-4" />} onClick={() => onExport(item)} />
       <IconButton title="进入初检查重" icon={<FileCheck2 className="h-4 w-4" />} onClick={() => { window.location.href = `/detection?contentId=${encodeURIComponent(item.id)}`; }} />
       <IconButton title="标记已归档" icon={<Archive className="h-4 w-4" />} onClick={() => onArchive(item)} />
-      <button title="更多操作" className="group relative inline-flex h-8 w-8 items-center justify-center rounded-md border border-line bg-white text-muted transition hover:border-orange-200 hover:bg-orange-50 hover:text-orange-700">
-        <MoreHorizontal className="h-4 w-4" />
+      <div className="group relative inline-flex h-8 w-8">
+        <button title="更多操作" aria-label="更多操作" className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-line bg-white text-muted transition hover:border-orange-200 hover:bg-orange-50 hover:text-orange-700">
+          <MoreHorizontal className="h-4 w-4" />
+        </button>
         <span className="invisible absolute right-0 top-8 z-20 w-32 rounded-md border border-line bg-white p-1 text-left text-xs text-muted shadow-lg group-hover:visible">
           <button className="block w-full rounded px-2 py-1 text-left hover:bg-slate-50" onClick={() => onFeedback("已重新检测，检测报告为 mock 结果。")}><RotateCcw className="mr-1 inline h-3 w-3" />重新检测</button>
           <button className="block w-full rounded px-2 py-1 text-left hover:bg-slate-50" onClick={() => onMore(item, "需复查")}>移入需复查</button>
           <button className="block w-full rounded px-2 py-1 text-left hover:bg-slate-50" onClick={() => onMore(item, "已淘汰")}>移入已淘汰</button>
           <button className="block w-full rounded px-2 py-1 text-left text-red-600 hover:bg-red-50" onClick={() => onDelete(item)}><Trash2 className="mr-1 inline h-3 w-3" />删除项目</button>
         </span>
-      </button>
+      </div>
     </div>
   );
 }

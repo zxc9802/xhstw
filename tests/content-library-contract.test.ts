@@ -17,3 +17,8 @@ test("card and detail images open one top-level preview", () => {
   assert.equal(source.includes("setPreviewImageUrl"), true);
   assert.equal(source.includes("z-[80]"), true);
 });
+
+test("table action menu does not nest interactive buttons", () => {
+  assert.equal(source.includes('<button title="更多操作" className="group relative'), false);
+  assert.equal(source.includes('<div className="group relative inline-flex'), true);
+});
