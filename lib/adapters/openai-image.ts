@@ -394,6 +394,75 @@ async function requestYunwuGeneration(config: YunwuImageConfig, prompt: string, 
   return data;
 }
 
+function parseDataUrl(url: string) {
+  const match = url.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+  if (!match) return null;
+  const mime = match[1];
+  const ext = mime.split("/")[1]?.replace("jpeg", "jpg") || "jpg";
+  return { mime, ext, buffer: Buffer.from(match[2], "base64") };
+}
+
+async function imageUrlToBlob(url: string, index: number) {
+  const parsed = parseDataUrl(url);
+  if (parsed) {
+    return {
+      blob: new Blob([parsed.buffer], { type: parsed.mime }),
+      fileName: `reference-${index + 1}.${parsed.ext}`
+    };
+  }
+
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`参考图下载失败：HTTP ${response.status}`);
+  const contentType = response.headers.get("content-type") || "image/jpeg";
+  const arrayBuffer = await response.arrayBuffer();
+  const ext = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
+  return {
+    blob: new Blob([arrayBuffer], { type: contentType }),
+    fileName: `reference-${index + 1}.${ext}`
+  };
+}
+
+async function requestYunwuEdit(
+  config: YunwuImageConfig,
+  prompt: string,
+  size: string,
+  sourceImageUrls: string[]
+) {
+  if (!config.apiKey) throw new Error("未配置 YUNWU_API_KEY");
+  const form = new FormData();
+  form.append("model", config.model);
+  form.append("prompt", prompt);
+  form.append("n", "1");
+  form.append("size", size);
+  form.append("quality", "high");
+
+  const images = await Promise.all(sourceImageUrls.map(imageUrlToBlob));
+  images.forEach(({ blob, fileName }) => form.append("image", blob, fileName));
+
+  const response = await fetch(config.editUrl, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${config.apiKey}`
+    },
+    body: form,
+    signal: AbortSignal.timeout(IMAGE_PROVIDER_TIMEOUT_MS)
+  });
+  const data = await response.json().catch(() => ({}));
+  logImageProviderResponse({
+    provider: "Image 2.0 (Yunwu fallback)",
+    operation: "edit",
+    endpoint: config.editUrl,
+    status: response.status,
+    response: data
+  });
+  if (!response.ok || (data && typeof data === "object" && (data as Record<string, unknown>).success === false)) {
+    throw new Error(`Yunwu Image 2.0 编辑失败：${providerError(data, `HTTP ${response.status}`)}`);
+  }
+  if (!extractImageUrls(data).length) throw new Error("Yunwu Image 2.0 编辑失败：响应未返回图片。");
+  return data;
+}
+
 async function requestImageWithFallback(
   config: Image2Config,
   yunwuConfig: YunwuImageConfig,
@@ -410,8 +479,11 @@ async function requestImageWithFallback(
     };
   } catch (primaryError) {
     try {
+      const fallbackData = sourceImageUrls.length
+        ? await requestYunwuEdit(yunwuConfig, prompt, imageSizeFromRatio(body.size), sourceImageUrls)
+        : await requestYunwuGeneration(yunwuConfig, prompt, imageSizeFromRatio(body.size));
       return {
-        data: await requestYunwuGeneration(yunwuConfig, prompt, imageSizeFromRatio(body.size)),
+        data: fallbackData,
         provider: "Image 2.0 (Yunwu fallback)",
         model: yunwuConfig.model
       };

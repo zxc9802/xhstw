@@ -173,6 +173,42 @@ test("falls back to Yunwu generation after four project OpenAPI failures", async
   });
 });
 
+test("falls back to Yunwu edits after four project OpenAPI image-edit failures", async () => {
+  let primaryCalls = 0;
+  let editForm: FormData | undefined;
+
+  await withProvider(async (url, init) => {
+    if (String(url) === "http://provider.test/openApi/generate") {
+      primaryCalls += 1;
+      const body = JSON.parse(String(init?.body));
+      assert.deepEqual(body.payload.resources, ["data:image/png;base64,aGVsbG8="]);
+      return Response.json({ success: false, msg: "当前图生图失败" });
+    }
+    assert.equal(String(url), "https://yunwu.test/v1/images/edits");
+    editForm = init?.body as FormData;
+    return Response.json({ data: [{ url: "https://img.test/yunwu-edit.jpg" }] });
+  }, async () => {
+    process.env.YUNWU_API_KEY = "test-yunwu-key";
+    process.env.YUNWU_IMAGE_URL = "https://yunwu.test/v1/images/generations";
+    process.env.YUNWU_IMAGE_EDIT_URL = "https://yunwu.test/v1/images/edits";
+
+    const result = await generateImage({
+      prompt: "背景不变，只换人物",
+      sourceImageUrls: ["data:image/png;base64,aGVsbG8="],
+      count: 1
+    });
+
+    assert.equal(primaryCalls, 4);
+    assert.equal(editForm?.get("model"), "gpt-image-2");
+    assert.match(String(editForm?.get("prompt")), /背景不变，只换人物/);
+    assert.equal(editForm?.get("n"), "1");
+    assert.equal(editForm?.get("size"), "1024x1024");
+    assert.equal(editForm?.getAll("image").length, 1);
+    assert.equal(result.images?.[0]?.url, "https://img.test/yunwu-edit.jpg");
+    assert.equal(result.images?.[0]?.provider, "Image 2.0 (Yunwu fallback)");
+  });
+});
+
 test("makes exactly one request per image and parses bounded URL and base64 fields", async () => {
   let calls = 0;
   await withProvider(async () => {
