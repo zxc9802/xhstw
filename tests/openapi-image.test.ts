@@ -19,7 +19,11 @@ const PROVIDER_ENV = {
 const ENV_KEYS = [
   ...Object.keys(PROVIDER_ENV),
   "OPENAI_IMAGE_API_KEY",
-  "YUNWU_API_KEY"
+  "YUNWU_API_KEY",
+  "YUNWU_IMAGE_URL",
+  "YUNWU_IMAGE_EDIT_URL",
+  "OPENAI_IMAGE_MODEL",
+  "OPENAI_IMAGE_FORMAT"
 ] as const;
 
 async function withProvider(
@@ -135,6 +139,37 @@ test("retries the project OpenAPI three times after the first failure", async ()
     const result = await generateImage({ prompt: "橘猫", count: 1 });
     assert.equal(calls, 4);
     assert.equal(result.images?.[0]?.url, "https://img.test/fourth-attempt.jpg");
+  });
+});
+
+test("falls back to Yunwu generation after four project OpenAPI failures", async () => {
+  let primaryCalls = 0;
+  let yunwuInit: RequestInit | undefined;
+
+  await withProvider(async (url, init) => {
+    if (String(url) === "http://provider.test/openApi/generate") {
+      primaryCalls += 1;
+      return Response.json({ success: false, msg: "当前接口失败" });
+    }
+    assert.equal(String(url), "https://yunwu.test/v1/images/generations");
+    yunwuInit = init;
+    return Response.json({ data: [{ url: "https://img.test/yunwu.jpg" }] });
+  }, async () => {
+    process.env.YUNWU_API_KEY = "test-yunwu-key";
+    process.env.YUNWU_IMAGE_URL = "https://yunwu.test/v1/images/generations";
+    const result = await generateImage({ prompt: "橘猫", size: "3:4", count: 1 });
+
+    assert.equal(primaryCalls, 4);
+    assert.equal((yunwuInit?.headers as Record<string, string>).Authorization, "Bearer test-yunwu-key");
+    const yunwuBody = JSON.parse(String(yunwuInit?.body));
+    assert.equal(yunwuBody.model, "gpt-image-2");
+    assert.match(yunwuBody.prompt, /橘猫/);
+    assert.equal(yunwuBody.n, 1);
+    assert.equal(yunwuBody.size, "1024x1536");
+    assert.equal(yunwuBody.quality, "high");
+    assert.equal(yunwuBody.format, "jpeg");
+    assert.equal(result.images?.[0]?.url, "https://img.test/yunwu.jpg");
+    assert.equal(result.images?.[0]?.provider, "Image 2.0 (Yunwu fallback)");
   });
 });
 

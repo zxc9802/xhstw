@@ -23,6 +23,20 @@ type Image2Config = {
   pollMaxAttempts: number;
 };
 
+type YunwuImageConfig = {
+  apiKey: string;
+  generationUrl: string;
+  editUrl: string;
+  model: string;
+  format: string;
+};
+
+type ImageRequestResult = {
+  data: unknown;
+  provider: "Image 2.0" | "Image 2.0 (Yunwu fallback)";
+  model: string;
+};
+
 const MAX_IMAGES_PER_RUN = 10;
 const MAX_PARALLEL_IMAGE_REQUESTS = Math.max(1, Math.min(10, Number(process.env.OPENAI_IMAGE_PARALLEL_REQUESTS) || 4));
 const PRIMARY_IMAGE_ATTEMPTS = 4;
@@ -68,6 +82,28 @@ function image2Config(): Image2Config {
     pollIntervalMs: boundedInteger(process.env.GPT_IMAGE2_POLL_INTERVAL_MS, 3000, 0, 60000),
     pollMaxAttempts: boundedInteger(process.env.GPT_IMAGE2_POLL_MAX_ATTEMPTS, 100, 1, 600)
   };
+}
+
+function yunwuImageConfig(): YunwuImageConfig {
+  const generationUrl = process.env.YUNWU_IMAGE_URL || "https://yunwu.ai/v1/images/generations";
+  return {
+    apiKey: process.env.YUNWU_API_KEY || "",
+    generationUrl,
+    editUrl: process.env.YUNWU_IMAGE_EDIT_URL || generationUrl.replace(/\/generations\/?$/, "/edits"),
+    model: process.env.OPENAI_IMAGE_MODEL || "gpt-image-2",
+    format: process.env.OPENAI_IMAGE_FORMAT || "jpeg"
+  };
+}
+
+function imageSizeFromRatio(ratio = "1:1") {
+  const value = ratio.trim().toLowerCase();
+  return ({
+    "1:1": "1024x1024",
+    "3:4": "1024x1536",
+    "4:3": "1536x1024",
+    "9:16": "1024x1792",
+    "16:9": "1792x1024"
+  } as Record<string, string>)[value] || (/^\d+x\d+$/.test(value) ? value : "1024x1024");
 }
 
 export function imageScaleFromSize(size = "1:1") {
@@ -203,6 +239,10 @@ function providerError(data: unknown, fallback: string) {
   return fallback;
 }
 
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function providerHeaders(config: Image2Config) {
   return {
     Accept: "application/json",
@@ -320,6 +360,69 @@ async function requestCurrentImageWithRetries(
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
+async function requestYunwuGeneration(config: YunwuImageConfig, prompt: string, size: string) {
+  if (!config.apiKey) throw new Error("未配置 YUNWU_API_KEY");
+  const response = await fetch(config.generationUrl, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${config.apiKey}`
+    },
+    body: JSON.stringify({
+      model: config.model,
+      prompt,
+      n: 1,
+      size,
+      quality: "high",
+      format: config.format
+    }),
+    signal: AbortSignal.timeout(IMAGE_PROVIDER_TIMEOUT_MS)
+  });
+  const data = await response.json().catch(() => ({}));
+  logImageProviderResponse({
+    provider: "Image 2.0 (Yunwu fallback)",
+    operation: "generate",
+    endpoint: config.generationUrl,
+    status: response.status,
+    response: data
+  });
+  if (!response.ok || (data && typeof data === "object" && (data as Record<string, unknown>).success === false)) {
+    throw new Error(`Yunwu Image 2.0 生成失败：${providerError(data, `HTTP ${response.status}`)}`);
+  }
+  if (!extractImageUrls(data).length) throw new Error("Yunwu Image 2.0 生成失败：响应未返回图片。");
+  return data;
+}
+
+async function requestImageWithFallback(
+  config: Image2Config,
+  yunwuConfig: YunwuImageConfig,
+  body: ImageInput,
+  prompt: string,
+  scale: string
+): Promise<ImageRequestResult> {
+  const sourceImageUrls = body.sourceImageUrls ?? [];
+  try {
+    return {
+      data: await requestCurrentImageWithRetries(config, prompt, scale, sourceImageUrls),
+      provider: "Image 2.0",
+      model: config.modelId
+    };
+  } catch (primaryError) {
+    try {
+      return {
+        data: await requestYunwuGeneration(yunwuConfig, prompt, imageSizeFromRatio(body.size)),
+        provider: "Image 2.0 (Yunwu fallback)",
+        model: yunwuConfig.model
+      };
+    } catch (fallbackError) {
+      throw new Error(
+        `Image 2.0 当前接口重试 3 次后仍失败：${errorMessage(primaryError)}；Yunwu 兜底失败：${errorMessage(fallbackError)}`
+      );
+    }
+  }
+}
+
 async function runWithConcurrency<T>(tasks: Array<() => Promise<T>>, concurrency: number) {
   const results: T[] = [];
   let nextIndex = 0;
@@ -358,16 +461,18 @@ export async function generateImage(input: unknown) {
   ].filter(Boolean).join("\n");
   const requestedCount = Math.max(1, Math.min(MAX_IMAGES_PER_RUN, Number(body.count) || 1));
   const scale = imageScaleFromSize(body.size);
-  const sourceImageUrls = body.sourceImageUrls ?? [];
+  const yunwuConfig = yunwuImageConfig();
   const tasks = Array.from(
     { length: requestedCount },
-    () => () => requestCurrentImageWithRetries(config, prompt, scale, sourceImageUrls)
+    () => () => requestImageWithFallback(config, yunwuConfig, body, prompt, scale)
   );
   const results = await runWithConcurrency(tasks, MAX_PARALLEL_IMAGE_REQUESTS);
-  const images = results.flatMap(extractImageUrls).slice(0, requestedCount).map((url, index) => ({
-    id: `image2_${Date.now()}_${index}`,
+  const images = results.flatMap((result) => extractImageUrls(result.data).map((url) => ({
     url,
-    provider: "Image 2.0"
+    provider: result.provider
+  }))).slice(0, requestedCount).map((image, index) => ({
+    id: `image2_${Date.now()}_${index}`,
+    ...image
   }));
 
   return {
@@ -375,7 +480,7 @@ export async function generateImage(input: unknown) {
     model: config.modelId,
     input: body,
     images,
-    raw: images.length ? undefined : results
+    raw: images.length ? undefined : results.map((result) => result.data)
   };
 }
 
