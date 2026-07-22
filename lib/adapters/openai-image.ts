@@ -13,17 +13,32 @@ type ImageInput = {
 
 type Image2Config = {
   apiUrl: string;
+  queryUrl: string;
   projectCode: string;
   accessKey: string;
   secretKey: string;
   modelId: string;
   resolution: string;
+  pollIntervalMs: number;
+  pollMaxAttempts: number;
 };
 
 const MAX_IMAGES_PER_RUN = 10;
 const MAX_PARALLEL_IMAGE_REQUESTS = Math.max(1, Math.min(10, Number(process.env.OPENAI_IMAGE_PARALLEL_REQUESTS) || 4));
 const MAX_RESPONSE_DEPTH = 6;
-const RESPONSE_CONTAINER_KEYS = new Set(["data", "image", "images", "result", "results", "output", "outputs"]);
+const RESPONSE_CONTAINER_KEYS = new Set([
+  "content",
+  "data",
+  "image",
+  "images",
+  "message",
+  "resource_urls",
+  "resourceurls",
+  "result",
+  "results",
+  "output",
+  "outputs"
+]);
 const IMAGE_URL_KEYS = new Set(["url", "imageurl", "image_url"]);
 const IMAGE_BASE64_KEYS = new Set(["b64_json", "base64", "image_base64", "image_data"]);
 export const IMAGE_PROVIDER_TIMEOUT_MS = 5 * 60 * 1000;
@@ -32,14 +47,25 @@ function asRecord(input: unknown): ImageInput {
   return input && typeof input === "object" ? input as ImageInput : {};
 }
 
+function boundedInteger(value: string | undefined, fallback: number, minimum: number, maximum: number) {
+  if (value === undefined || value.trim() === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(minimum, Math.min(maximum, Math.trunc(parsed)));
+}
+
 function image2Config(): Image2Config {
+  const apiUrl = process.env.GPT_IMAGE2_API_URL || "http://14.103.147.238:19220/openApi/generate";
   return {
-    apiUrl: process.env.GPT_IMAGE2_API_URL || "http://14.103.147.238:19220/openApi/generate",
+    apiUrl,
+    queryUrl: process.env.GPT_IMAGE2_QUERY_URL || apiUrl.replace(/\/generate\/?$/, "/queryResult"),
     projectCode: process.env.GPT_IMAGE2_PROJECT_CODE || "",
     accessKey: process.env.GPT_IMAGE2_ACCESS_KEY || "",
     secretKey: process.env.GPT_IMAGE2_SECRET_KEY || "",
     modelId: process.env.GPT_IMAGE2_MODEL_ID || "gpt-image2-low",
-    resolution: process.env.GPT_IMAGE2_RESOLUTION || "1K"
+    resolution: process.env.GPT_IMAGE2_RESOLUTION || "1K",
+    pollIntervalMs: boundedInteger(process.env.GPT_IMAGE2_POLL_INTERVAL_MS, 3000, 0, 60000),
+    pollMaxAttempts: boundedInteger(process.env.GPT_IMAGE2_POLL_MAX_ATTEMPTS, 100, 1, 600)
   };
 }
 
@@ -96,6 +122,66 @@ function extractImageUrls(input: unknown) {
   return [...new Set(urls)];
 }
 
+function extractTaskId(input: unknown) {
+  function visit(value: unknown, depth: number): string | undefined {
+    if (depth > MAX_RESPONSE_DEPTH || !value || typeof value !== "object") return undefined;
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const found = visit(item, depth + 1);
+        if (found) return found;
+      }
+      return undefined;
+    }
+    for (const [key, childValue] of Object.entries(value as Record<string, unknown>)) {
+      if (key.toLowerCase() === "taskid" && (typeof childValue === "string" || typeof childValue === "number")) {
+        const taskId = String(childValue).trim();
+        if (taskId) return taskId;
+      }
+    }
+    for (const [key, childValue] of Object.entries(value as Record<string, unknown>)) {
+      if (RESPONSE_CONTAINER_KEYS.has(key.toLowerCase())) {
+        const found = visit(childValue, depth + 1);
+        if (found) return found;
+      }
+    }
+    return undefined;
+  }
+
+  return visit(input, 0);
+}
+
+function extractTaskState(input: unknown) {
+  function visit(value: unknown, depth: number): { status: number; message?: string } | undefined {
+    if (depth > MAX_RESPONSE_DEPTH || !value || typeof value !== "object") return undefined;
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const found = visit(item, depth + 1);
+        if (found) return found;
+      }
+      return undefined;
+    }
+    const record = value as Record<string, unknown>;
+    const status = typeof record.status === "number" || typeof record.status === "string"
+      ? Number(record.status)
+      : Number.NaN;
+    if (Number.isInteger(status)) {
+      return {
+        status,
+        message: typeof record.message === "string" && record.message.trim() ? record.message : undefined
+      };
+    }
+    for (const [key, childValue] of Object.entries(record)) {
+      if (RESPONSE_CONTAINER_KEYS.has(key.toLowerCase())) {
+        const found = visit(childValue, depth + 1);
+        if (found) return found;
+      }
+    }
+    return undefined;
+  }
+
+  return visit(input, 0);
+}
+
 function mockImages(input: ImageInput) {
   const count = Math.max(1, Math.min(MAX_IMAGES_PER_RUN, Number(input.count) || 1));
   const images = Array.from({ length: count }, (_, index) => ({
@@ -116,16 +202,75 @@ function providerError(data: unknown, fallback: string) {
   return fallback;
 }
 
+function providerHeaders(config: Image2Config) {
+  return {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+    projectCode: config.projectCode,
+    "X-Access-Key": config.accessKey,
+    "X-Secret-Key": config.secretKey
+  };
+}
+
+function assertProviderResponse(response: Response, data: unknown, operation: "generate" | "query", endpoint: string) {
+  logImageProviderResponse({
+    provider: "Image 2.0",
+    operation,
+    endpoint,
+    status: response.status,
+    response: data
+  });
+  if (!response.ok) {
+    throw new Error(`Image 2.0 生成失败：${providerError(data, `HTTP ${response.status}`)}`);
+  }
+  if (data && typeof data === "object" && (data as Record<string, unknown>).success === false) {
+    throw new Error(`Image 2.0 生成失败：${providerError(data, "服务商拒绝了请求")}`);
+  }
+}
+
+function waitForNextPoll(milliseconds: number) {
+  if (milliseconds <= 0) return Promise.resolve();
+  return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function queryImageTask(config: Image2Config, taskId: string) {
+  for (let attempt = 0; attempt < config.pollMaxAttempts; attempt += 1) {
+    const response = await fetch(config.queryUrl, {
+      method: "POST",
+      headers: providerHeaders(config),
+      body: JSON.stringify({ taskId, abilityType: "IMAGE" }),
+      signal: AbortSignal.timeout(IMAGE_PROVIDER_TIMEOUT_MS)
+    });
+    const data = await response.json().catch(() => ({}));
+    assertProviderResponse(response, data, "query", config.queryUrl);
+
+    const state = extractTaskState(data);
+    if (!state) throw new Error(`Image 2.0 查询失败：任务 ${taskId} 的响应缺少 status。`);
+    if (state.status === 2) {
+      if (!extractImageUrls(data).length) {
+        throw new Error(`Image 2.0 查询失败：任务 ${taskId} 已完成，但未返回图片地址。`);
+      }
+      return data;
+    }
+    if (state.status === 3) {
+      throw new Error(`Image 2.0 生成失败：${state.message || `任务 ${taskId} 执行失败`}`);
+    }
+    if (state.status === 4) {
+      throw new Error(`Image 2.0 生成失败：${state.message || `任务 ${taskId} 已取消`}`);
+    }
+    if (state.status !== 0 && state.status !== 1) {
+      throw new Error(`Image 2.0 查询失败：任务 ${taskId} 返回未知状态 ${state.status}。`);
+    }
+    if (attempt + 1 < config.pollMaxAttempts) await waitForNextPoll(config.pollIntervalMs);
+  }
+
+  throw new Error(`Image 2.0 生成超时：任务 ${taskId} 在限定次数内未完成。`);
+}
+
 async function requestImage(config: Image2Config, prompt: string, scale: string) {
   const response = await fetch(config.apiUrl, {
     method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      projectCode: config.projectCode,
-      "X-Access-Key": config.accessKey,
-      "X-Secret-Key": config.secretKey
-    },
+    headers: providerHeaders(config),
     body: JSON.stringify({
       modelId: config.modelId,
       abilityType: "IMAGE",
@@ -141,21 +286,11 @@ async function requestImage(config: Image2Config, prompt: string, scale: string)
   });
 
   const data = await response.json().catch(() => ({}));
-  logImageProviderResponse({
-    provider: "Image 2.0",
-    operation: "generate",
-    endpoint: config.apiUrl,
-    status: response.status,
-    response: data
-  });
+  assertProviderResponse(response, data, "generate", config.apiUrl);
+  if (extractImageUrls(data).length) return data;
 
-  if (!response.ok) {
-    throw new Error(`Image 2.0 生成失败：${providerError(data, `HTTP ${response.status}`)}`);
-  }
-  if (data && typeof data === "object" && (data as Record<string, unknown>).success === false) {
-    throw new Error(`Image 2.0 生成失败：${providerError(data, "服务商拒绝了请求")}`);
-  }
-  return data;
+  const taskId = extractTaskId(data);
+  return taskId ? queryImageTask(config, taskId) : data;
 }
 
 async function runWithConcurrency<T>(tasks: Array<() => Promise<T>>, concurrency: number) {

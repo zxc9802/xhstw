@@ -9,11 +9,14 @@
 适配器从环境变量读取配置，不在源码或日志中保存密钥：
 
 - `GPT_IMAGE2_API_URL`：默认 `http://14.103.147.238:19220/openApi/generate`
+- `GPT_IMAGE2_QUERY_URL`：默认由生成地址推导为 `/openApi/queryResult`
 - `GPT_IMAGE2_PROJECT_CODE`
 - `GPT_IMAGE2_ACCESS_KEY`
 - `GPT_IMAGE2_SECRET_KEY`
 - `GPT_IMAGE2_MODEL_ID`：默认 `gpt-image2-low`
 - `GPT_IMAGE2_RESOLUTION`：默认 `1K`
+- `GPT_IMAGE2_POLL_INTERVAL_MS`：默认 `3000`
+- `GPT_IMAGE2_POLL_MAX_ATTEMPTS`：默认 `100`
 
 保留 `IMAGE_MODEL_PROVIDER=mock` 的现有本地模拟行为。缺少项目编码或任一密钥时继续返回模拟图片，避免未配置环境无法启动。
 
@@ -43,6 +46,7 @@
 - 即使 HTTP 为 `200`，只要返回 `success: false`，也使用 `msg`、`message` 或 `error` 作为业务错误。
 - 图片结果兼容 URL、data URL 和常见 base64 字段，并在 `data`、`images`、`result`、`output` 等常见容器中有限深度查找。
 - 如果成功响应中仍未找到图片，保留脱敏后的原始响应供现有诊断日志定位，页面显示“未解析到图片”的现有错误。
+- 如果生成响应只返回 `taskId`，每隔固定时间调用 `POST /openApi/queryResult`，请求体为 `{ "taskId": "...", "abilityType": "IMAGE" }`。状态 `0/1` 继续等待，`2` 从 `message`、`resourceUrls` 或 `content` 提取图片，`3/4` 返回服务商原因，超过限定次数后停止。
 
 当前出口 IP 尚未加入服务白名单，因此真实成功响应结构需在白名单开放后复测校准。
 

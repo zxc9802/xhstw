@@ -240,3 +240,7 @@ git commit -m "docs: configure gpt image2 openapi"
 - [ ] **Step 6: Record the live-verification boundary**
 
 Report that the request contract and failure response were verified against the real endpoint, but successful image parsing remains pending because the current outbound IP is not on the provider whitelist. Do not claim a successful live image generation until a fresh request returns `success: true` with an image.
+
+### Follow-up: Poll asynchronous image tasks
+
+The live provider returns `data.result.taskId` from `/openApi/generate` instead of a synchronous image. Add regression tests using that exact response, then poll `POST /openApi/queryResult` with `{ "taskId": "...", "abilityType": "IMAGE" }`. Treat statuses `0/1` as pending, `2` as complete, `3` as failed, and `4` as cancelled. Parse completed image URLs from `message`, `resourceUrls`, or `content`, cap polling with `GPT_IMAGE2_POLL_MAX_ATTEMPTS`, and keep the interval configurable through `GPT_IMAGE2_POLL_INTERVAL_MS`.
