@@ -11,6 +11,7 @@ const collector = require("../browser-extension/shared/collector.js") as {
   noteId(value: unknown): string;
   normalizeNoteUrl(value: unknown): string;
   findDetailRoot(document: Document): Element | null;
+  findSearchCardLink(document: Document, targetUrl: string): Element | null;
   parseSearchCards(document: Document, query: string, limit: number): Array<Record<string, unknown>>;
   parseDetail(document: Document | Element, expectedTitle: string): Record<string, unknown>;
   buildTopic(row: Record<string, unknown>, detail: Record<string, unknown>, now: Date): Record<string, unknown>;
@@ -194,6 +195,19 @@ test("computed stylesheet-hidden login markup does not block collection", () => 
   assert.deepEqual(collector.detectPageState(classHiddenLogin), { ok: true });
 });
 
+test("search-card matching skips a hidden duplicate link before the visible cover", () => {
+  const noteId = "69042cb60000000003020eea";
+  const page = parseHTML(`
+    <section class="note-item">
+      <a href="/explore/${noteId}" style="display:none"></a>
+      <a class="cover" href="/search_result/${noteId}?xsec_token=live">封面</a>
+      <a class="title" href="/search_result/${noteId}?xsec_token=live">地铁可以穿防晒服</a>
+    </section>
+  `).document;
+
+  assert.equal(collector.findSearchCardLink(page, `https://www.xiaohongshu.com/explore/${noteId}`)?.className, "cover");
+});
+
 test("detail media ignores comment and profile ancestor containers", () => {
   const detailDocument = parseHTML(`
     <div class="note-detail-mask" role="dialog">
@@ -206,6 +220,33 @@ test("detail media ignores comment and profile ancestor containers", () => {
   const urls = (detail.media as Array<{ url: string }>).map((item) => item.url);
 
   assert.deepEqual(urls, ["https://sns-webpic-qc.xhscdn.com/detail-1.webp"]);
+});
+
+test("detail parsing preserves every image in an eighteen-image Xiaohongshu post", () => {
+  const detailDocument = parseHTML(`
+    <div class="note-detail-mask" role="dialog">
+      <h1 class="title">十八张图实测</h1>
+      <article class="content">完整正文</article>
+      ${Array.from({ length: 18 }, (_, index) => `<img src="https://sns-webpic-qc.xhscdn.com/detail-${index + 1}.webp" alt="正文图 ${index + 1}">`).join("")}
+    </div>
+  `).document;
+  const detail = collector.parseDetail(detailDocument, "备用标题");
+  const topic = collector.buildTopic({
+    title: "十八张图实测",
+    url: "https://www.xiaohongshu.com/explore/64f0a1b2c3d4e5f60718293a"
+  }, detail, new Date("2026-07-22T00:00:00.000Z"));
+  const envelope = {
+    channel: protocol.CHANNEL,
+    protocolVersion: protocol.PROTOCOL_VERSION,
+    direction: "extension-to-page",
+    type: "result",
+    requestId: REQUEST_ID,
+    payload: { topics: [JSON.parse(JSON.stringify(topic))], message: "完成" }
+  };
+
+  assert.equal((detail.media as Array<unknown>).length, 18);
+  assert.equal((topic.media as Array<unknown>).length, 18);
+  assert.equal(protocol.isEnvelope(envelope, "extension-to-page"), true);
 });
 
 test("detail tags are deduplicated and capped independently from topic output", () => {
@@ -303,7 +344,7 @@ test("oversized topic inputs serialize within the extension protocol bounds", ()
   assert.equal(String(topic.keyword).length, 2048);
   assert.equal(String(topic.parsedContent).length, 2048);
   assert.equal(Object.hasOwn(topic, "url"), false);
-  assert.equal(media.length, 10);
+  assert.equal(media.length, 12);
   assert.equal(String(media[0]?.name).length, 300);
   assert.equal(Object.hasOwn(media[0]!, "posterUrl"), false);
   assert.equal(protocol.isEnvelope(envelope, "extension-to-page"), true);
@@ -382,6 +423,55 @@ test("detail actions click only the matching search card, parse its dialog, and 
     assert.equal(response.ok, true);
     assert.equal(response.title, "目标笔记");
     assert.equal(dialog.hidden, true);
+  } finally {
+    if (previousDocument) Object.defineProperty(globalThis, "document", previousDocument);
+    else delete (globalThis as { document?: Document }).document;
+    if (previousCollector) Object.defineProperty(globalThis, "XhsPageCollector", previousCollector);
+    else delete (globalThis as { XhsPageCollector?: unknown }).XhsPageCollector;
+  }
+});
+
+test("search actions ignore exact-label controls inside hidden ancestors", async () => {
+  const page = parseHTML(`
+    <div aria-hidden="true"><span id="hidden-filter">筛选</span></div>
+    <div id="real-filter">筛选</div>
+    <div aria-hidden="true"><span id="hidden-sort">最多点赞</span></div>
+    <div id="real-sort">最多点赞</div>
+    <div aria-hidden="true"><span id="hidden-media">图文</span></div>
+    <div id="real-media">图文</div>
+    <section class="note-item">
+      <a href="/explore/64f0a1b2c3d4e5f60718293a"><span class="title">防晒实测</span></a>
+    </section>
+  `).document;
+  const clicks = new Map<string, number>();
+  for (const id of ["hidden-filter", "real-filter", "hidden-sort", "real-sort", "hidden-media", "real-media"]) {
+    page.querySelector(`#${id}`)?.addEventListener("click", () => clicks.set(id, (clicks.get(id) || 0) + 1));
+  }
+
+  const actions = require("../browser-extension/xhs-content.js") as {
+    handleMessage(message: unknown): Promise<Record<string, unknown>>;
+  };
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const previousCollector = Object.getOwnPropertyDescriptor(globalThis, "XhsPageCollector");
+  Object.defineProperty(globalThis, "document", { configurable: true, value: page });
+  Object.defineProperty(globalThis, "XhsPageCollector", { configurable: true, value: collector });
+  try {
+    const response = await actions.handleMessage({
+      action: "xhs:search",
+      query: "防晒",
+      limit: 1,
+      mediaType: "图文",
+      dateRange: "全部",
+      sortBy: "点赞量"
+    });
+
+    assert.equal(response.ok, true);
+    assert.equal(clicks.get("hidden-filter") || 0, 0);
+    assert.equal(clicks.get("hidden-sort") || 0, 0);
+    assert.equal(clicks.get("hidden-media") || 0, 0);
+    assert.equal(clicks.get("real-filter"), 1);
+    assert.equal(clicks.get("real-sort"), 1);
+    assert.equal(clicks.get("real-media"), 1);
   } finally {
     if (previousDocument) Object.defineProperty(globalThis, "document", previousDocument);
     else delete (globalThis as { document?: Document }).document;

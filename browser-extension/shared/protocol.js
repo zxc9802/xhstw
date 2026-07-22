@@ -128,7 +128,7 @@
     }
     if (hasOwn.call(values.values, "coverType") && !["image", "video"].includes(values.values.coverType)) return false;
     if (hasOwn.call(values.values, "mediaType") && !["图文", "视频"].includes(values.values.mediaType)) return false;
-    return !hasOwn.call(values.values, "media") || isDenseArray(values.values.media, 10, isMedia);
+    return !hasOwn.call(values.values, "media") || isDenseArray(values.values.media, 20, isMedia);
   }
 
   function validatePayload(type, payload) {

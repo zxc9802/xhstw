@@ -84,14 +84,18 @@
   }
 
   function isVisible(element) {
-    if (!element || element.hidden || element.getAttribute("aria-hidden") === "true") return false;
-    try {
-      const style = root.getComputedStyle(element);
-      if (style.display === "none" || style.visibility === "hidden") return false;
-    } catch (_) {
-      // Some test DOMs do not implement layout; attribute checks above remain valid.
+    let current = element;
+    while (current && current.nodeType === 1) {
+      if (current.hidden || current.getAttribute("aria-hidden") === "true") return false;
+      try {
+        const style = root.getComputedStyle(current);
+        if (style.display === "none" || style.visibility === "hidden") return false;
+      } catch (_) {
+        // Some test DOMs do not implement layout; attribute checks above remain valid.
+      }
+      current = current.parentElement;
     }
-    return true;
+    return Boolean(element);
   }
 
   function clickExactLabel(label) {

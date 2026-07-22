@@ -6,6 +6,7 @@
   const NOTE_ID_PATTERN = /(?:^|\/(?:explore|item|search_result)\/|\/discovery\/item\/)([0-9a-f]{16,32})(?:$|[/?#])/i;
   const MAX_FIELD_LENGTH = 2048;
   const MAX_MEDIA_NAME_LENGTH = 300;
+  const MAX_MEDIA_ITEMS = 20;
   const BLOCK_MESSAGES = {
     RATE_LIMITED: "小红书提示访问频繁，请稍后再试",
     CAPTCHA: "请完成小红书安全验证后再试",
@@ -197,7 +198,7 @@
     for (const card of queryAll(document, "section.note-item, .note-item, [data-note-id]")) {
       const links = queryAll(card, 'a[href*="/explore/"], a[href*="/discovery/item/"], a[href*="/item/"], a[href*="/search_result/"]');
       for (const link of links) {
-        if (noteId(attr(link, "href")) === targetId) return link;
+        if (noteId(attr(link, "href")) === targetId && !isHidden(link)) return link;
       }
     }
     return null;
@@ -238,7 +239,7 @@
     const media = [];
     const seen = new Set();
     for (const element of queryAll(document, "img, video")) {
-      if (media.length >= 10) break;
+      if (media.length >= MAX_MEDIA_ITEMS) break;
       const url = mediaUrl(element);
       let ancestor = element;
       let context = "";
@@ -319,7 +320,7 @@
     const result = [];
     for (const item of media) {
       const url = item && boundedHttpsUrl(item.url);
-      if (result.length >= 10 || !item || (item.type !== "image" && item.type !== "video") || !url || seen.has(url)) continue;
+      if (result.length >= MAX_MEDIA_ITEMS || !item || (item.type !== "image" && item.type !== "video") || !url || seen.has(url)) continue;
       seen.add(url);
       result.push({
         type: item.type,
