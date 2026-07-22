@@ -46,8 +46,17 @@ test("approved limits rejects three keywords", () => {
   assert.equal(protocol.validateTask(task({ queries: ["a", "b", "c"] })).ok, false);
 });
 
+test("approved limits rejects zero keywords", () => {
+  assert.equal(protocol.validateTask(task({ queries: [] })).ok, false);
+});
+
 test("approved limits rejects a per-keyword limit above five", () => {
   assert.equal(protocol.validateTask(task({ limitPerQuery: 6 })).ok, false);
+});
+
+test("approved limits rejects a per-keyword limit below one or not an integer", () => {
+  assert.equal(protocol.validateTask(task({ limitPerQuery: 0 })).ok, false);
+  assert.equal(protocol.validateTask(task({ limitPerQuery: 1.5 })).ok, false);
 });
 
 test("approved limits rejects malformed task values", () => {
@@ -58,7 +67,8 @@ test("approved limits rejects malformed task values", () => {
     task({ sortBy: "转发量" }),
     task({ queries: ["   "] }),
     task({ queries: ["x".repeat(41)] }),
-    task({ existingUrls: [123] })
+    task({ existingUrls: [123] }),
+    task({ existingUrls: "https://www.xiaohongshu.com/explore/123" })
   ];
 
   for (const invalidTask of invalidTasks) {
@@ -68,6 +78,18 @@ test("approved limits rejects malformed task values", () => {
 
 test("approved limits rejects unknown task fields", () => {
   assert.equal(protocol.validateTask(task({ extra: true })).ok, false);
+});
+
+test("approved limits rejects missing task fields and non-object tasks", () => {
+  const validTask = task();
+  for (const key of Object.keys(validTask)) {
+    const missingField = Object.fromEntries(Object.entries(validTask).filter(([taskKey]) => taskKey !== key));
+    assert.equal(protocol.validateTask(missingField).ok, false);
+  }
+
+  for (const invalidTask of [null, "task", 1, []]) {
+    assert.equal(protocol.validateTask(invalidTask).ok, false);
+  }
 });
 
 test("envelope validation accepts only a complete matching envelope", () => {
@@ -80,16 +102,35 @@ test("envelope validation accepts only a complete matching envelope", () => {
   assert.equal(protocol.isEnvelope(envelope({ requestId: "bad" }), "page-to-extension"), false);
   assert.equal(protocol.isEnvelope(withoutPayload, "page-to-extension"), false);
   assert.equal(protocol.isEnvelope(envelope({ type: 1 }), "page-to-extension"), false);
+  assert.equal(protocol.isEnvelope(null, "page-to-extension"), false);
+  assert.equal(protocol.isEnvelope([], "page-to-extension"), false);
+  assert.equal(protocol.isEnvelope("message", "page-to-extension"), false);
 });
 
 test("all-url access is absent from the least-privilege manifest", () => {
   const manifest = JSON.parse(readFileSync(new URL("../browser-extension/manifest.template.json", import.meta.url), "utf8"));
 
+  assert.equal(manifest.manifest_version, 3);
+  assert.deepEqual(Object.keys(manifest), [
+    "manifest_version",
+    "name",
+    "version",
+    "description",
+    "permissions",
+    "host_permissions",
+    "background",
+    "content_scripts",
+    "action"
+  ]);
+  assert.equal(manifest.name, "小红书本机抓取助手");
+  assert.equal(manifest.version, "0.1.0");
+  assert.equal(manifest.description, "在用户自己的浏览器中执行内容生产中台下达的小红书公开页面抓取任务。");
   assert.deepEqual(manifest.host_permissions, ["https://www.xiaohongshu.com/*", "__APP_MATCH_PATTERN__"]);
   assert.deepEqual(manifest.permissions, ["storage", "tabs"]);
   assert.equal(JSON.stringify(manifest).includes("<all_urls>"), false);
   assert.equal(JSON.stringify(manifest).includes("cookies"), false);
   assert.equal(JSON.stringify(manifest).includes("history"), false);
+  assert.deepEqual(manifest.background, { service_worker: "background.js" });
   assert.deepEqual(manifest.content_scripts, [
     {
       matches: ["http://127.0.0.1:3000/*", "__APP_MATCH_PATTERN__"],
@@ -102,4 +143,5 @@ test("all-url access is absent from the least-privilege manifest", () => {
       run_at: "document_idle"
     }
   ]);
+  assert.deepEqual(manifest.action, { default_title: "小红书本机抓取助手" });
 });
