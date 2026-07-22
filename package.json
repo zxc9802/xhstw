@@ -28,6 +28,7 @@
   "devDependencies": {
     "eslint": "^9.17.0",
     "eslint-config-next": "^15.1.0",
+    "linkedom": "^0.18.13",
     "tsx": "^4.20.0"
   }
 }
