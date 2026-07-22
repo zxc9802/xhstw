@@ -345,6 +345,13 @@ test("bridge and background use validated messages and visible fixed-tab orchest
   assert.match(background, /QUERY_DELAY_MS\s*=\s*15_000/);
   assert.match(background, /SEND_RETRY_LIMIT\s*=\s*10/);
   assert.match(background, /SEND_RETRY_DELAY_MS\s*=\s*500/);
+  assert.doesNotMatch(background, /navigate\(context,\s*detailUrl\)/);
+  assert.match(background, /action:\s*["']xhs:detail["'][\s\S]*targetUrl:\s*row\.url/);
+  assert.match(background, /SKIPPABLE_DETAIL_CODES\s*=\s*new Set\(\[["']NOTE_UNAVAILABLE["']\]\)/);
+  assert.match(background, /SEARCH_CANDIDATE_LIMIT\s*=\s*5/);
+  assert.match(background, /limit:\s*SEARCH_CANDIDATE_LIMIT/);
+  assert.match(background, /capturedForQuery/);
+  assert.match(background, /skippedUnavailable/);
 
   for (const source of [bridge, background]) {
     for (const forbidden of [/eval\s*\(/, /new\s+Function/, /chrome\.cookies/, /document\.cookie/]) {

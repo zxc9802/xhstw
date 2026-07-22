@@ -8,6 +8,8 @@ const SEND_RETRY_DELAY_MS = 500;
 const ACTIVE_STORAGE_KEY = "xhsActiveTask";
 const COOLDOWN_STORAGE_KEY = "xhsCooldownUntil";
 const BLOCK_CODES = new Set(["LOGIN_REQUIRED", "CAPTCHA", "RATE_LIMITED"]);
+const SKIPPABLE_DETAIL_CODES = new Set(["NOTE_UNAVAILABLE"]);
+const SEARCH_CANDIDATE_LIMIT = 5;
 const protocol = globalThis.XhsExtensionProtocol;
 const collector = globalThis.XhsPageCollector;
 const taskState = globalThis.XhsTaskState;
@@ -200,6 +202,7 @@ async function runCollection(context, task) {
   const total = Math.min(10, task.queries.length * task.limitPerQuery);
   const topics = [];
   const seen = new Set(task.existingUrls.map(noteKey));
+  let skippedUnavailable = 0;
   try {
     post(context, "progress", { stage: "opening", completed: 0, total, message: "正在打开小红书" });
     const tab = await chrome.tabs.create({ url: searchUrl(task.queries[0]), active: true });
@@ -222,28 +225,35 @@ async function runCollection(context, task) {
       const searchResponse = pageResult(await sendToTaskTab(context, {
         action: "xhs:search",
         query,
-        limit: task.limitPerQuery,
+        limit: SEARCH_CANDIDATE_LIMIT,
         mediaType: task.mediaType,
         dateRange: task.dateRange,
         sortBy: task.sortBy
       }), "search");
 
-      for (const row of searchResponse.rows.slice(0, task.limitPerQuery)) {
+      let capturedForQuery = 0;
+      for (const row of searchResponse.rows) {
         ensureRunning(context);
+        if (capturedForQuery >= task.limitPerQuery || topics.length >= total) break;
         if (!row || typeof row !== "object") continue;
-        const detailUrl = collector.normalizeNoteUrl(row.url);
         const key = noteKey(row.url);
-        if (!isXhsUrl(detailUrl) || !key || seen.has(key) || topics.length >= total) continue;
+        if (!isXhsUrl(row.url) || !key || seen.has(key)) continue;
         await wait(context, DETAIL_DELAY_MS);
-        await navigate(context, detailUrl);
         context.state = taskState.advanceTask(context.state, context.requestId, "enriching");
         await persist(context);
-        const detailResponse = pageResult(await sendToTaskTab(context, {
+        const rawDetailResponse = await sendToTaskTab(context, {
           action: "xhs:detail",
-          expectedTitle: typeof row.title === "string" ? row.title.slice(0, 2_048) : ""
-        }), "detail");
+          expectedTitle: typeof row.title === "string" ? row.title.slice(0, 2_048) : "",
+          targetUrl: row.url
+        });
+        if (rawDetailResponse && rawDetailResponse.ok === false && SKIPPABLE_DETAIL_CODES.has(rawDetailResponse.code)) {
+          skippedUnavailable += 1;
+          continue;
+        }
+        const detailResponse = pageResult(rawDetailResponse, "detail");
         const topic = collector.buildTopic(row, detailResponse, new Date());
         topics.push(topic);
+        capturedForQuery += 1;
         seen.add(key);
         post(context, "progress", {
           stage: "enriching",
@@ -258,7 +268,8 @@ async function runCollection(context, task) {
     await closeTaskTab(context);
     await restoreOrigin(context);
     await clearPersisted();
-    post(context, "result", { topics, message: `本机浏览器已抓取 ${topics.length} 条` });
+    const skippedMessage = skippedUnavailable ? `，跳过 ${skippedUnavailable} 条不可浏览内容` : "";
+    post(context, "result", { topics, message: `本机浏览器已抓取 ${topics.length} 条${skippedMessage}` });
     if (active === context) active = null;
   } catch (error) {
     const failure = error instanceof TaskError ? error : new TaskError("PAGE_ACTION_FAILED", error instanceof Error ? error.message.slice(0, 300) : "本机抓取失败");
