@@ -320,3 +320,31 @@ test("manifest is an exact least-privilege template", () => {
   const serialized = JSON.stringify(manifest);
   for (const forbidden of ["<all_urls>", "cookies", "history", "tabs", "localhost", "127.0.0.1"]) assert.equal(serialized.includes(forbidden), false);
 });
+
+test("bridge and background use validated messages and visible fixed-tab orchestration", () => {
+  const bridge = readFileSync(new URL("../browser-extension/app-bridge.js", import.meta.url), "utf8");
+  const background = readFileSync(new URL("../browser-extension/background.js", import.meta.url), "utf8");
+
+  assert.match(bridge, /event\.source\s*!==\s*window/);
+  assert.match(bridge, /event\.origin\s*!==\s*location\.origin/);
+  assert.match(bridge, /XhsExtensionProtocol\.isEnvelope/);
+  assert.match(bridge, /chrome\.runtime\.connect\(\{\s*name:\s*["']xhs-app-bridge["']/);
+  assert.match(bridge, /window\.postMessage\([^,]+,\s*location\.origin\)/);
+  assert.match(bridge, /pagehide/);
+
+  assert.match(background, /chrome\.tabs\.create\(\{\s*url:[^}]+active:\s*true/);
+  assert.match(background, /chrome\.tabs\.update/);
+  assert.match(background, /chrome\.tabs\.onRemoved\.addListener/);
+  assert.match(background, /chrome\.storage\.session/);
+  assert.match(background, /chrome\.storage\.local/);
+  assert.match(background, /DETAIL_DELAY_MS\s*=\s*4_000/);
+  assert.match(background, /QUERY_DELAY_MS\s*=\s*15_000/);
+  assert.match(background, /SEND_RETRY_LIMIT\s*=\s*10/);
+  assert.match(background, /SEND_RETRY_DELAY_MS\s*=\s*500/);
+
+  for (const source of [bridge, background]) {
+    for (const forbidden of [/eval\s*\(/, /new\s+Function/, /chrome\.cookies/, /document\.cookie/]) {
+      assert.equal(forbidden.test(source), false);
+    }
+  }
+});
