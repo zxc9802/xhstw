@@ -192,7 +192,7 @@ git commit -m "feat: migrate image2 to project openapi"
 
 - [ ] **Step 1: Replace old Image 2.0 environment examples**
 
-Keep `IMAGE_MODEL_PROVIDER` and `OPENAI_IMAGE_PARALLEL_REQUESTS`, remove the obsolete `OPENAI_IMAGE_API_KEY`, `OPENAI_IMAGE_MODEL`, `OPENAI_IMAGE_QUALITY`, `OPENAI_IMAGE_FORMAT`, `YUNWU_IMAGE_URL`, and `YUNWU_IMAGE_EDIT_URL` entries, and add:
+Keep `IMAGE_MODEL_PROVIDER` and `OPENAI_IMAGE_PARALLEL_REQUESTS`. Also keep `YUNWU_API_KEY` and `YUNWU_CHAT_URL` because the Nano Banana adapter still uses them. Remove the obsolete Image 2.0 entries `OPENAI_IMAGE_API_KEY`, `OPENAI_IMAGE_MODEL`, `OPENAI_IMAGE_QUALITY`, `OPENAI_IMAGE_FORMAT`, `YUNWU_IMAGE_URL`, and `YUNWU_IMAGE_EDIT_URL`, then add:
 
 ```dotenv
 GPT_IMAGE2_API_URL=http://14.103.147.238:19220/openApi/generate
