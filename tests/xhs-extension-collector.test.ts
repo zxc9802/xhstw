@@ -10,8 +10,9 @@ const collector = require("../browser-extension/shared/collector.js") as {
   detectPageState(document: unknown): { ok: true } | { ok: false; code: string; message: string };
   noteId(value: unknown): string;
   normalizeNoteUrl(value: unknown): string;
+  findDetailRoot(document: Document): Element | null;
   parseSearchCards(document: Document, query: string, limit: number): Array<Record<string, unknown>>;
-  parseDetail(document: Document, expectedTitle: string): Record<string, unknown>;
+  parseDetail(document: Document | Element, expectedTitle: string): Record<string, unknown>;
   buildTopic(row: Record<string, unknown>, detail: Record<string, unknown>, now: Date): Record<string, unknown>;
 };
 const protocol = require("../browser-extension/shared/protocol.js") as {
@@ -74,6 +75,33 @@ test("normalized local-browser topics preserve the protocol wire contract", () =
   assert.equal(topic.priority, "P2");
   assert.equal(topic.sourceAccount, "本机浏览器 · 测试作者");
   assert.equal(protocol.isEnvelope(envelope, "extension-to-page"), true);
+});
+
+test("unavailable detail pages are skippable and never become topics", () => {
+  const detailRoot = collector.findDetailRoot(fixture("xhs-detail-unavailable.html"));
+
+  assert.ok(detailRoot);
+  assert.deepEqual(collector.parseDetail(detailRoot, "搜索卡片标题"), {
+    ok: false,
+    code: "NOTE_UNAVAILABLE",
+    message: "当前笔记暂时无法浏览"
+  });
+});
+
+test("detail parsing requires meaningful content inside a visible detail root", () => {
+  const page = parseHTML(`
+    <main>
+      <h1 class="title">导航标题</h1>
+      <img src="https://ci.xiaohongshu.com/navigation.webp" alt="导航图片">
+    </main>
+  `).document;
+
+  assert.equal(collector.findDetailRoot(page), null);
+  assert.deepEqual(collector.parseDetail(page, "搜索卡片标题"), {
+    ok: false,
+    code: "PAGE_STRUCTURE_CHANGED",
+    message: "未检测到有效的小红书详情内容"
+  });
 });
 
 test("security blocks are recognized before detail parsing", () => {
@@ -168,11 +196,11 @@ test("computed stylesheet-hidden login markup does not block collection", () => 
 
 test("detail media ignores comment and profile ancestor containers", () => {
   const detailDocument = parseHTML(`
-    <main>
+    <div class="note-detail-mask" role="dialog">
       <img src="https://sns-webpic-qc.xhscdn.com/detail-1.webp" alt="正文图">
       <div class="comment"><img src="https://sns-webpic-qc.xhscdn.com/context-3.webp" alt="普通图片"></div>
       <div class="profile"><video src="https://sns-webpic-qc.xhscdn.com/context-4.mp4"></video></div>
-    </main>
+    </div>
   `).document;
   const detail = collector.parseDetail(detailDocument, "通勤防晒实测");
   const urls = (detail.media as Array<{ url: string }>).map((item) => item.url);
@@ -181,7 +209,7 @@ test("detail media ignores comment and profile ancestor containers", () => {
 });
 
 test("detail tags are deduplicated and capped independently from topic output", () => {
-  const detailDocument = parseHTML(`<article class="content">#防晒 #防晒 ${Array.from({ length: 11 }, (_, index) => `#标签${index + 1}`).join(" ")}</article>`).document;
+  const detailDocument = parseHTML(`<div class="note-detail-mask" role="dialog"><article class="content">#防晒 #防晒 ${Array.from({ length: 11 }, (_, index) => `#标签${index + 1}`).join(" ")}</article></div>`).document;
   const detail = collector.parseDetail(detailDocument, "标签测试");
 
   assert.deepEqual(detail.tags, ["防晒", "标签1", "标签2", "标签3", "标签4", "标签5", "标签6", "标签7", "标签8", "标签9"]);
@@ -294,13 +322,18 @@ test("note identifiers and canonical URLs support public Xiaohongshu routes", ()
 
 test("collector tolerates malformed documents and omits absent optional wire fields", () => {
   const empty = parseHTML("<main></main>").document;
-  const video = parseHTML("<h1 class=title>视频笔记</h1><video src=\"https://sns-webpic-qc.xhscdn.com/demo.mp4\"></video>").document;
+  const video = parseHTML("<div class=note-detail-mask role=dialog><h1 class=title>视频笔记</h1><video src=\"https://sns-webpic-qc.xhscdn.com/demo.mp4\"></video></div>").document;
   const detail = collector.parseDetail(video, "备用标题");
   const topic = collector.buildTopic({ title: "没有 ID 的标题", url: "not-a-url", query: "关键词" }, detail, new Date("2026-07-22T00:00:00.000Z"));
 
   assert.doesNotThrow(() => collector.parseSearchCards(empty, "关键词", 5));
   assert.doesNotThrow(() => collector.parseDetail(empty, "备用标题"));
   assert.deepEqual(collector.parseSearchCards(empty, "关键词", 5), []);
+  assert.deepEqual(collector.parseDetail(empty, "备用标题"), {
+    ok: false,
+    code: "PAGE_STRUCTURE_CHANGED",
+    message: "未检测到有效的小红书详情内容"
+  });
   assert.deepEqual(detail.media, [{ type: "video", url: "https://sns-webpic-qc.xhscdn.com/demo.mp4" }]);
   assert.equal(topic.id, "local_xhs_视频笔记");
   assert.equal(topic.likes, "-");

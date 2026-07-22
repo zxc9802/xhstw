@@ -11,6 +11,8 @@
     CAPTCHA: "请完成小红书安全验证后再试",
     LOGIN_REQUIRED: "请先登录小红书后再试"
   };
+  const DETAIL_ROOT_SELECTOR = ".note-detail-mask, [role='dialog'][class*='note'], [role='dialog'] .note-container";
+  const UNAVAILABLE_DETAIL_PATTERN = /^(?:当前笔记暂时无法浏览|笔记已删除|无权限查看|该内容无法查看|内容不存在)$/;
 
   function clean(value) {
     return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
@@ -131,6 +133,27 @@
     return { ok: true };
   }
 
+  function findDetailRoot(input) {
+    try {
+      if (input && input.nodeType === 1 && typeof input.matches === "function" && input.matches(DETAIL_ROOT_SELECTOR) && !isHidden(input)) {
+        return input;
+      }
+    } catch (_) {
+      // Fall through to scoped lookup.
+    }
+    return queryAll(input, DETAIL_ROOT_SELECTOR).find((element) => !isHidden(element)) || null;
+  }
+
+  function unavailableDetailState(root) {
+    for (const element of queryAll(root, "h1, .title, .error, .error-message, .note-error")) {
+      const message = text(element);
+      if (UNAVAILABLE_DETAIL_PATTERN.test(message)) {
+        return { ok: false, code: "NOTE_UNAVAILABLE", message };
+      }
+    }
+    return null;
+  }
+
   function noteId(value) {
     const source = clean(value);
     if (/^[0-9a-f]{16,32}$/i.test(source)) return source;
@@ -240,37 +263,41 @@
     return tags;
   }
 
-  function parseDetail(document, expectedTitle) {
-    const state = detectPageState(document);
+  function parseDetail(input, expectedTitle) {
+    const state = detectPageState(input);
     if (!state.ok) return state;
+    const detailRoot = input && input.nodeType === 1 ? input : findDetailRoot(input);
+    if (!detailRoot) {
+      return { ok: false, code: "PAGE_STRUCTURE_CHANGED", message: "未检测到有效的小红书详情内容" };
+    }
+    const unavailable = unavailableDetailState(detailRoot);
+    if (unavailable) return unavailable;
     try {
-      const title = text(document, "h1.title, .note-title, .title") || clean(expectedTitle);
-      const content = text(document, ".content, .note-content, #detail-desc");
+      const title = text(detailRoot, "h1.title, .note-title, .note-content .title, .title") || clean(expectedTitle);
+      const content = text(detailRoot, ".note-content .desc, .desc, .content, #detail-desc");
+      const author = text(detailRoot, ".author .username, .author-name, .user .name, .username, .author");
+      const publishedAt = text(detailRoot, "time, .date, .published-at");
+      const likes = text(detailRoot, ".like-wrapper .count, .likes, .like-count");
+      const comments = text(detailRoot, ".chat-wrapper .count, .comments, .comment-count");
+      const saves = text(detailRoot, ".collect-wrapper .count, .saves, .collect-count, .favorite-count");
+      const media = parseMedia(detailRoot);
+      if (!title || (!content && !author && !likes && !comments && !saves && !media.length)) {
+        return { ok: false, code: "PAGE_STRUCTURE_CHANGED", message: "未检测到有效的小红书详情内容" };
+      }
       return {
         ok: true,
         title,
-        author: text(document, ".author, .author-name"),
+        author,
         content,
-        publishedAt: text(document, "time, .date, .published-at"),
-        likes: text(document, ".likes, .like-count"),
-        comments: text(document, ".comments, .comment-count"),
-        saves: text(document, ".saves, .collect-count, .favorite-count"),
+        publishedAt,
+        likes,
+        comments,
+        saves,
         tags: extractTags(content),
-        media: parseMedia(document)
+        media
       };
     } catch (_) {
-      return {
-        ok: true,
-        title: clean(expectedTitle),
-        author: "",
-        content: "",
-        publishedAt: "",
-        likes: "",
-        comments: "",
-        saves: "",
-        tags: [],
-        media: []
-      };
+      return { ok: false, code: "PAGE_STRUCTURE_CHANGED", message: "未检测到有效的小红书详情内容" };
     }
   }
 
@@ -337,5 +364,5 @@
     };
   }
 
-  return Object.freeze({ clean, detectPageState, noteId, normalizeNoteUrl, parseSearchCards, parseDetail, buildTopic });
+  return Object.freeze({ clean, detectPageState, noteId, normalizeNoteUrl, findDetailRoot, parseSearchCards, parseDetail, buildTopic });
 });
