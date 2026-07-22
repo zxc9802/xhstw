@@ -122,6 +122,7 @@ test("sends reference images to the project OpenAPI resources field", async () =
       resources: ["https://img.test/source.jpg"],
       params: { resolution: "1K", scale: "1:1" }
     });
+    assert.ok("model" in result);
     assert.equal(result.images?.[0]?.url, "https://img.test/edited.jpg");
   });
 });
@@ -138,6 +139,7 @@ test("retries the project OpenAPI three times after the first failure", async ()
   }, async () => {
     const result = await generateImage({ prompt: "橘猫", count: 1 });
     assert.equal(calls, 4);
+    assert.ok("model" in result);
     assert.equal(result.images?.[0]?.url, "https://img.test/fourth-attempt.jpg");
   });
 });
@@ -168,6 +170,7 @@ test("falls back to Yunwu generation after four project OpenAPI failures", async
     assert.equal(yunwuBody.size, "1024x1536");
     assert.equal(yunwuBody.quality, "high");
     assert.equal(yunwuBody.format, "jpeg");
+    assert.ok("model" in result);
     assert.equal(result.images?.[0]?.url, "https://img.test/yunwu.jpg");
     assert.equal(result.images?.[0]?.provider, "Image 2.0 (Yunwu fallback)");
   });
@@ -204,8 +207,45 @@ test("falls back to Yunwu edits after four project OpenAPI image-edit failures",
     assert.equal(editForm?.get("n"), "1");
     assert.equal(editForm?.get("size"), "1024x1024");
     assert.equal(editForm?.getAll("image").length, 1);
+    assert.ok("model" in result);
     assert.equal(result.images?.[0]?.url, "https://img.test/yunwu-edit.jpg");
     assert.equal(result.images?.[0]?.provider, "Image 2.0 (Yunwu fallback)");
+  });
+});
+
+test("treats an empty aggregate response as a failed attempt", async () => {
+  let calls = 0;
+  await withProvider(async () => {
+    calls += 1;
+    if (calls < 4) return Response.json({ success: true, data: {} });
+    return Response.json({
+      success: true,
+      data: { images: [{ url: "https://img.test/recovered.jpg" }] }
+    });
+  }, async () => {
+    const result = await generateImage({ prompt: "橘猫", count: 1 });
+    assert.equal(calls, 4);
+    assert.ok("model" in result);
+    assert.equal(result.images?.[0]?.url, "https://img.test/recovered.jpg");
+  });
+});
+
+test("reports both provider failures when Yunwu fallback also fails", async () => {
+  let calls = 0;
+  await withProvider(async (url) => {
+    calls += 1;
+    if (String(url) === "http://provider.test/openApi/generate") {
+      return Response.json({ success: false, msg: "当前接口拒绝" });
+    }
+    return Response.json({ error: { message: "Yunwu 拒绝" } }, { status: 500 });
+  }, async () => {
+    process.env.YUNWU_API_KEY = "test-yunwu-key";
+    process.env.YUNWU_IMAGE_URL = "https://yunwu.test/v1/images/generations";
+    await assert.rejects(
+      generateImage({ prompt: "橘猫", count: 1 }),
+      /当前接口重试 3 次后仍失败.*当前接口拒绝.*Yunwu 兜底失败.*Yunwu 拒绝/
+    );
+    assert.equal(calls, 5);
   });
 });
 
@@ -312,20 +352,28 @@ test("polls an asynchronous image task until the provider returns its resource U
 });
 
 test("surfaces the provider message when an asynchronous image task fails", async () => {
-  let calls = 0;
-  await withProvider(async () => {
-    calls += 1;
-    if (calls === 1) {
+  let generateCalls = 0;
+  let queryCalls = 0;
+  await withProvider(async (url) => {
+    if (String(url).endsWith("/generate")) {
+      generateCalls += 1;
       return Response.json({
         success: true,
-        data: { result: { taskId: "failed-task", content: null, resourceUrls: null } }
+        data: {
+          result: {
+            taskId: `failed-task-${generateCalls}`,
+            content: null,
+            resourceUrls: null
+          }
+        }
       });
     }
+    queryCalls += 1;
     return Response.json({
       success: true,
       data: {
         result: {
-          taskId: "failed-task",
+          taskId: `failed-task-${queryCalls}`,
           status: 3,
           message: "内容审核未通过"
         }
@@ -336,20 +384,29 @@ test("surfaces the provider message when an asynchronous image task fails", asyn
       generateImage({ prompt: "橘猫", count: 1 }),
       /Image 2\.0 生成失败：内容审核未通过/
     );
-    assert.equal(calls, 2);
+    assert.equal(generateCalls, 4);
+    assert.equal(queryCalls, 4);
   });
 });
 
 test("stops polling after the configured number of pending responses", async () => {
-  let calls = 0;
-  await withProvider(async () => {
-    calls += 1;
-    if (calls === 1) {
+  let generateCalls = 0;
+  let queryCalls = 0;
+  await withProvider(async (url) => {
+    if (String(url).endsWith("/generate")) {
+      generateCalls += 1;
       return Response.json({
         success: true,
-        data: { result: { taskId: "slow-task", content: null, resourceUrls: null } }
+        data: {
+          result: {
+            taskId: `slow-task-${generateCalls}`,
+            content: null,
+            resourceUrls: null
+          }
+        }
       });
     }
+    queryCalls += 1;
     return Response.json({
       success: true,
       data: { result: { taskId: "slow-task", status: 1, message: "处理中" } }
@@ -357,8 +414,9 @@ test("stops polling after the configured number of pending responses", async () 
   }, async () => {
     await assert.rejects(
       generateImage({ prompt: "橘猫", count: 1 }),
-      /Image 2\.0 生成超时：任务 slow-task/
+      /Image 2\.0 生成超时：任务 slow-task-4/
     );
-    assert.equal(calls, 4);
+    assert.equal(generateCalls, 4);
+    assert.equal(queryCalls, 12);
   });
 });
