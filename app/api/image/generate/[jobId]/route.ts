@@ -11,8 +11,20 @@ function imageProxySignature(source: string, secret: string) {
   return createHmac("sha256", secret).update(source).digest("base64url");
 }
 
+function publicRequestOrigin(request: Request) {
+  const requestUrl = new URL(request.url);
+  const forwardedHost = request.headers.get("X-Forwarded-Host")?.split(",")[0]?.trim();
+  const forwardedProto = request.headers.get("X-Forwarded-Proto")?.split(",")[0]?.trim();
+  if (!forwardedHost || !/^(http|https)$/.test(forwardedProto || "")) return requestUrl.origin;
+  try {
+    return new URL(`${forwardedProto}://${forwardedHost}`).origin;
+  } catch {
+    return requestUrl.origin;
+  }
+}
+
 function imageProxyUrl(request: Request, source: string, secret: string) {
-  const url = new URL(`/api/image/generate/${IMAGE_PROXY_JOB_ID}`, request.url);
+  const url = new URL(`/api/image/generate/${IMAGE_PROXY_JOB_ID}`, publicRequestOrigin(request));
   url.searchParams.set("source", source);
   url.searchParams.set("signature", imageProxySignature(source, secret));
   return url.toString();

@@ -22,13 +22,13 @@ function useImageProxySecret(t: TestContext) {
   });
 }
 
-async function createImage2ProxyUrl() {
+async function createImage2ProxyUrl(origin = "https://app.test", headers?: HeadersInit) {
   const job = createImageGenerationJob();
   await runImageGenerationJob(job.id, async () => ({
     provider: "Image 2.0",
     images: [{ url: "http://provider.test/generated/cat.jpg" }]
   }));
-  const response = await GET(new Request(`https://app.test/api/image/generate/${job.id}`), {
+  const response = await GET(new Request(`${origin}/api/image/generate/${job.id}`, { headers }), {
     params: Promise.resolve({ jobId: job.id })
   });
   const payload = await response.json();
@@ -93,6 +93,17 @@ test("GET rewrites Image 2.0 results to a signed same-origin image URL", async (
   assert.equal(imageUrl.pathname, "/api/image/generate/proxy");
   assert.equal(imageUrl.searchParams.get("source"), "http://provider.test/generated/cat.jpg");
   assert.match(imageUrl.searchParams.get("signature") || "", /^[A-Za-z0-9_-]{43}$/);
+});
+
+test("GET uses the forwarded public origin instead of Zeabur's internal listener", async (t) => {
+  useImageProxySecret(t);
+  const imageUrl = new URL(await createImage2ProxyUrl("https://0.0.0.0:3000", {
+    "X-Forwarded-Host": "xhstw.qycm.top",
+    "X-Forwarded-Proto": "https"
+  }));
+
+  assert.equal(imageUrl.origin, "https://xhstw.qycm.top");
+  assert.equal(imageUrl.pathname, "/api/image/generate/proxy");
 });
 
 test("proxy GET streams a correctly signed provider image", async (t) => {
