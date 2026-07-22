@@ -238,11 +238,19 @@ export default function TopicsPage() {
     extensionClientRef.current = client;
     let mounted = true;
     client.detect().then(() => {
-      if (mounted) setExtensionStatus("ready");
+      if (!mounted) return;
+      setExtensionStatus("ready");
+      setFeedback("本机抓取扩展已连接，抓取结果只会保存在当前浏览器。");
     }).catch((error: unknown) => {
       if (!mounted) return;
       const message = error instanceof Error ? error.message.toLowerCase() : "";
-      setExtensionStatus(message.includes("incompatible") || message.includes("upgrade") ? "outdated" : "missing");
+      if (message.includes("incompatible") || message.includes("upgrade")) {
+        setExtensionStatus("outdated");
+        setFeedback("本机抓取扩展版本过低，请更新扩展后刷新页面。");
+      } else {
+        setExtensionStatus("missing");
+        setFeedback("未检测到本机抓取扩展，请安装或启用扩展后刷新页面。");
+      }
     });
     return () => {
       mounted = false;

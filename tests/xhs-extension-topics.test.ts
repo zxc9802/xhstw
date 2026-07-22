@@ -67,3 +67,10 @@ test("topic page uses one local extension task and direct browser media URLs", (
   assert.doesNotMatch(source, /fetch\(["']\/api\/topics\/opencli-xhs/);
   assert.doesNotMatch(source, /\/api\/topics\/media-proxy/);
 });
+
+test("extension detection replaces the temporary checking feedback", () => {
+  const source = readFileSync(new URL("../app/topics/page.tsx", import.meta.url), "utf8");
+
+  assert.match(source, /client\.detect\(\)\.then\(\(\) => \{[\s\S]*?setExtensionStatus\("ready"\);[\s\S]*?setFeedback\("本机抓取扩展已连接/);
+  assert.match(source, /\.catch\(\(error: unknown\) => \{[\s\S]*?setExtensionStatus\([\s\S]*?setFeedback\("未检测到本机抓取扩展/);
+});
