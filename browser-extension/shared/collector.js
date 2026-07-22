@@ -191,6 +191,18 @@
     return current || attr(element, "src");
   }
 
+  function findSearchCardLink(document, targetUrl) {
+    const targetId = noteId(targetUrl);
+    if (!targetId) return null;
+    for (const card of queryAll(document, "section.note-item, .note-item, [data-note-id]")) {
+      const links = queryAll(card, 'a[href*="/explore/"], a[href*="/discovery/item/"], a[href*="/item/"], a[href*="/search_result/"]');
+      for (const link of links) {
+        if (noteId(attr(link, "href")) === targetId) return link;
+      }
+    }
+    return null;
+  }
+
   function parseSearchCards(document, queryText, limit) {
     try {
       const maximum = Math.min(5, Math.max(0, Number.isInteger(limit) ? limit : 0));
@@ -364,5 +376,5 @@
     };
   }
 
-  return Object.freeze({ clean, detectPageState, noteId, normalizeNoteUrl, findDetailRoot, parseSearchCards, parseDetail, buildTopic });
+  return Object.freeze({ clean, detectPageState, noteId, normalizeNoteUrl, findDetailRoot, findSearchCardLink, parseSearchCards, parseDetail, buildTopic });
 });

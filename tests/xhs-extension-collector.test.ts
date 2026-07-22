@@ -345,6 +345,51 @@ test("collector tolerates malformed documents and omits absent optional wire fie
   assert.equal(Object.hasOwn((detail.media as Array<Record<string, unknown>>)[0]!, "posterUrl"), false);
 });
 
+test("detail actions click only the matching search card, parse its dialog, and close it", async () => {
+  const page = fixture("xhs-search-click-detail.html");
+  const target = page.querySelector('a[href*="6a59e17a000000001d00ca02"]') as HTMLAnchorElement;
+  const other = page.querySelector('a[href*="6a5b67b2000000000f039c00"]') as HTMLAnchorElement;
+  const dialog = page.querySelector(".note-detail-mask") as HTMLElement;
+  const close = page.querySelector('[aria-label="关闭"]') as HTMLButtonElement;
+  let targetClicks = 0;
+  let otherClicks = 0;
+  target.addEventListener("click", (event) => {
+    event.preventDefault();
+    targetClicks += 1;
+    dialog.hidden = false;
+  });
+  other.addEventListener("click", (event) => {
+    event.preventDefault();
+    otherClicks += 1;
+  });
+  close.addEventListener("click", () => { dialog.hidden = true; });
+
+  const actions = require("../browser-extension/xhs-content.js") as {
+    handleMessage(message: unknown): Promise<Record<string, unknown>>;
+  };
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const previousCollector = Object.getOwnPropertyDescriptor(globalThis, "XhsPageCollector");
+  Object.defineProperty(globalThis, "document", { configurable: true, value: page });
+  Object.defineProperty(globalThis, "XhsPageCollector", { configurable: true, value: collector });
+  try {
+    const response = await actions.handleMessage({
+      action: "xhs:detail",
+      expectedTitle: "目标笔记",
+      targetUrl: "https://www.xiaohongshu.com/search_result/6a59e17a000000001d00ca02?xsec_token=first"
+    });
+    assert.equal(targetClicks, 1);
+    assert.equal(otherClicks, 0);
+    assert.equal(response.ok, true);
+    assert.equal(response.title, "目标笔记");
+    assert.equal(dialog.hidden, true);
+  } finally {
+    if (previousDocument) Object.defineProperty(globalThis, "document", previousDocument);
+    else delete (globalThis as { document?: Document }).document;
+    if (previousCollector) Object.defineProperty(globalThis, "XhsPageCollector", previousCollector);
+    else delete (globalThis as { XhsPageCollector?: unknown }).XhsPageCollector;
+  }
+});
+
 test("xhs content actions accept only the two fixed commands", () => {
   const source = readFileSync(new URL("../browser-extension/xhs-content.js", import.meta.url), "utf8");
   const actions = require("../browser-extension/xhs-content.js") as {
@@ -361,7 +406,17 @@ test("xhs content actions accept only the two fixed commands", () => {
     dateRange: "一周内",
     sortBy: "点赞量"
   }).ok, true);
-  assert.equal(actions.validateMessage({ action: "xhs:detail", expectedTitle: "通勤防晒实测" }).ok, true);
+  assert.equal(actions.validateMessage({
+    action: "xhs:detail",
+    expectedTitle: "通勤防晒实测",
+    targetUrl: "https://www.xiaohongshu.com/search_result/64f0a1b2c3d4e5f60718293a?xsec_token=abc"
+  }).ok, true);
+  assert.equal(actions.validateMessage({ action: "xhs:detail", expectedTitle: "通勤防晒实测" }).ok, false);
+  assert.equal(actions.validateMessage({
+    action: "xhs:detail",
+    expectedTitle: "通勤防晒实测",
+    targetUrl: "https://example.test/search_result/64f0a1b2c3d4e5f60718293a"
+  }).ok, false);
   assert.equal(actions.validateMessage({ action: "xhs:search", query: "防晒", limit: 6, mediaType: "全部", dateRange: "全部", sortBy: "浏览量" }).ok, false);
   assert.equal(actions.validateMessage({ action: "xhs:detail", expectedTitle: "标题", script: "alert(1)" }).ok, false);
   assert.equal(actions.validateMessage({ action: "xhs:execute", code: "alert(1)" }).ok, false);

@@ -8,12 +8,13 @@
 })(globalThis, function (root) {
   const SEARCH_TIMEOUT_MS = 20_000;
   const DETAIL_TIMEOUT_MS = 10_000;
+  const DETAIL_CLOSE_TIMEOUT_MS = 3_000;
   const FILTER_WAIT_MS = 1_600;
   const SCROLL_WAIT_MS = 900;
   const SCROLL_LIMIT = 6;
   const POLL_MS = 250;
   const SEARCH_KEYS = ["action", "query", "limit", "mediaType", "dateRange", "sortBy"];
-  const DETAIL_KEYS = ["action", "expectedTitle"];
+  const DETAIL_KEYS = ["action", "expectedTitle", "targetUrl"];
   const MEDIA_TYPES = new Set(["全部", "图文", "视频"]);
   const DATE_RANGES = new Set(["全部", "一天内", "一周内", "半年内"]);
   const SORTS = new Set(["浏览量", "点赞量", "评论量", "收藏量"]);
@@ -38,12 +39,26 @@
       }
       if (isExactRecord(message, DETAIL_KEYS) && message.action === "xhs:detail") {
         if (typeof message.expectedTitle !== "string" || message.expectedTitle.length > 2_048) return { ok: false };
+        if (!isXhsNoteUrl(message.targetUrl)) return { ok: false };
         return { ok: true, action: message.action, value: message };
       }
     } catch (_) {
       return { ok: false };
     }
     return { ok: false };
+  }
+
+  function isXhsNoteUrl(value) {
+    if (typeof value !== "string" || value.length > 2_048) return false;
+    try {
+      const url = new URL(value);
+      const xhsHost = url.hostname === "www.xiaohongshu.com" || url.hostname.endsWith(".xiaohongshu.com");
+      const notePath = /\/(?:explore|item|search_result)\/[0-9a-f]{16,32}$/i.test(url.pathname)
+        || /\/discovery\/item\/[0-9a-f]{16,32}$/i.test(url.pathname);
+      return url.protocol === "https:" && xhsHost && notePath;
+    } catch (_) {
+      return false;
+    }
   }
 
   function delay(milliseconds) {
@@ -118,13 +133,31 @@
     return { ok: true, rows };
   }
 
+  function closeDetail(detailRoot) {
+    const button = detailRoot.querySelector("button[aria-label='关闭'], [aria-label='关闭'], .close-circle, .close");
+    if (!button || !isVisible(button)) throw new Error("DETAIL_CLOSE_FAILED");
+    button.click();
+  }
+
   async function detail(message) {
+    const link = collector().findSearchCardLink(root.document, message.targetUrl);
+    if (!link || !isVisible(link)) {
+      return { ok: false, code: "PAGE_STRUCTURE_CHANGED", message: "未找到对应的小红书搜索卡片" };
+    }
+    link.click();
     await waitUntil(() => {
       if (!root.document.body) return false;
       if (!documentState().ok) return true;
-      return Boolean(root.document.querySelector("h1.title, .note-title, .title, img, video"));
+      return Boolean(collector().findDetailRoot(root.document));
     }, DETAIL_TIMEOUT_MS);
-    return collector().parseDetail(root.document, message.expectedTitle);
+    const state = documentState();
+    if (!state.ok) return state;
+    const detailRoot = collector().findDetailRoot(root.document);
+    if (!detailRoot) return { ok: false, code: "PAGE_STRUCTURE_CHANGED", message: "未检测到小红书详情弹层" };
+    const response = collector().parseDetail(detailRoot, message.expectedTitle);
+    closeDetail(detailRoot);
+    await waitUntil(() => !collector().findDetailRoot(root.document), DETAIL_CLOSE_TIMEOUT_MS);
+    return response;
   }
 
   async function handleMessage(message) {
