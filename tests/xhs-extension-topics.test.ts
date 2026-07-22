@@ -66,6 +66,7 @@ test("topic page uses one local extension task and direct browser media URLs", (
   assert.match(source, /每个关键词最多抓取 5 条/);
   assert.doesNotMatch(source, /fetch\(["']\/api\/topics\/opencli-xhs/);
   assert.doesNotMatch(source, /\/api\/topics\/media-proxy/);
+  assert.equal(source.match(/referrerPolicy="no-referrer"/g)?.length, 2);
 });
 
 test("extension detection replaces the temporary checking feedback", () => {

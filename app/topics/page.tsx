@@ -526,7 +526,7 @@ export default function TopicsPage() {
             <div className="flex min-h-0 flex-1 items-center justify-center bg-slate-950 p-4">
               {previewMedia.type === "video"
                 ? <video src={previewMedia.url} poster={displayMediaUrl(previewMedia.posterUrl)} className="max-h-[78vh] max-w-full bg-black object-contain" controls autoPlay />
-                : <img src={displayMediaUrl(previewMedia.url)} alt={previewMedia.name || previewMedia.title} className="max-h-[78vh] max-w-full object-contain" />}
+                : <img src={displayMediaUrl(previewMedia.url)} alt={previewMedia.name || previewMedia.title} className="max-h-[78vh] max-w-full object-contain" referrerPolicy="no-referrer" />}
             </div>
           </div>
         </div>
@@ -592,7 +592,7 @@ function TopicCard({
                 <button key={`${media.url}-${index}`} onClick={() => onMediaPreview(media)} className="relative h-56 w-44 shrink-0 overflow-hidden rounded-md border border-line bg-slate-100 text-left transition hover:border-orange-300 hover:shadow-sm">
                   {media.type === "video" && !media.posterUrl
                     ? <video src={media.url} className="h-full w-full object-cover" muted playsInline preload="metadata" />
-                    : <img src={displayMediaUrl(media.type === "video" ? media.posterUrl || media.url : media.url)} alt={media.name || item.title} className="h-full w-full object-cover" />}
+                    : <img src={displayMediaUrl(media.type === "video" ? media.posterUrl || media.url : media.url)} alt={media.name || item.title} className="h-full w-full object-cover" referrerPolicy="no-referrer" />}
                   <span className="absolute left-2 top-2 rounded bg-slate-950/70 px-2 py-0.5 text-xs font-medium text-white">{media.type === "video" ? "视频" : "图片"}</span>
                 </button>
               ))}
