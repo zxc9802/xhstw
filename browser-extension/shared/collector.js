@@ -4,6 +4,8 @@
   else root.XhsPageCollector = collector;
 })(globalThis, function () {
   const NOTE_ID_PATTERN = /(?:^|\/(?:explore|item|search_result)\/|\/discovery\/item\/)([0-9a-f]{16,32})(?:$|[/?#])/i;
+  const MAX_FIELD_LENGTH = 2048;
+  const MAX_MEDIA_NAME_LENGTH = 300;
   const BLOCK_MESSAGES = {
     RATE_LIMITED: "小红书提示访问频繁，请稍后再试",
     CAPTCHA: "请完成小红书安全验证后再试",
@@ -44,11 +46,27 @@
     }
   }
 
+  function bounded(value, maximum) {
+    return clean(value).slice(0, maximum);
+  }
+
+  function boundedHttpsUrl(value) {
+    const url = clean(value);
+    return url.length <= MAX_FIELD_LENGTH && isHttpsUrl(url) ? url : "";
+  }
+
   function isHidden(element) {
     let current = element;
     while (current && current.nodeType === 1) {
       const style = attr(current, "style").toLowerCase();
       if ((typeof current.hasAttribute === "function" && current.hasAttribute("hidden")) || attr(current, "aria-hidden").toLowerCase() === "true" || /(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\s*(?:!important\s*)?(?:;|$)/.test(style)) return true;
+      try {
+        const view = current.ownerDocument && current.ownerDocument.defaultView;
+        const computed = view && typeof view.getComputedStyle === "function" ? view.getComputedStyle(current) : null;
+        if (computed && (clean(computed.display).toLowerCase() === "none" || clean(computed.visibility).toLowerCase() === "hidden")) return true;
+      } catch (_) {
+        // Attribute and inline-style checks remain available without layout support.
+      }
       current = current.parentElement;
     }
     return false;
@@ -98,6 +116,9 @@
     const pageText = visibleText(input);
     const textState = pageStateFromText(pageText, true);
     if (textState) return textState;
+    if (/安全限制/.test(pageText) && /访问频繁\s*[，,]?\s*请稍后再试/.test(pageText) && /300013/.test(pageText) && /返回首页/.test(pageText)) {
+      return { ok: false, code: "RATE_LIMITED", message: BLOCK_MESSAGES.RATE_LIMITED };
+    }
     if (hasVisible(input, ".rate-limit, .security, [data-rate-limit], [data-security]") && /300013|安全限制|访问频繁/.test(pageText)) {
       return { ok: false, code: "RATE_LIMITED", message: BLOCK_MESSAGES.RATE_LIMITED };
     }
@@ -149,7 +170,7 @@
 
   function parseSearchCards(document, queryText, limit) {
     try {
-      const maximum = Math.max(0, Number.isInteger(limit) ? limit : 0);
+      const maximum = Math.min(5, Math.max(0, Number.isInteger(limit) ? limit : 0));
       const rows = [];
       for (const card of queryAll(document, "section.note-item, .note-item, [data-note-id]")) {
         if (rows.length >= maximum) break;
@@ -206,20 +227,35 @@
     return media;
   }
 
+  function extractTags(content) {
+    const tags = [];
+    const seen = new Set();
+    const matches = clean(content).match(/#[^\s#，。！？、,.!?;；:：()（）【】[\]{}<>]+/g) || [];
+    for (const match of matches) {
+      const tag = bounded(match.slice(1), 100);
+      if (!tag || seen.has(tag) || tags.length >= 10) continue;
+      seen.add(tag);
+      tags.push(tag);
+    }
+    return tags;
+  }
+
   function parseDetail(document, expectedTitle) {
     const state = detectPageState(document);
     if (!state.ok) return state;
     try {
       const title = text(document, "h1.title, .note-title, .title") || clean(expectedTitle);
+      const content = text(document, ".content, .note-content, #detail-desc");
       return {
         ok: true,
         title,
         author: text(document, ".author, .author-name"),
-        content: text(document, ".content, .note-content, #detail-desc"),
+        content,
         publishedAt: text(document, "time, .date, .published-at"),
         likes: text(document, ".likes, .like-count"),
         comments: text(document, ".comments, .comment-count"),
         saves: text(document, ".saves, .collect-count, .favorite-count"),
+        tags: extractTags(content),
         media: parseMedia(document)
       };
     } catch (_) {
@@ -232,6 +268,7 @@
         likes: "",
         comments: "",
         saves: "",
+        tags: [],
         media: []
       };
     }
@@ -242,13 +279,14 @@
     const seen = new Set();
     const result = [];
     for (const item of media) {
-      if (result.length >= 10 || !item || (item.type !== "image" && item.type !== "video") || !isHttpsUrl(item.url) || seen.has(item.url)) continue;
-      seen.add(item.url);
+      const url = item && boundedHttpsUrl(item.url);
+      if (result.length >= 10 || !item || (item.type !== "image" && item.type !== "video") || !url || seen.has(url)) continue;
+      seen.add(url);
       result.push({
         type: item.type,
-        url: item.url,
-        ...(clean(item.name) ? { name: clean(item.name) } : {}),
-        ...(isHttpsUrl(item.posterUrl) ? { posterUrl: item.posterUrl } : {})
+        url,
+        ...(bounded(item.name, MAX_MEDIA_NAME_LENGTH) ? { name: bounded(item.name, MAX_MEDIA_NAME_LENGTH) } : {}),
+        ...(boundedHttpsUrl(item.posterUrl) ? { posterUrl: boundedHttpsUrl(item.posterUrl) } : {})
       });
     }
     return result;
@@ -264,37 +302,38 @@
   function buildTopic(row, detail, now) {
     const sourceRow = row && typeof row === "object" ? row : {};
     const sourceDetail = detail && typeof detail === "object" ? detail : {};
-    const title = clean(sourceDetail.title) || clean(sourceRow.title) || "未命名笔记";
+    const title = bounded(sourceDetail.title, MAX_FIELD_LENGTH) || bounded(sourceRow.title, MAX_FIELD_LENGTH) || "未命名笔记";
+    const rowCoverUrl = boundedHttpsUrl(sourceRow.coverUrl);
     let media = safeMedia(sourceDetail.media);
-    if (!media.length && isHttpsUrl(sourceRow.coverUrl)) {
-      media = [{ type: "image", url: sourceRow.coverUrl, name: "搜索封面" }];
+    if (!media.length && rowCoverUrl) {
+      media = [{ type: "image", url: rowCoverUrl, name: "搜索封面" }];
     }
-    const coverUrl = isHttpsUrl(sourceRow.coverUrl) ? sourceRow.coverUrl : (media[0] && media[0].url);
-    const cover = media.find((item) => item.url === coverUrl);
+    const cover = media[0];
+    const coverUrl = cover ? cover.url : rowCoverUrl;
     const url = normalizeNoteUrl(sourceRow.url);
-    const normalizedUrl = noteId(sourceRow.url) && isHttpsUrl(url) ? url : "";
-    const author = clean(sourceDetail.author) || clean(sourceRow.author) || "未知作者";
-    const timestamp = now instanceof Date && !Number.isNaN(now.valueOf()) ? now.toISOString() : String(now);
+    const normalizedUrl = noteId(sourceRow.url) ? boundedHttpsUrl(url) : "";
+    const author = bounded(sourceDetail.author, MAX_FIELD_LENGTH) || bounded(sourceRow.author, MAX_FIELD_LENGTH) || "未知作者";
+    const timestamp = bounded(now instanceof Date && !Number.isNaN(now.valueOf()) ? now.toISOString() : String(now), MAX_FIELD_LENGTH) || "-";
 
     return {
-      id: topicId(sourceRow, title),
+      id: bounded(topicId(sourceRow, title), MAX_FIELD_LENGTH),
       platform: "小红书",
       title,
       contentType: media.some((item) => item.type === "video") ? "视频" : "图文",
-      likes: clean(sourceDetail.likes) || clean(sourceRow.likes) || "-",
-      views: clean(sourceDetail.views) || clean(sourceRow.views) || "-",
-      comments: clean(sourceDetail.comments) || clean(sourceRow.comments) || "-",
-      saves: clean(sourceDetail.saves) || clean(sourceRow.saves) || "-",
+      likes: bounded(sourceDetail.likes, MAX_FIELD_LENGTH) || bounded(sourceRow.likes, MAX_FIELD_LENGTH) || "-",
+      views: bounded(sourceDetail.views, MAX_FIELD_LENGTH) || bounded(sourceRow.views, MAX_FIELD_LENGTH) || "-",
+      comments: bounded(sourceDetail.comments, MAX_FIELD_LENGTH) || bounded(sourceRow.comments, MAX_FIELD_LENGTH) || "-",
+      saves: bounded(sourceDetail.saves, MAX_FIELD_LENGTH) || bounded(sourceRow.saves, MAX_FIELD_LENGTH) || "-",
       risk: "低",
       priority: "P2",
       status: "pending",
-      sourceAccount: `本机浏览器 · ${author}`,
+      sourceAccount: bounded(`本机浏览器 · ${author}`, MAX_FIELD_LENGTH),
       fetchedAt: timestamp,
       ...(normalizedUrl ? { url: normalizedUrl } : {}),
       ...(coverUrl ? { coverUrl, coverType: cover ? cover.type : "image" } : {}),
       ...(media.length ? { media, mediaType: media.some((item) => item.type === "video") ? "视频" : "图文" } : {}),
-      ...(clean(sourceRow.query) ? { keyword: clean(sourceRow.query) } : {}),
-      ...(clean(sourceDetail.content) ? { parsedContent: clean(sourceDetail.content) } : {})
+      ...(bounded(sourceRow.query, MAX_FIELD_LENGTH) ? { keyword: bounded(sourceRow.query, MAX_FIELD_LENGTH) } : {}),
+      ...(bounded(sourceDetail.content, MAX_FIELD_LENGTH) ? { parsedContent: bounded(sourceDetail.content, MAX_FIELD_LENGTH) } : {})
     };
   }
 

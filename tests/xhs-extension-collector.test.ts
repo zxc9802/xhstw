@@ -61,6 +61,7 @@ test("normalized local-browser topics preserve the protocol wire contract", () =
     likes: "1.2万",
     comments: "88",
     saves: "456",
+    tags: ["防晒"],
     media: [
       { type: "image", url: "https://sns-webpic-qc.xhscdn.com/detail-1.webp", name: "防晒测试图一" },
       { type: "image", url: "https://sns-webpic-qc.xhscdn.com/detail-2.webp", name: "防晒测试图二" }
@@ -118,6 +119,23 @@ test("security markers accept direct strings without blocking ordinary note pros
   assert.deepEqual(collector.detectPageState("客服文档引用“请完成验证”这句提示，供运营核对话术。"), { ok: true });
 });
 
+test("screenshot-style rate-limit screens require visible marker co-occurrence", () => {
+  const rateLimitScreen = parseHTML(`
+    <main>
+      <h1>安全限制</h1>
+      <p>访问频繁，请稍后再试</p>
+      <small>300013</small>
+      <button>返回首页</button>
+    </main>
+  `).document;
+
+  assert.deepEqual(collector.detectPageState(rateLimitScreen), {
+    ok: false,
+    code: "RATE_LIMITED",
+    message: "小红书提示访问频繁，请稍后再试"
+  });
+});
+
 test("hidden login markup does not block collection", () => {
   const hiddenLogin = parseHTML("<section hidden class=\"login-container\"><input type=password></section><article>公开正文</article>").document;
   const ariaHiddenLogin = parseHTML("<section aria-hidden=\"true\" class=\"login-container\"><input type=password></section><article>公开正文</article>").document;
@@ -134,6 +152,20 @@ test("hidden login markup does not block collection", () => {
   assert.deepEqual(collector.detectPageState(hiddenRateLimit), { ok: true });
 });
 
+test("computed stylesheet-hidden login markup does not block collection", () => {
+  const classHiddenLogin = parseHTML("<section class=\"login-container css-hidden\"><input type=password></section><article>公开正文</article>").document;
+  Object.defineProperty(classHiddenLogin, "defaultView", {
+    configurable: true,
+    value: {
+      getComputedStyle(element: Element) {
+        return { display: element.classList.contains("css-hidden") ? "none" : "block", visibility: "visible" };
+      }
+    }
+  });
+
+  assert.deepEqual(collector.detectPageState(classHiddenLogin), { ok: true });
+});
+
 test("detail media ignores comment and profile ancestor containers", () => {
   const detailDocument = parseHTML(`
     <main>
@@ -146,6 +178,13 @@ test("detail media ignores comment and profile ancestor containers", () => {
   const urls = (detail.media as Array<{ url: string }>).map((item) => item.url);
 
   assert.deepEqual(urls, ["https://sns-webpic-qc.xhscdn.com/detail-1.webp"]);
+});
+
+test("detail tags are deduplicated and capped independently from topic output", () => {
+  const detailDocument = parseHTML(`<article class="content">#防晒 #防晒 ${Array.from({ length: 11 }, (_, index) => `#标签${index + 1}`).join(" ")}</article>`).document;
+  const detail = collector.parseDetail(detailDocument, "标签测试");
+
+  assert.deepEqual(detail.tags, ["防晒", "标签1", "标签2", "标签3", "标签4", "标签5", "标签6", "标签7", "标签8", "标签9"]);
 });
 
 test("search covers become protocol-safe media when detail media is absent", () => {
@@ -169,6 +208,76 @@ test("search covers become protocol-safe media when detail media is absent", () 
   assert.equal(topic.coverUrl, "https://sns-webpic-qc.xhscdn.com/search-cover.webp");
   assert.equal(topic.coverType, "image");
   assert.equal(topic.mediaType, "图文");
+  assert.equal(protocol.isEnvelope(envelope, "extension-to-page"), true);
+});
+
+test("detail media supplies the cover before a search-card cover", () => {
+  const topic = collector.buildTopic({
+    title: "视频封面优先级",
+    url: "https://www.xiaohongshu.com/explore/64f0a1b2c3d4e5f60718293a",
+    coverUrl: "https://sns-webpic-qc.xhscdn.com/search-cover.webp"
+  }, {
+    title: "视频封面优先级",
+    author: "测试作者",
+    media: [{ type: "video", url: "https://sns-webpic-qc.xhscdn.com/detail-video.mp4" }]
+  }, new Date("2026-07-22T00:00:00.000Z"));
+
+  assert.equal(topic.coverUrl, "https://sns-webpic-qc.xhscdn.com/detail-video.mp4");
+  assert.equal(topic.coverType, "video");
+  assert.equal(topic.mediaType, "视频");
+});
+
+test("search collection never returns more than five rows", () => {
+  const idPrefix = "64f0a1b2c3d4e5f607182";
+  const searchDocument = parseHTML(Array.from({ length: 6 }, (_, index) => `
+    <section class="note-item">
+      <a href="/explore/${idPrefix}${index.toString(16).padStart(2, "0")}"><span class="title">第 ${index + 1} 条</span></a>
+    </section>
+  `).join("")).document;
+
+  assert.equal(collector.parseSearchCards(searchDocument, "防晒", 99).length, 5);
+});
+
+test("oversized topic inputs serialize within the extension protocol bounds", () => {
+  const oversized = "x".repeat(3_000);
+  const topic = collector.buildTopic({
+    title: oversized,
+    url: `https://www.xiaohongshu.com/explore/64f0a1b2c3d4e5f60718293a?xsec_token=${oversized}`,
+    coverUrl: `https://sns-webpic-qc.xhscdn.com/${oversized}.webp`,
+    query: oversized
+  }, {
+    title: oversized,
+    author: oversized,
+    content: oversized,
+    likes: oversized,
+    comments: oversized,
+    saves: oversized,
+    media: Array.from({ length: 12 }, (_, index) => ({
+      type: "image",
+      url: `https://sns-webpic-qc.xhscdn.com/media-${index}.webp`,
+      name: oversized,
+      posterUrl: `https://sns-webpic-qc.xhscdn.com/${oversized}.webp`
+    }))
+  }, new Date("2026-07-22T00:00:00.000Z"));
+  const wireTopic = JSON.parse(JSON.stringify(topic));
+  const envelope = {
+    channel: protocol.CHANNEL,
+    protocolVersion: protocol.PROTOCOL_VERSION,
+    direction: "extension-to-page",
+    type: "result",
+    requestId: REQUEST_ID,
+    payload: { topics: [wireTopic], message: "完成" }
+  };
+  const media = topic.media as Array<Record<string, unknown>>;
+
+  assert.equal(String(topic.title).length, 2048);
+  assert.equal(String(topic.sourceAccount).length <= 2048, true);
+  assert.equal(String(topic.keyword).length, 2048);
+  assert.equal(String(topic.parsedContent).length, 2048);
+  assert.equal(Object.hasOwn(topic, "url"), false);
+  assert.equal(media.length, 10);
+  assert.equal(String(media[0]?.name).length, 300);
+  assert.equal(Object.hasOwn(media[0]!, "posterUrl"), false);
   assert.equal(protocol.isEnvelope(envelope, "extension-to-page"), true);
 });
 
