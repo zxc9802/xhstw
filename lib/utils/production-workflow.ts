@@ -30,7 +30,8 @@ export function reorderAssignedImages(
   assignments: Record<number, string[]>,
   workIndex: number,
   sourceUrl: string,
-  targetUrl: string
+  targetUrl: string,
+  placement: "before" | "after" = "before"
 ): Record<number, string[]> {
   const current = assignments[workIndex] ?? [];
   const sourceIndex = current.indexOf(sourceUrl);
@@ -39,7 +40,8 @@ export function reorderAssignedImages(
 
   const reordered = [...current];
   reordered.splice(sourceIndex, 1);
-  reordered.splice(reordered.indexOf(targetUrl), 0, sourceUrl);
+  const targetIndexAfterRemoval = reordered.indexOf(targetUrl);
+  reordered.splice(targetIndexAfterRemoval + (placement === "after" ? 1 : 0), 0, sourceUrl);
   return { ...assignments, [workIndex]: reordered };
 }
 

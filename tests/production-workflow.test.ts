@@ -25,6 +25,8 @@ test("new work keeps copy fields but starts with no selected keywords", () => {
 
 test("selected images preserve a user-defined horizontal order", () => {
   assert.deepEqual(reorderAssignedImages({ 0: ["a", "b", "c"] }, 0, "c", "a"), { 0: ["c", "a", "b"] });
+  assert.deepEqual(reorderAssignedImages({ 0: ["a", "b", "c"] }, 0, "a", "b", "after"), { 0: ["b", "a", "c"] });
+  assert.deepEqual(reorderAssignedImages({ 0: ["a", "b", "c"] }, 0, "a", "c", "after"), { 0: ["b", "c", "a"] });
 });
 
 test("unknown image reorder inputs keep the current logical order", () => {

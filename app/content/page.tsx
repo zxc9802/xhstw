@@ -8,7 +8,7 @@ import { DataTable } from "@/components/ui/DataTable";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { accounts, copyCandidates, imagePlans, referenceSources, titleCandidates, trafficTags, videoExtraction, videoScriptRows, videoShots } from "@/lib/mock/data";
-import { imageExtension, writeBlobFiles, type WritableDirectoryLike } from "@/lib/utils/browser-file-export";
+import { directoryPickerFailure, imageExtension, writeBlobFiles, type WritableDirectoryLike } from "@/lib/utils/browser-file-export";
 import { cn } from "@/lib/utils/cn";
 import { imageRefToUploadUrl, isStoredImageRef, persistImageFile, persistImageRefs, resolveImageRef } from "@/lib/utils/image-store";
 import { appendMaterialLibrary, createLibraryAsset, getAssetBlob, readMaterialLibrary, type LibraryAsset } from "@/lib/utils/material-library";
@@ -674,10 +674,10 @@ export default function ContentPage() {
 
   useEffect(() => {
     if (!imageDraftHydrated) return;
-    saveVersionedState(window.localStorage, KEYWORD_LIBRARY_STORAGE_KEY, LOCAL_STATE_VERSION, {
+    if (!saveVersionedState(window.localStorage, KEYWORD_LIBRARY_STORAGE_KEY, LOCAL_STATE_VERSION, {
       customKeywords,
       hiddenKeywords
-    });
+    })) setFeedback("关键词库无法写入浏览器本地存储，请检查浏览器存储空间或隐私设置。");
   }, [customKeywords, hiddenKeywords, imageDraftHydrated]);
 
   useEffect(() => {
@@ -686,7 +686,7 @@ export default function ContentPage() {
       ? { ...productImage, url: productImage.storageUrl ?? productImage.url, storageUrl: productImage.storageUrl ?? productImage.url }
       : null;
     const storedPlanSourceMap = Object.fromEntries(Object.entries(planSourceMap).map(([page, assets]) => [page, assets.map(imageSourceForStorage)]));
-    saveVersionedState<ImageProductionDraft>(window.localStorage, IMAGE_DRAFT_STORAGE_KEY, LOCAL_STATE_VERSION, {
+    if (!saveVersionedState<ImageProductionDraft>(window.localStorage, IMAGE_DRAFT_STORAGE_KEY, LOCAL_STATE_VERSION, {
       imageStep,
       selectedBatchDrafts,
       activeBatchIndex,
@@ -712,7 +712,7 @@ export default function ContentPage() {
       planCountMap,
       planProviderMap,
       parsedReference
-    });
+    })) setFeedback("图片生成草稿无法写入浏览器本地存储，请检查浏览器存储空间或隐私设置。");
   }, [activeBatchIndex, activeImagePage, contentType, draftCopy, draftTitle, generateCount, imageCount, imageDraftHydrated, imagePlanItems, imagePromptText, imageProvider, imageSize, imageStep, libraryImageSources, localImageSources, parsedReference, planCountMap, planPromptMap, planProviderMap, planSizeMap, planSourceMap, productImage, productImageSources, selectedBatchDrafts, selectedProductId, targetAccount]);
 
   const [selectedVideoTitle, setSelectedVideoTitle] = useState("夏天通勤补防晒，喷雾到底怎么用才不花妆");
@@ -1489,11 +1489,18 @@ export default function ContentPage() {
       const result = data?.data ?? data;
       const imageUrls = extractGeneratedImageUrls((result as { images?: unknown } | undefined)?.images ?? result);
       if (!imageUrls.length && !provider.includes("仅生成提示词")) throw new Error("模型接口已返回，但未解析到图片 URL / base64。请查看服务日志中的 raw 返回格式。");
-      const nextImages = (imageUrls.length ? imageUrls : Array.from({ length: count }, (_, index) => mockSvg(`P${page}-${index + 1}`, index % 2 ? "#ecfeff" : "#fff7ed"))).slice(0, count).map((url, index) => ({
-        id: `generated_${page}_${Date.now()}_${index}`,
-        planPage: page,
-        url,
-        provider
+      const generatedAt = Date.now();
+      const nextImages = await Promise.all((imageUrls.length ? imageUrls : Array.from({ length: count }, (_, index) => mockSvg(`P${page}-${index + 1}`, index % 2 ? "#ecfeff" : "#fff7ed"))).slice(0, count).map(async (url, index) => {
+        const blob = await imageUrlToBlob(url);
+        const storageUrl = await persistImageFile(blob, `generated_${page}_${generatedAt}_${index}`);
+        const resolvedUrl = await resolveImageRef(storageUrl);
+        return {
+          id: `generated_${page}_${generatedAt}_${index}`,
+          planPage: page,
+          url: resolvedUrl || storageUrl,
+          storageUrl,
+          provider
+        };
       }));
       if (previousPageImageUrls.length) {
         setFinishedImageAssignments((items) => {
@@ -1675,8 +1682,8 @@ export default function ContentPage() {
     });
   };
 
-  const reorderFinishedImageAssignment = (workIndex: number, sourceUrl: string, targetUrl: string) => {
-    setFinishedImageAssignments((items) => reorderAssignedImages(items, workIndex, sourceUrl, targetUrl));
+  const reorderFinishedImageAssignment = (workIndex: number, sourceUrl: string, targetUrl: string, placement: "before" | "after") => {
+    setFinishedImageAssignments((items) => reorderAssignedImages(items, workIndex, sourceUrl, targetUrl, placement));
   };
 
   const uploadFinishedImages = async (workIndex: number, files: FileList | null) => {
@@ -1710,7 +1717,16 @@ export default function ContentPage() {
         setSavePath(handle.name);
         setFeedback(`已选择本地保存文件夹：${handle.name}`);
         return;
-      } catch {
+      } catch (error) {
+        const failure = directoryPickerFailure(error);
+        if (failure === "cancelled") {
+          setFeedback("已取消选择本地文件夹。");
+          return;
+        }
+        setDirectoryPickerSupported(false);
+        setLocalSaveDirectory(null);
+        setSavePath("浏览器默认下载目录");
+        setFeedback(failure === "denied" ? "未获得文件夹写入权限，已切换为浏览器下载；点击确认保存即可。" : "无法打开所选文件夹，已切换为浏览器下载；点击确认保存即可。");
         return;
       }
     }
@@ -1754,7 +1770,7 @@ export default function ContentPage() {
           platformBadge: "RED",
           account: accounts.find((account) => account.id === targetAccount)?.name ?? "本地账号",
           type: contentType,
-          mediaCount: `${mediaUrls.length || imagePlanItems.length} 张图`,
+          mediaCount: `${mediaUrls.length} 张图`,
           mediaKind: kind,
           mediaUrls,
           pages: imagePages.map((page) => ({
@@ -2668,9 +2684,11 @@ export default function ContentPage() {
                                     draggable
                                     onDragStart={() => setDraggingFinishedImageUrl(imageKey)}
                                     onDragOver={(event) => event.preventDefault()}
-                                    onDrop={(event) => {
-                                      event.preventDefault();
-                                      if (draggingFinishedImageUrl) reorderFinishedImageAssignment(workIndex, draggingFinishedImageUrl, imageKey);
+                                     onDrop={(event) => {
+                                       event.preventDefault();
+                                       const bounds = event.currentTarget.getBoundingClientRect();
+                                       const placement = event.clientX < bounds.left + bounds.width / 2 ? "before" : "after";
+                                       if (draggingFinishedImageUrl) reorderFinishedImageAssignment(workIndex, draggingFinishedImageUrl, imageKey, placement);
                                       setDraggingFinishedImageUrl(null);
                                     }}
                                     onDragEnd={() => setDraggingFinishedImageUrl(null)}

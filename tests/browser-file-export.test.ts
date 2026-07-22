@@ -1,11 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  directoryPickerFailure,
   imageExtension,
   safeFileName,
   writeBlobFiles,
   type WritableDirectoryLike
 } from "../lib/utils/browser-file-export";
+
+test("distinguishes a cancelled folder picker from denied permissions", () => {
+  assert.equal(directoryPickerFailure(new DOMException("cancelled", "AbortError")), "cancelled");
+  assert.equal(directoryPickerFailure(new DOMException("denied", "NotAllowedError")), "denied");
+  assert.equal(directoryPickerFailure(new Error("unexpected")), "failed");
+});
 
 test("sanitizes Windows-unsafe filename characters", () => {
   assert.equal(safeFileName("作品: A/B?"), "作品_ A_B_");

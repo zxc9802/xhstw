@@ -215,6 +215,7 @@ function downloadFinishedImage(blob: Blob, name: string) {
 }
 
 function realMediaUrls(item: FinishedContent) {
+  if (item.mediaKind !== "image") return [];
   return [
     ...(item.mediaUrls ?? []),
     ...(item.pages ?? []).flatMap((page) => page.images ?? [])

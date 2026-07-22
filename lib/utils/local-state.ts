@@ -10,5 +10,10 @@ export function loadVersionedState<T>(storage: StorageLike, key: string, version
 }
 
 export function saveVersionedState<T>(storage: StorageLike, key: string, version: number, data: T) {
-  storage.setItem(key, JSON.stringify({ version, data }));
+  try {
+    storage.setItem(key, JSON.stringify({ version, data }));
+    return true;
+  } catch {
+    return false;
+  }
 }

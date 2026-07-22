@@ -21,6 +21,17 @@ test("versioned state round trips through browser-like storage", () => {
   assert.deepEqual(loadVersionedState(storage, "draft", 1, { title: "默认" }), { title: "保留" });
 });
 
+test("failed storage writes are reported without throwing from an autosave effect", () => {
+  const storage: StorageLike = {
+    getItem: () => null,
+    setItem: () => {
+      throw new DOMException("quota exceeded", "QuotaExceededError");
+    }
+  };
+
+  assert.equal(saveVersionedState(storage, "draft", 1, { title: "too large" }), false);
+});
+
 test("version mismatch and malformed JSON fall back safely", () => {
   const { storage, values } = createMemoryStorage();
   saveVersionedState(storage, "draft", 1, { title: "旧版" });

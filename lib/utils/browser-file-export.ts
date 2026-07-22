@@ -16,6 +16,13 @@ export type BlobFile = {
   blob: Blob;
 };
 
+export function directoryPickerFailure(error: unknown): "cancelled" | "denied" | "failed" {
+  const name = error && typeof error === "object" && "name" in error ? String((error as { name?: unknown }).name) : "";
+  if (name === "AbortError") return "cancelled";
+  if (name === "NotAllowedError" || name === "SecurityError") return "denied";
+  return "failed";
+}
+
 export function safeFileName(value: string) {
   const sanitized = value.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim().replace(/[. ]+$/g, "");
   return sanitized || "未命名";

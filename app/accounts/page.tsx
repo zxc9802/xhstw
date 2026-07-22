@@ -41,6 +41,7 @@ export default function AccountsPage() {
   const [keyword, setKeyword] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<AccountWithOwner | null>(null);
+  const [editingAvatarPreview, setEditingAvatarPreview] = useState("");
   const [feedback, setFeedback] = useState("小红书账号资料仅做本地管理，不登录平台，不抓取后台。");
 
   useEffect(() => {
@@ -51,7 +52,9 @@ export default function AccountsPage() {
 
   useEffect(() => {
     if (!accountsHydrated) return;
-    saveVersionedState(window.localStorage, ACCOUNT_STORAGE_KEY, ACCOUNT_STORAGE_VERSION, accountRows);
+    if (!saveVersionedState(window.localStorage, ACCOUNT_STORAGE_KEY, ACCOUNT_STORAGE_VERSION, accountRows)) {
+      setFeedback("账号资料无法写入浏览器本地存储，请检查浏览器存储空间或隐私设置。");
+    }
   }, [accountRows, accountsHydrated]);
 
   useEffect(() => {
@@ -97,14 +100,19 @@ export default function AccountsPage() {
   const saveEditing = () => {
     if (!editing) return;
     setAccountRows((items) => items.map((item) => item.id === editing.id ? editing : item));
+    if (editingAvatarPreview) setResolvedAvatarMap((items) => ({ ...items, [editing.id]: editingAvatarPreview }));
     setEditing(null);
+    setEditingAvatarPreview("");
     setFeedback(`已保存账号内容方向：${editing.name}`);
   };
 
   const deleteAccount = (account: AccountWithOwner) => {
     if (!window.confirm(`确认删除账号“${account.name}”吗？删除后该账号资料不会再次出现。`)) return;
     setAccountRows((items) => items.filter((item) => item.id !== account.id));
-    if (editing?.id === account.id) setEditing(null);
+    if (editing?.id === account.id) {
+      setEditing(null);
+      setEditingAvatarPreview("");
+    }
     setFeedback(`已删除账号：${account.name}`);
   };
 
@@ -119,7 +127,7 @@ export default function AccountsPage() {
       const avatar = await persistImageFile(file, `account_avatar_${editing.id}_${Date.now()}`);
       const previewUrl = await resolveImageRef(avatar);
       setEditing({ ...editing, avatar });
-      setResolvedAvatarMap((items) => ({ ...items, [editing.id]: previewUrl || URL.createObjectURL(file) }));
+      setEditingAvatarPreview(previewUrl || URL.createObjectURL(file));
       setFeedback(`已选择新头像：${file.name}，点击保存后长期生效。`);
     } catch (error) {
       setFeedback(error instanceof Error ? `头像上传失败：${error.message}` : "头像上传失败，请重试。");
@@ -127,6 +135,14 @@ export default function AccountsPage() {
   };
 
   const avatarUrlFor = (account: AccountWithOwner) => resolvedAvatarMap[account.id] || (!isStoredImageRef(account.avatar) ? account.avatar : "") || defaultAvatar(account.name);
+  const openAccountEditor = (account: AccountWithOwner) => {
+    setEditing(account);
+    setEditingAvatarPreview(avatarUrlFor(account));
+  };
+  const closeAccountEditor = () => {
+    setEditing(null);
+    setEditingAvatarPreview("");
+  };
 
   return (
     <>
@@ -170,7 +186,7 @@ export default function AccountsPage() {
                 <td className="px-4 py-3"><StatusBadge status={item.status === "pending" ? "pending" : item.status} label={accountStatusLabel(item.status)} /></td>
                 <td className="whitespace-nowrap px-4 py-3 text-muted">{item.autoTopicEnabled ? "开启" : "关闭"}</td>
                 <td className="min-w-56 px-4 py-3 text-muted">{item.remark}</td>
-                <td className="px-4 py-3"><div className="flex gap-2"><Button onClick={() => setEditing(item)}>编辑</Button><Button variant="danger" onClick={() => deleteAccount(item)}>删除</Button></div></td>
+                <td className="px-4 py-3"><div className="flex gap-2"><Button onClick={() => openAccountEditor(item)}>编辑</Button><Button variant="danger" onClick={() => deleteAccount(item)}>删除</Button></div></td>
               </tr>
             ))}
           </DataTable>
@@ -178,7 +194,7 @@ export default function AccountsPage() {
       </Card>
 
       {addOpen ? <AddAccountModal onClose={() => setAddOpen(false)} onSubmit={addAccount} /> : null}
-      {editing ? <EditAccountModal account={editing} avatarUrl={avatarUrlFor(editing)} onAvatarUpload={uploadEditingAvatar} onChange={setEditing} onClose={() => setEditing(null)} onSave={saveEditing} /> : null}
+      {editing ? <EditAccountModal account={editing} avatarUrl={editingAvatarPreview || avatarUrlFor(editing)} onAvatarUpload={uploadEditingAvatar} onChange={setEditing} onClose={closeAccountEditor} onSave={saveEditing} /> : null}
     </>
   );
 }
