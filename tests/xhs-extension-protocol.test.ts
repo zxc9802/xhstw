@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const require = createRequire(import.meta.url);
@@ -346,5 +350,42 @@ test("bridge and background use validated messages and visible fixed-tab orchest
     for (const forbidden of [/eval\s*\(/, /new\s+Function/, /chrome\.cookies/, /document\.cookie/]) {
       assert.equal(forbidden.test(source), false);
     }
+  }
+});
+
+test("packages a scoped extension for one exact app origin", { skip: process.platform !== "win32" }, () => {
+  const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
+  const version = `0.1.${process.pid % 60_000}`;
+  const script = join(repositoryRoot, "scripts", "package-xhs-browser-extension.ps1");
+  const staging = join(repositoryRoot, "exports", `xhs-browser-extension-${version}`);
+  const zip = `${staging}.zip`;
+  const expanded = mkdtempSync(join(tmpdir(), "xhs-extension-package-"));
+
+  try {
+    for (const invalidOrigin of ["http://studio.example.test", "https://studio.example.test/admin", "https://studio.example.test/?token=bad"]) {
+      assert.throws(() => execFileSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-AppOrigin", invalidOrigin, "-Version", version], { cwd: repositoryRoot, stdio: "pipe" }));
+    }
+    execFileSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-AppOrigin", "https://studio.example.test", "-Version", version], { cwd: repositoryRoot, stdio: "pipe" });
+    assert.equal(existsSync(zip), true);
+    execFileSync("powershell.exe", ["-NoProfile", "-Command", "Expand-Archive -LiteralPath $env:XHS_TEST_ZIP -DestinationPath $env:XHS_TEST_EXPANDED -Force"], {
+      stdio: "pipe",
+      env: { ...process.env, XHS_TEST_ZIP: zip, XHS_TEST_EXPANDED: expanded }
+    });
+
+    const manifestText = readFileSync(join(expanded, "manifest.json"), "utf8");
+    const manifest = JSON.parse(manifestText);
+    assert.equal(manifestText.includes("__APP_MATCH_PATTERN__"), false);
+    assert.equal(manifest.version, version);
+    assert.deepEqual(manifest.host_permissions, ["https://www.xiaohongshu.com/*", "https://studio.example.test/*"]);
+    assert.deepEqual(manifest.content_scripts[0].matches, ["https://studio.example.test/*"]);
+    for (const relativePath of ["background.js", "app-bridge.js", "xhs-content.js", "shared/protocol.js", "shared/collector.js", "shared/task-state.js", "安装说明.md"]) {
+      assert.equal(existsSync(join(expanded, relativePath)), true, `${relativePath} should be packaged`);
+    }
+    const permissions = JSON.stringify([manifest.permissions, manifest.host_permissions]);
+    for (const forbidden of ["cookies", "history", "<all_urls>"]) assert.equal(permissions.includes(forbidden), false);
+  } finally {
+    rmSync(expanded, { recursive: true, force: true });
+    rmSync(staging, { recursive: true, force: true });
+    rmSync(zip, { force: true });
   }
 });
