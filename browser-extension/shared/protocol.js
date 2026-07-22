@@ -143,7 +143,7 @@
     }
     if (type === "progress") {
       const values = inspectExactRecord(payload, ["stage", "completed", "total", "message"]);
-      return values && ["opening", "searching", "enriching"].includes(values.stage) && Number.isInteger(values.completed) && values.completed >= 0 && Number.isInteger(values.total) && values.total >= 0 && values.completed <= values.total && isBoundedString(values.message, 300) ? { ok: true } : { ok: false };
+      return values && ["opening", "searching", "enriching"].includes(values.stage) && Number.isSafeInteger(values.completed) && values.completed >= 0 && Number.isSafeInteger(values.total) && values.total >= 0 && values.total <= 10 && values.completed <= values.total && isBoundedString(values.message, 300) ? { ok: true } : { ok: false };
     }
     if (type === "result") {
       const values = inspectExactRecord(payload, ["topics", "message"]);

@@ -628,9 +628,18 @@ Also expose this `buildTopic` implementation:
 function buildTopic(row, detail, now) {
   const resolvedDetail = detail && detail.ok ? detail : {};
   const media = Array.isArray(resolvedDetail.media) && resolvedDetail.media.length
-    ? resolvedDetail.media
+    ? resolvedDetail.media.map((item) => ({
+        type: item.type,
+        url: item.url,
+        ...(item.name ? { name: item.name } : {}),
+        ...(item.posterUrl ? { posterUrl: item.posterUrl } : {})
+      }))
     : (row.coverUrl ? [{ type: "image", url: row.coverUrl, name: "搜索封面" }] : []);
   const id = noteId(row.url) || clean(row.title).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").slice(0, 40);
+  const url = normalizeNoteUrl(row.url);
+  const authorUrl = row.authorUrl || "";
+  const coverUrl = media[0]?.url || row.coverUrl || "";
+  const keyword = row.query || "";
   return {
     id: "local_xhs_" + id,
     platform: "小红书",
@@ -645,13 +654,13 @@ function buildTopic(row, detail, now) {
     status: "pending",
     sourceAccount: "本机浏览器 · " + (resolvedDetail.author || row.author || "小红书公开页面"),
     fetchedAt: resolvedDetail.publishedAt || row.publishedAt || now,
-    url: normalizeNoteUrl(row.url),
-    authorUrl: row.authorUrl || undefined,
-    coverUrl: media[0]?.url || row.coverUrl || undefined,
+    ...(url ? { url } : {}),
+    ...(authorUrl ? { authorUrl } : {}),
+    ...(coverUrl ? { coverUrl } : {}),
     coverType: media[0]?.type || "image",
     media,
     mediaType: media.some((item) => item.type === "video") ? "视频" : "图文",
-    keyword: row.query,
+    ...(keyword ? { keyword } : {}),
     parsedContent: resolvedDetail.content || ""
   };
 }

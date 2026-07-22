@@ -188,6 +188,8 @@ test("extension envelopes require exact allowed types and payloads", () => {
     extensionEnvelope("pong", { version: "" }),
     extensionEnvelope("progress", { stage: "bad", completed: 1, total: 2, message: "ok" }),
     extensionEnvelope("progress", { stage: "searching", completed: 3, total: 2, message: "ok" }),
+    extensionEnvelope("progress", { stage: "searching", completed: Number.MAX_SAFE_INTEGER + 1, total: Number.MAX_SAFE_INTEGER + 1, message: "ok" }),
+    extensionEnvelope("progress", { stage: "searching", completed: 1, total: 11, message: "ok" }),
     extensionEnvelope("result", { topics: [topic({ platform: "抖音" })], message: "完成" }),
     extensionEnvelope("result", { topics: [null], message: "完成" }),
     extensionEnvelope("error", { code: "", message: "请先登录" }),
@@ -282,6 +284,21 @@ test("result topics and media require exact safe object shapes", () => {
     assert.equal(protocol.isEnvelope(extensionEnvelope("result", { topics: [invalidTopic], message: "完成" }), "extension-to-page"), false);
   }
   assert.equal(getterCalls, 0);
+});
+
+test("result topics use JSON wire omission for optional fields", () => {
+  const plannedTopic = topic({
+    authorUrl: undefined,
+    coverUrl: undefined,
+    media: [{ type: "image", url: "https://ci.xiaohongshu.com/image.jpg", posterUrl: undefined }]
+  });
+  const wireTopic = JSON.parse(JSON.stringify(plannedTopic));
+
+  assert.equal(Object.hasOwn(wireTopic, "authorUrl"), false);
+  assert.equal(Object.hasOwn(wireTopic, "coverUrl"), false);
+  assert.equal(Object.hasOwn(wireTopic.media[0], "posterUrl"), false);
+  assert.equal(protocol.isEnvelope(extensionEnvelope("result", { topics: [wireTopic], message: "完成" }), "extension-to-page"), true);
+  assert.equal(protocol.isEnvelope(extensionEnvelope("result", { topics: [topic({ authorUrl: undefined })], message: "完成" }), "extension-to-page"), false);
 });
 
 test("manifest is an exact least-privilege template", () => {

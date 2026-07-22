@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import test from "node:test";
 import {
   createXhsExtensionClient,
@@ -6,6 +7,11 @@ import {
   XHS_EXTENSION_PROTOCOL_VERSION,
   type XhsCollectTask
 } from "../lib/xhs-extension-client";
+
+const require = createRequire(import.meta.url);
+const protocol = require("../browser-extension/shared/protocol.js") as {
+  isEnvelope(message: unknown, direction: string): boolean;
+};
 
 type MessageListener = (event: MessageEvent) => void;
 const REQUEST_ID = "11111111-1111-4111-8111-111111111111";
@@ -213,6 +219,21 @@ test("cancels the local collection and ignores late extension messages", async (
     client.dispose();
     await assert.rejects(collected);
   }
+});
+
+test("uses the canonical empty cancel envelope accepted by the extension protocol", async () => {
+  const target = new FakeMessageTarget();
+  const client = createXhsExtensionClient(target, 100);
+  const collected = client.collect(collectTask());
+  const rejected = assert.rejects(collected, /canceled/i);
+
+  await client.cancel(REQUEST_ID);
+
+  const cancelEnvelope = target.messages[1]?.message;
+  assert.equal(protocol.isEnvelope(cancelEnvelope, "page-to-extension"), true);
+  assert.deepEqual((cancelEnvelope as { payload: unknown }).payload, {});
+  await rejected;
+  client.dispose();
 });
 
 test("rejects malformed pong and error payloads without throwing from the listener", async () => {

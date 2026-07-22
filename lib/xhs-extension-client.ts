@@ -186,7 +186,7 @@ export function createXhsExtensionClient(target: ExtensionTarget = getDefaultTar
     },
     cancel(requestId) {
       if (disposed) return Promise.reject(new Error("The XHS extension client was disposed."));
-      send("cancel", requestId, { requestId });
+      send("cancel", requestId, {});
       if (pending.get(requestId)?.expectedTerminalType === "result") {
         rejectPending(requestId, new Error("XHS extension collection was canceled."));
       }
