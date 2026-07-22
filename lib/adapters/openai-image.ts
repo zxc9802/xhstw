@@ -11,39 +11,89 @@ type ImageInput = {
   sourceImageUrls?: string[];
 };
 
-const YUNWU_IMAGE_URL = process.env.YUNWU_IMAGE_URL || "https://yunwu.ai/v1/images/generations";
-const YUNWU_IMAGE_EDIT_URL = process.env.YUNWU_IMAGE_EDIT_URL || YUNWU_IMAGE_URL.replace(/\/generations\/?$/, "/edits");
-const IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-2";
-const MAX_IMAGES_PER_REQUEST = 4;
+type Image2Config = {
+  apiUrl: string;
+  projectCode: string;
+  accessKey: string;
+  secretKey: string;
+  modelId: string;
+  resolution: string;
+};
+
 const MAX_IMAGES_PER_RUN = 10;
 const MAX_PARALLEL_IMAGE_REQUESTS = Math.max(1, Math.min(10, Number(process.env.OPENAI_IMAGE_PARALLEL_REQUESTS) || 4));
+const MAX_RESPONSE_DEPTH = 6;
+const RESPONSE_CONTAINER_KEYS = new Set(["data", "image", "images", "result", "results", "output", "outputs"]);
+const IMAGE_URL_KEYS = new Set(["url", "imageurl", "image_url"]);
+const IMAGE_BASE64_KEYS = new Set(["b64_json", "base64", "image_base64", "image_data"]);
 export const IMAGE_PROVIDER_TIMEOUT_MS = 5 * 60 * 1000;
 
 function asRecord(input: unknown): ImageInput {
   return input && typeof input === "object" ? input as ImageInput : {};
 }
 
-export function imageSizeFromRatio(ratio = "1:1") {
-  const value = ratio.trim();
-  if (value === "3:4") return "1024x1536";
-  if (value === "9:16") return "1024x1792";
-  if (value === "4:3") return "1536x1024";
-  if (value === "16:9") return "1792x1024";
-  if (/^\d+x\d+$/i.test(value)) return value.toLowerCase();
-  return "1024x1024";
+function image2Config(): Image2Config {
+  return {
+    apiUrl: process.env.GPT_IMAGE2_API_URL || "http://14.103.147.238:19220/openApi/generate",
+    projectCode: process.env.GPT_IMAGE2_PROJECT_CODE || "",
+    accessKey: process.env.GPT_IMAGE2_ACCESS_KEY || "",
+    secretKey: process.env.GPT_IMAGE2_SECRET_KEY || "",
+    modelId: process.env.GPT_IMAGE2_MODEL_ID || "gpt-image2-low",
+    resolution: process.env.GPT_IMAGE2_RESOLUTION || "1K"
+  };
 }
 
-function extractImageUrls(data: unknown): string[] {
-  const record = data && typeof data === "object" ? data as Record<string, unknown> : {};
-  const rows = Array.isArray(record.data) ? record.data : Array.isArray(record.images) ? record.images : [];
-  return rows.flatMap((item) => {
-    if (typeof item === "string") return [item];
-    const row = item && typeof item === "object" ? item as Record<string, unknown> : {};
-    if (typeof row.url === "string") return [row.url];
-    if (typeof row.b64_json === "string") return [`data:image/jpeg;base64,${row.b64_json}`];
-    if (typeof row.base64 === "string") return [`data:image/jpeg;base64,${row.base64}`];
-    return [];
-  });
+export function imageScaleFromSize(size = "1:1") {
+  const value = size.trim().toLowerCase();
+  if (["1:1", "3:4", "4:3", "9:16", "16:9"].includes(value)) return value;
+  return ({
+    "1024x1024": "1:1",
+    "1024x1536": "3:4",
+    "1536x1024": "4:3",
+    "1024x1792": "9:16",
+    "1792x1024": "16:9"
+  } as Record<string, string>)[value] || "1:1";
+}
+
+function extractImageUrls(input: unknown) {
+  const urls: string[] = [];
+
+  function visit(value: unknown, key: string, depth: number) {
+    if (depth > MAX_RESPONSE_DEPTH || value === null || value === undefined) return;
+    const normalizedKey = key.toLowerCase();
+
+    if (typeof value === "string") {
+      if (IMAGE_BASE64_KEYS.has(normalizedKey)) {
+        if (value.startsWith("data:image/")) urls.push(value);
+        else if (value) urls.push(`data:image/jpeg;base64,${value}`);
+        return;
+      }
+      const imageContext = IMAGE_URL_KEYS.has(normalizedKey) || RESPONSE_CONTAINER_KEYS.has(normalizedKey);
+      if (imageContext && (/^https?:\/\//i.test(value) || value.startsWith("data:image/"))) urls.push(value);
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      if (!RESPONSE_CONTAINER_KEYS.has(normalizedKey)) return;
+      value.forEach((item) => visit(item, normalizedKey, depth + 1));
+      return;
+    }
+
+    if (typeof value !== "object") return;
+    for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
+      const childNormalizedKey = childKey.toLowerCase();
+      if (
+        RESPONSE_CONTAINER_KEYS.has(childNormalizedKey)
+        || IMAGE_URL_KEYS.has(childNormalizedKey)
+        || IMAGE_BASE64_KEYS.has(childNormalizedKey)
+      ) {
+        visit(childValue, childNormalizedKey, depth + 1);
+      }
+    }
+  }
+
+  visit(input, "data", 0);
+  return [...new Set(urls)];
 }
 
 function mockImages(input: ImageInput) {
@@ -55,85 +105,38 @@ function mockImages(input: ImageInput) {
   return { provider: "mock", input, images };
 }
 
-function parseDataUrl(url: string) {
-  const match = url.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
-  if (!match) return null;
-  const mime = match[1];
-  const ext = mime.split("/")[1]?.replace("jpeg", "jpg") || "jpg";
-  return { mime, ext, buffer: Buffer.from(match[2], "base64") };
-}
-
-async function imageUrlToBlob(url: string, index: number) {
-  const parsed = parseDataUrl(url);
-  if (parsed) {
-    return {
-      blob: new Blob([parsed.buffer], { type: parsed.mime }),
-      fileName: `reference-${index + 1}.${parsed.ext}`
-    };
+function providerError(data: unknown, fallback: string) {
+  if (!data || typeof data !== "object") return fallback;
+  const record = data as Record<string, unknown>;
+  for (const key of ["msg", "message", "error"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value;
+    if (value && typeof value === "object") return JSON.stringify(value);
   }
-
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`参考图下载失败：HTTP ${response.status}`);
-  const contentType = response.headers.get("content-type") || "image/jpeg";
-  const arrayBuffer = await response.arrayBuffer();
-  const ext = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
-  return {
-    blob: new Blob([arrayBuffer], { type: contentType }),
-    fileName: `reference-${index + 1}.${ext}`
-  };
+  return fallback;
 }
 
-async function generateImageEdit(body: ImageInput, apiKey: string, promptParts: string[], count: number) {
-  const form = new FormData();
-  form.append("model", IMAGE_MODEL);
-  form.append("prompt", [
-    ...promptParts,
-    "这是基于参考图的图片编辑任务，不是重新生成新产品。必须保留原产品本体、品牌文字、瓶身/包装形状、比例、透视、材质和主体位置；除用户明确要求修改的背景或局部元素外，其他都不变。"
-  ].join("\n"));
-  form.append("n", String(Math.max(1, Math.min(MAX_IMAGES_PER_REQUEST, count))));
-  form.append("size", imageSizeFromRatio(body.size));
-  form.append("quality", "high");
-
-  const sourceUrls = body.sourceImageUrls ?? [];
-  const blobs = await Promise.all(sourceUrls.map((url, index) => imageUrlToBlob(url, index)));
-  blobs.forEach(({ blob, fileName }) => {
-    form.append("image", blob, fileName);
-  });
-
-  const response = await fetch(YUNWU_IMAGE_EDIT_URL, {
-    method: "POST",
-    headers: {
-      Accept: "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: form,
-    signal: AbortSignal.timeout(IMAGE_PROVIDER_TIMEOUT_MS)
-  });
-  const data = await response.json().catch(() => ({}));
-  logImageProviderResponse({
-    provider: "Image 2.0",
-    operation: "edit",
-    endpoint: YUNWU_IMAGE_EDIT_URL,
-    status: response.status,
-    response: data
-  });
-  if (!response.ok) {
-    const error = data && typeof data === "object" && "error" in data ? JSON.stringify((data as { error: unknown }).error) : `HTTP ${response.status}`;
-    throw new Error(`Image 2.0 编辑失败：${error}`);
-  }
-
-  return data;
-}
-
-async function generateImageBatch(payload: Record<string, unknown>, apiKey: string) {
-  const response = await fetch(YUNWU_IMAGE_URL, {
+async function requestImage(config: Image2Config, prompt: string, scale: string) {
+  const response = await fetch(config.apiUrl, {
     method: "POST",
     headers: {
       Accept: "application/json",
       "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
+      projectCode: config.projectCode,
+      "X-Access-Key": config.accessKey,
+      "X-Secret-Key": config.secretKey
     },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({
+      modelId: config.modelId,
+      abilityType: "IMAGE",
+      prompt,
+      payload: {
+        params: {
+          resolution: config.resolution,
+          scale
+        }
+      }
+    }),
     signal: AbortSignal.timeout(IMAGE_PROVIDER_TIMEOUT_MS)
   });
 
@@ -141,13 +144,16 @@ async function generateImageBatch(payload: Record<string, unknown>, apiKey: stri
   logImageProviderResponse({
     provider: "Image 2.0",
     operation: "generate",
-    endpoint: YUNWU_IMAGE_URL,
+    endpoint: config.apiUrl,
     status: response.status,
     response: data
   });
+
   if (!response.ok) {
-    const error = data && typeof data === "object" && "error" in data ? JSON.stringify((data as { error: unknown }).error) : `HTTP ${response.status}`;
-    throw new Error(`Image 2.0 生成失败：${error}`);
+    throw new Error(`Image 2.0 生成失败：${providerError(data, `HTTP ${response.status}`)}`);
+  }
+  if (data && typeof data === "object" && (data as Record<string, unknown>).success === false) {
+    throw new Error(`Image 2.0 生成失败：${providerError(data, "服务商拒绝了请求")}`);
   }
   return data;
 }
@@ -166,87 +172,46 @@ async function runWithConcurrency<T>(tasks: Array<() => Promise<T>>, concurrency
   return results;
 }
 
-async function collectImageResults(
-  requestedCount: number,
-  runBatch: (count: number) => Promise<unknown>,
-  batchSizes: number[]
-) {
-  const results: unknown[] = [];
-  const runTasks = (sizes: number[]) => runWithConcurrency(
-    sizes.map((batchCount) => async () => runBatch(batchCount)),
-    MAX_PARALLEL_IMAGE_REQUESTS
-  );
-
-  results.push(...await runTasks(batchSizes));
-
-  let imageCount = results.flatMap(extractImageUrls).length;
-  let extraAttempts = 0;
-  while (imageCount < requestedCount && extraAttempts < requestedCount) {
-    const missing = requestedCount - imageCount;
-    const extraSizes = Array.from({ length: missing }, () => 1);
-    results.push(...await runTasks(extraSizes));
-    imageCount = results.flatMap(extractImageUrls).length;
-    extraAttempts += missing;
-  }
-
-  return results;
-}
-
 export async function generateImage(input: unknown) {
   const body = asRecord(input);
   if (body.provider?.includes("仅生成提示词")) return mockImages(body);
 
-  const apiKey = process.env.OPENAI_IMAGE_API_KEY || process.env.YUNWU_API_KEY;
-  if (!apiKey || process.env.IMAGE_MODEL_PROVIDER === "mock") return mockImages(body);
+  const config = image2Config();
+  if (
+    process.env.IMAGE_MODEL_PROVIDER === "mock"
+    || !config.projectCode
+    || !config.accessKey
+    || !config.secretKey
+  ) {
+    return mockImages(body);
+  }
 
-  const promptParts = [
+  if (body.sourceImageUrls?.length) {
+    throw new Error("Image 2.0 新接口暂不支持参考图编辑。");
+  }
+
+  const prompt = [
     "请生成真实摄影质感的图片，优先像手机或相机拍摄的真实产品图/生活场景图。避免假海报感、3D 渲染感、塑料质感、过度磨皮、卡通插画、AI 拼贴感和虚假品牌包装。光线自然，材质真实，产品边缘清晰。",
     body.prompt || "生成一张适合内容生产中台图文页面的真实图片。",
-    body.sourceImages?.length ? `参考素材名称：${body.sourceImages.join("、")}` : "",
-    body.sourceImageUrls?.length
-      ? "已随请求传入参考图。请严格按用户提示处理参考图关系：如果用户要求背景不变、仅替换产品、图一换图二等，只修改指定对象，其他构图、背景、文字位置、光线和风格尽量保持不变。参考图是真实图时，生成结果也必须保持真实摄影质感。"
-      : ""
-  ].filter(Boolean);
-
+    body.sourceImages?.length ? `参考素材名称：${body.sourceImages.join("、")}` : ""
+  ].filter(Boolean).join("\n");
   const requestedCount = Math.max(1, Math.min(MAX_IMAGES_PER_RUN, Number(body.count) || 1));
-  const payload: Record<string, unknown> = {
-    model: IMAGE_MODEL,
-    prompt: promptParts.join("\n"),
-    size: imageSizeFromRatio(body.size),
-    quality: "high",
-    format: process.env.OPENAI_IMAGE_FORMAT || "jpeg"
+  const scale = imageScaleFromSize(body.size);
+  const tasks = Array.from({ length: requestedCount }, () => () => requestImage(config, prompt, scale));
+  const results = await runWithConcurrency(tasks, MAX_PARALLEL_IMAGE_REQUESTS);
+  const images = results.flatMap(extractImageUrls).slice(0, requestedCount).map((url, index) => ({
+    id: `image2_${Date.now()}_${index}`,
+    url,
+    provider: "Image 2.0"
+  }));
+
+  return {
+    provider: "Image 2.0",
+    model: config.modelId,
+    input: body,
+    images,
+    raw: images.length ? undefined : results
   };
-
-  if (body.sourceImageUrls?.length) {
-    payload.reference_images = body.sourceImageUrls;
-    payload.images = body.sourceImageUrls;
-  }
-
-  let remaining = requestedCount;
-  if (body.sourceImageUrls?.length) {
-    const editBatchSizes = Array.from({ length: requestedCount }, () => 1);
-    const results = await collectImageResults(requestedCount, (batchCount) => generateImageEdit(body, apiKey, promptParts, batchCount), editBatchSizes);
-    const images = results.flatMap(extractImageUrls).slice(0, requestedCount).map((url, index) => ({
-      id: `image2_${Date.now()}_${index}`,
-      url,
-      provider: "Image 2.0"
-    }));
-    return { provider: "Image 2.0", model: IMAGE_MODEL, input: body, images, raw: images.length ? undefined : results };
-  } else {
-    const batchSizes: number[] = [];
-    while (remaining > 0) {
-      const batchCount = Math.min(MAX_IMAGES_PER_REQUEST, remaining);
-      batchSizes.push(batchCount);
-      remaining -= batchCount;
-    }
-    const results = await collectImageResults(requestedCount, (batchCount) => generateImageBatch({ ...payload, n: batchCount }, apiKey), batchSizes);
-    const images = results.flatMap(extractImageUrls).slice(0, requestedCount).map((url, index) => ({
-      id: `image2_${Date.now()}_${index}`,
-      url,
-      provider: "Image 2.0"
-    }));
-    return { provider: "Image 2.0", model: IMAGE_MODEL, input: body, images, raw: images.length ? undefined : results };
-  }
 }
 
 export async function regenerateSingleImage(input: unknown) {
