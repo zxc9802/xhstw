@@ -75,6 +75,7 @@ test("sends the project OpenAPI request and preserves the public image result", 
       params: { resolution: "1K", scale: "3:4" }
     });
     assert.equal(result.provider, "Image 2.0");
+    assert.ok("model" in result);
     assert.equal(result.model, "gpt-image2-low");
     assert.equal(result.images?.[0]?.url, "https://img.test/cat.jpg");
   });
@@ -139,6 +140,7 @@ test("makes exactly one request per image and parses bounded URL and base64 fiel
     const result = await generateImage({ prompt: "橘猫", count: 2 });
 
     assert.equal(calls, 2);
+    assert.ok("model" in result);
     assert.deepEqual(
       result.images?.map((image) => image.url),
       ["https://img.test/first.jpg", "data:image/jpeg;base64,YWJj"]
