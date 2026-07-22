@@ -311,3 +311,33 @@ test("collector tolerates malformed documents and omits absent optional wire fie
   assert.equal(Object.hasOwn((detail.media as Array<Record<string, unknown>>)[0]!, "name"), false);
   assert.equal(Object.hasOwn((detail.media as Array<Record<string, unknown>>)[0]!, "posterUrl"), false);
 });
+
+test("xhs content actions accept only the two fixed commands", () => {
+  const source = readFileSync(new URL("../browser-extension/xhs-content.js", import.meta.url), "utf8");
+  const actions = require("../browser-extension/xhs-content.js") as {
+    validateMessage(message: unknown):
+      | { ok: true; action: "xhs:search" | "xhs:detail"; value: Record<string, unknown> }
+      | { ok: false };
+  };
+
+  assert.equal(actions.validateMessage({
+    action: "xhs:search",
+    query: "防晒",
+    limit: 5,
+    mediaType: "图文",
+    dateRange: "一周内",
+    sortBy: "点赞量"
+  }).ok, true);
+  assert.equal(actions.validateMessage({ action: "xhs:detail", expectedTitle: "通勤防晒实测" }).ok, true);
+  assert.equal(actions.validateMessage({ action: "xhs:search", query: "防晒", limit: 6, mediaType: "全部", dateRange: "全部", sortBy: "浏览量" }).ok, false);
+  assert.equal(actions.validateMessage({ action: "xhs:detail", expectedTitle: "标题", script: "alert(1)" }).ok, false);
+  assert.equal(actions.validateMessage({ action: "xhs:execute", code: "alert(1)" }).ok, false);
+
+  for (const forbidden of [/eval\s*\(/, /new\s+Function/, /document\.cookie/, /chrome\.cookies/, /fetch\s*\(/]) {
+    assert.equal(forbidden.test(source), false);
+  }
+  assert.match(source, /chrome\.runtime\.onMessage\.addListener/);
+  assert.match(source, /SCROLL_LIMIT\s*=\s*6/);
+  assert.match(source, /FILTER_WAIT_MS\s*=\s*1_600/);
+  assert.match(source, /SCROLL_WAIT_MS\s*=\s*900/);
+});
