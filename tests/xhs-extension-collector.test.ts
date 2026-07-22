@@ -112,28 +112,39 @@ test("security markers accept direct strings without blocking ordinary note pros
     if (!state.ok) assert.equal(state.code, code);
   }
   assert.deepEqual(collector.detectPageState(ordinaryNote), { ok: true });
+  assert.deepEqual(collector.detectPageState("这篇复盘引用了错误码 300013，说明它曾出现在旧版页面。"), { ok: true });
+  assert.deepEqual(collector.detectPageState("小红书用户在评论里提到访问频繁，但这篇文章不是拦截页面。"), { ok: true });
+  assert.deepEqual(collector.detectPageState("客服文档引用“请完成验证”这句提示，供运营核对话术。"), { ok: true });
 });
 
 test("hidden login markup does not block collection", () => {
   const hiddenLogin = parseHTML("<section hidden class=\"login-container\"><input type=password></section><article>公开正文</article>").document;
   const ariaHiddenLogin = parseHTML("<section aria-hidden=\"true\" class=\"login-container\"><input type=password></section><article>公开正文</article>").document;
   const styledHiddenLogin = parseHTML("<section style=\"display:none\" class=\"login-container\"><input type=password></section><article>公开正文</article>").document;
+  const importantHiddenLogin = parseHTML("<section style=\"display:none !important\" class=\"login-container\"><input type=password></section><article>公开正文</article>").document;
+  const importantInvisibleLogin = parseHTML("<section style=\"visibility:hidden !important\" class=\"login-container\"><input type=password></section><article>公开正文</article>").document;
   const hiddenRateLimit = parseHTML("<section hidden>300013</section>").document.querySelector("section");
 
   assert.deepEqual(collector.detectPageState(hiddenLogin), { ok: true });
   assert.deepEqual(collector.detectPageState(ariaHiddenLogin), { ok: true });
   assert.deepEqual(collector.detectPageState(styledHiddenLogin), { ok: true });
+  assert.deepEqual(collector.detectPageState(importantHiddenLogin), { ok: true });
+  assert.deepEqual(collector.detectPageState(importantInvisibleLogin), { ok: true });
   assert.deepEqual(collector.detectPageState(hiddenRateLimit), { ok: true });
 });
 
 test("detail media ignores comment and profile ancestor containers", () => {
-  const detail = collector.parseDetail(fixture("xhs-detail.html"), "通勤防晒实测");
+  const detailDocument = parseHTML(`
+    <main>
+      <img src="https://sns-webpic-qc.xhscdn.com/detail-1.webp" alt="正文图">
+      <div class="comment"><img src="https://sns-webpic-qc.xhscdn.com/context-3.webp" alt="普通图片"></div>
+      <div class="profile"><video src="https://sns-webpic-qc.xhscdn.com/context-4.mp4"></video></div>
+    </main>
+  `).document;
+  const detail = collector.parseDetail(detailDocument, "通勤防晒实测");
   const urls = (detail.media as Array<{ url: string }>).map((item) => item.url);
 
-  assert.deepEqual(urls, [
-    "https://sns-webpic-qc.xhscdn.com/detail-1.webp",
-    "https://sns-webpic-qc.xhscdn.com/detail-2.webp"
-  ]);
+  assert.deepEqual(urls, ["https://sns-webpic-qc.xhscdn.com/detail-1.webp"]);
 });
 
 test("search covers become protocol-safe media when detail media is absent", () => {

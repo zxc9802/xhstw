@@ -48,7 +48,7 @@
     let current = element;
     while (current && current.nodeType === 1) {
       const style = attr(current, "style").toLowerCase();
-      if ((typeof current.hasAttribute === "function" && current.hasAttribute("hidden")) || attr(current, "aria-hidden").toLowerCase() === "true" || /(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\s*(?:;|$)/.test(style)) return true;
+      if ((typeof current.hasAttribute === "function" && current.hasAttribute("hidden")) || attr(current, "aria-hidden").toLowerCase() === "true" || /(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\s*(?:!important\s*)?(?:;|$)/.test(style)) return true;
       current = current.parentElement;
     }
     return false;
@@ -78,12 +78,13 @@
   function pageStateFromText(value, direct) {
     const pageText = clean(value);
     const exact = (pattern) => pattern.test(pageText);
-    const strongRateLimit = /300013|(?:安全限制|访问频繁).{0,12}(?:请稍后|稍后再试|操作频繁)|(?:小红书|系统).{0,12}(?:安全限制|访问频繁)/;
-    const strongCaptcha = /请完成(?:安全)?验证|请进行滑块验证|需要(?:安全)?验证码/;
-    if (strongRateLimit.test(pageText) || (direct && exact(/^(?:安全限制|访问频繁|安全限制\s*[\/、，,]\s*访问频繁|访问频繁\s*[\/、，,]\s*安全限制)$/))) {
+    const directRateLimit = /^(?:300013|安全限制|访问频繁|安全限制\s*[\/、，,]\s*访问频繁|访问频繁\s*[\/、，,]\s*安全限制)$/;
+    const rateLimitPage = /^(?:错误\s*)?300013\s*[：:,，]\s*(?:访问频繁|安全限制)(?:\s*[，,].*)?$|^(?:小红书|系统)(?:提示)?\s*(?:访问频繁|安全限制)\s*[，,:：]\s*(?:请稍后再试|操作频繁).*$/;
+    const directCaptcha = /^(?:验证码|请完成(?:安全)?验证码|请完成验证|滑块验证)$/;
+    if (rateLimitPage.test(pageText) || (direct && exact(directRateLimit))) {
       return { ok: false, code: "RATE_LIMITED", message: BLOCK_MESSAGES.RATE_LIMITED };
     }
-    if (strongCaptcha.test(pageText) || (direct && exact(/^(?:验证码|请完成验证|滑块验证)$/))) {
+    if ((direct && exact(directCaptcha)) || /^(?:请完成(?:安全)?验证码|请完成验证|请进行滑块验证|需要(?:安全)?验证码)$/.test(pageText)) {
       return { ok: false, code: "CAPTCHA", message: BLOCK_MESSAGES.CAPTCHA };
     }
     if (direct && exact(/^(?:登录后查看|手机号登录|扫码登录)$/)) {
@@ -97,6 +98,9 @@
     const pageText = visibleText(input);
     const textState = pageStateFromText(pageText, true);
     if (textState) return textState;
+    if (hasVisible(input, ".rate-limit, .security, [data-rate-limit], [data-security]") && /300013|安全限制|访问频繁/.test(pageText)) {
+      return { ok: false, code: "RATE_LIMITED", message: BLOCK_MESSAGES.RATE_LIMITED };
+    }
     if (hasVisible(input, ".captcha, .verify, .slider-verify, [data-captcha], [data-verify]") && /验证码|验证|滑块/.test(pageText)) {
       return { ok: false, code: "CAPTCHA", message: BLOCK_MESSAGES.CAPTCHA };
     }
