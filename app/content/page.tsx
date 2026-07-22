@@ -1,6 +1,6 @@
 "use client";
 
-import { type DragEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type DragEvent, type ReactNode, useEffect, useMemo, useState } from "react";
 import { FileText, FolderOpen, ImagePlus, Link2, Sparkles, Trash2, UploadCloud } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
@@ -8,13 +8,14 @@ import { DataTable } from "@/components/ui/DataTable";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { accounts, copyCandidates, imagePlans, referenceSources, titleCandidates, trafficTags, videoExtraction, videoScriptRows, videoShots } from "@/lib/mock/data";
+import { imageExtension, writeBlobFiles, type WritableDirectoryLike } from "@/lib/utils/browser-file-export";
 import { cn } from "@/lib/utils/cn";
-import { isStoredImageRef, persistImageFile, persistImageRefs, resolveImageRef } from "@/lib/utils/image-store";
+import { imageRefToUploadUrl, isStoredImageRef, persistImageFile, persistImageRefs, resolveImageRef } from "@/lib/utils/image-store";
 import { appendMaterialLibrary, createLibraryAsset, getAssetBlob, readMaterialLibrary, type LibraryAsset } from "@/lib/utils/material-library";
 import { loadVersionedState, saveVersionedState } from "@/lib/utils/local-state";
 import { readProductLibrary, type ProductLibraryItem } from "@/lib/utils/product-library";
 import { loadGeneratedImages, saveGeneratedImages } from "@/lib/utils/image-generation-history";
-import { addKeywordValues, removeKeywordValue, withoutSelectedKeywords } from "@/lib/utils/production-workflow";
+import { addKeywordValues, removeKeywordValue, reorderAssignedImages, withoutSelectedKeywords } from "@/lib/utils/production-workflow";
 import type { ImagePlanItem, ImageProvider } from "@/types/image";
 import type { VideoProvider, VideoScriptRow, VideoShotPlan } from "@/types/video";
 
@@ -89,6 +90,7 @@ type GeneratedImagePreview = {
   planPage: number;
   url: string;
   provider: string;
+  storageUrl?: string;
 };
 
 type GeneratedVideoPreview = {
@@ -151,6 +153,37 @@ function detectPlatformFromUrl(url: string) {
 function mockSvg(label: string, tone = "#fff7ed") {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="720" height="960" viewBox="0 0 720 960"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="${tone}"/><stop offset="1" stop-color="#e0f2fe"/></linearGradient></defs><rect width="720" height="960" rx="36" fill="url(#g)"/><rect x="64" y="82" width="592" height="680" rx="30" fill="white" fill-opacity=".72"/><circle cx="178" cy="220" r="66" fill="#fb923c" fill-opacity=".22"/><rect x="270" y="190" width="270" height="34" rx="17" fill="#fb923c" fill-opacity=".35"/><rect x="150" y="330" width="420" height="28" rx="14" fill="#0f172a" fill-opacity=".18"/><rect x="150" y="382" width="360" height="24" rx="12" fill="#0f172a" fill-opacity=".12"/><text x="360" y="826" text-anchor="middle" font-size="38" font-family="Arial, sans-serif" fill="#ea580c" font-weight="700">${label}</text></svg>`;
   return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+}
+
+function generatedImageKey(image: GeneratedImagePreview) {
+  return image.storageUrl ?? image.url;
+}
+
+function generatedImageForStorage(image: GeneratedImagePreview): GeneratedImagePreview {
+  return image.storageUrl ? { ...image, url: image.storageUrl } : image;
+}
+
+function generatedImagePageLabel(image: GeneratedImagePreview) {
+  return image.planPage > 0 ? `P${image.planPage}` : "本地";
+}
+
+async function imageUrlToBlob(url: string) {
+  const readableUrl = await imageRefToUploadUrl(url);
+  if (!readableUrl) throw new Error("图片数据不存在");
+  const response = await fetch(readableUrl);
+  if (!response.ok) throw new Error(`图片读取失败（${response.status}）`);
+  return response.blob();
+}
+
+function downloadBlob(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
 }
 
 function buildMockReferenceMedia(platform: string, title: string): ParsedReferenceMedia[] {
@@ -520,15 +553,22 @@ export default function ContentPage() {
 
   useEffect(() => {
     void loadGeneratedImages(GENERATED_IMAGES_STORAGE_KEY)
-      .then((images) => {
-        if (images.length) setGeneratedImages(images);
+      .then(async (images) => {
+        const hydratedImages = await Promise.all(images.map(async (image) => {
+          const storedImage = image as GeneratedImagePreview;
+          const stableUrl = storedImage.storageUrl ?? storedImage.url;
+          if (!isStoredImageRef(stableUrl)) return storedImage;
+          const resolvedUrl = await resolveImageRef(stableUrl);
+          return { ...storedImage, url: resolvedUrl || stableUrl, storageUrl: stableUrl };
+        }));
+        if (hydratedImages.length) setGeneratedImages(hydratedImages);
       })
       .finally(() => setGeneratedImagesHydrated(true));
   }, []);
 
   useEffect(() => {
     if (!generatedImagesHydrated) return;
-    void saveGeneratedImages(GENERATED_IMAGES_STORAGE_KEY, generatedImages);
+    void saveGeneratedImages(GENERATED_IMAGES_STORAGE_KEY, generatedImages.map(generatedImageForStorage));
   }, [generatedImages, generatedImagesHydrated]);
 
   const [customKeywordDraft, setCustomKeywordDraft] = useState("");
@@ -555,14 +595,19 @@ export default function ContentPage() {
   const [finishedPreviewOpen, setFinishedPreviewOpen] = useState(false);
   const [finishedSaving, setFinishedSaving] = useState(false);
   const [finishedImageAssignments, setFinishedImageAssignments] = useState<Record<number, string[]>>({});
+  const [draggingFinishedImageUrl, setDraggingFinishedImageUrl] = useState<string | null>(null);
   const [expandedPreviewWork, setExpandedPreviewWork] = useState(0);
   const [previewImagePageFilter, setPreviewImagePageFilter] = useState("全部");
   const [videoFinishedPreviewOpen, setVideoFinishedPreviewOpen] = useState(false);
-  const [savePath, setSavePath] = useState("E:\\content-production-studio\\outputs");
-  const saveFolderInputRef = useRef<HTMLInputElement | null>(null);
+  const [savePath, setSavePath] = useState("尚未选择文件夹");
+  const [localSaveSelectedUrls, setLocalSaveSelectedUrls] = useState<string[]>([]);
+  const [localSaveDirectory, setLocalSaveDirectory] = useState<WritableDirectoryLike | null>(null);
+  const [localSaveSaving, setLocalSaveSaving] = useState(false);
+  const [directoryPickerSupported, setDirectoryPickerSupported] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
+    setDirectoryPickerSupported("showDirectoryPicker" in window);
     const keywordState = loadVersionedState(window.localStorage, KEYWORD_LIBRARY_STORAGE_KEY, LOCAL_STATE_VERSION, {
       customKeywords: [] as string[],
       hiddenKeywords: [] as string[]
@@ -1419,7 +1464,7 @@ export default function ContentPage() {
     if (!plan) return;
     const count = Math.max(1, Math.min(10, Number(planCountMap[page] || "1")));
     const provider = planProviderMap[page] ?? imageProvider;
-    const previousPageImageUrls = generatedImages.filter((image) => image.planPage === page).map((image) => image.url);
+    const previousPageImageUrls = generatedImages.filter((image) => image.planPage === page).map(generatedImageKey);
     setGeneratingImagePages((items) => ({ ...items, [page]: provider }));
     setImagePlanItems((items) => items.map((item) => item.page === page ? { ...item, status: "generating" as const } : item));
     setFeedback(`P${page} 正在调用 ${provider} 生成图片，真实模型通常需要 30-90 秒；其他页面可以继续生成。`);
@@ -1564,27 +1609,57 @@ export default function ContentPage() {
     });
   };
 
-  const saveImageProjectLocally = () => {
-    setSaveDialogOpen(false);
-    setFeedback(`已保存本地图文项目到：${savePath}`);
+  const toggleLocalSaveSelection = (imageUrl: string) => {
+    setLocalSaveSelectedUrls((items) => items.includes(imageUrl) ? items.filter((url) => url !== imageUrl) : [...items, imageUrl]);
   };
 
-  const buildDefaultImageAssignments = () => {
-    const sortedImages = [...generatedImages].sort((a, b) => a.planPage - b.planPage || a.id.localeCompare(b.id));
-    const next: Record<number, string[]> = {};
-    selectedBatchDrafts.forEach((_, workIndex) => {
-      next[workIndex] = sortedImages
-        .filter((_, imageIndex) => imageIndex % selectedBatchDrafts.length === workIndex)
-        .map((image) => image.url);
-    });
-    if (sortedImages.length && selectedBatchDrafts.length && Object.values(next).every((items) => !items.length)) {
-      next[0] = sortedImages.map((image) => image.url);
+  const saveImageProjectLocally = async () => {
+    if (!localSaveSelectedUrls.length) {
+      setFeedback("请先勾选要保存的图片。");
+      return;
     }
-    return next;
+    setLocalSaveSaving(true);
+    try {
+      const selectedImages = localSaveSelectedUrls.flatMap((imageUrl) => {
+        const image = generatedImages.find((item) => generatedImageKey(item) === imageUrl);
+        return image ? [image] : [];
+      });
+      const pageCounts = new Map<number, number>();
+      const files = [];
+      let readFailures = 0;
+      for (const image of selectedImages) {
+        try {
+          const blob = await imageUrlToBlob(generatedImageKey(image));
+          const nextIndex = (pageCounts.get(image.planPage) ?? 0) + 1;
+          pageCounts.set(image.planPage, nextIndex);
+          const prefix = image.planPage > 0 ? `P${image.planPage}` : "本地";
+          files.push({ name: `${prefix}_${nextIndex}.${imageExtension(blob)}`, blob });
+        } catch {
+          readFailures += 1;
+        }
+      }
+
+      if (!files.length) throw new Error("勾选的图片均无法读取，请重新生成或上传。");
+      if (localSaveDirectory) {
+        const result = await writeBlobFiles(localSaveDirectory, files);
+        const failed = result.failed + readFailures;
+        setFeedback(`已保存 ${result.saved} 张图片到 ${localSaveDirectory.name}${failed ? `，${failed} 张失败` : ""}。`);
+        if (result.saved) setSaveDialogOpen(false);
+        return;
+      }
+
+      files.forEach((file) => downloadBlob(file.blob, file.name));
+      setFeedback(`当前浏览器不支持直接写入文件夹，已下载 ${files.length} 张所选图片${readFailures ? `，${readFailures} 张读取失败` : ""}。`);
+      setSaveDialogOpen(false);
+    } catch (error) {
+      setFeedback(error instanceof Error ? `保存失败：${error.message}` : "保存失败，请重试。");
+    } finally {
+      setLocalSaveSaving(false);
+    }
   };
 
   const openFinishedPreview = () => {
-    setFinishedImageAssignments(buildDefaultImageAssignments());
+    setFinishedImageAssignments({});
     setExpandedPreviewWork(0);
     setPreviewImagePageFilter("全部");
     setFinishedPreviewOpen(true);
@@ -1600,11 +1675,38 @@ export default function ContentPage() {
     });
   };
 
+  const reorderFinishedImageAssignment = (workIndex: number, sourceUrl: string, targetUrl: string) => {
+    setFinishedImageAssignments((items) => reorderAssignedImages(items, workIndex, sourceUrl, targetUrl));
+  };
+
+  const uploadFinishedImages = async (workIndex: number, files: FileList | null) => {
+    const imageFiles = Array.from(files ?? []).filter((file) => file.type.startsWith("image/"));
+    if (!imageFiles.length) return;
+    const uploaded = await Promise.all(imageFiles.map(async (file, index) => {
+      const storageUrl = await persistImageFile(file, `finished_upload_${Date.now()}_${workIndex}_${index}`);
+      const url = await resolveImageRef(storageUrl);
+      return {
+        id: `finished_upload_${Date.now()}_${workIndex}_${index}`,
+        planPage: 0,
+        url: url || URL.createObjectURL(file),
+        storageUrl,
+        provider: "本地上传"
+      } satisfies GeneratedImagePreview;
+    }));
+    setGeneratedImages((items) => [...uploaded, ...items]);
+    setFinishedImageAssignments((items) => ({
+      ...items,
+      [workIndex]: [...(items[workIndex] ?? []), ...uploaded.map(generatedImageKey)]
+    }));
+    setFeedback(`已为作品 ${workIndex + 1} 上传并选择 ${uploaded.length} 张本地图片。`);
+  };
+
   const chooseLocalSaveFolder = async () => {
-    const pickerWindow = window as Window & { showDirectoryPicker?: () => Promise<{ name: string }> };
+    const pickerWindow = window as Window & { showDirectoryPicker?: () => Promise<WritableDirectoryLike> };
     if (pickerWindow.showDirectoryPicker) {
       try {
         const handle = await pickerWindow.showDirectoryPicker();
+        setLocalSaveDirectory(handle);
         setSavePath(handle.name);
         setFeedback(`已选择本地保存文件夹：${handle.name}`);
         return;
@@ -1612,16 +1714,9 @@ export default function ContentPage() {
         return;
       }
     }
-    saveFolderInputRef.current?.click();
-  };
-
-  const handleFallbackSaveFolder = (files: FileList | null) => {
-    const firstFile = files?.[0] as (File & { webkitRelativePath?: string }) | undefined;
-    const folder = firstFile?.webkitRelativePath?.split("/")[0] || firstFile?.name;
-    if (folder) {
-      setSavePath(folder);
-      setFeedback(`已选择本地保存文件夹：${folder}`);
-    }
+    setLocalSaveDirectory(null);
+    setSavePath("浏览器默认下载目录");
+    setFeedback("当前浏览器不支持直接写入文件夹，确认保存后会下载所选图片。");
   };
 
   const compactFinishedItems = async (items: unknown[]) => Promise.all(items.map(async (item) => {
@@ -1647,7 +1742,7 @@ export default function ContentPage() {
     }));
     const current = await compactFinishedItems(JSON.parse(window.localStorage.getItem(FINISHED_CONTENT_STORAGE_KEY) || "[]") as unknown[]);
     if (kind === "image") {
-      const assignments = Object.keys(finishedImageAssignments).length ? finishedImageAssignments : buildDefaultImageAssignments();
+      const assignments = finishedImageAssignments;
       const imageItems = await Promise.all(selectedBatchDrafts.map(async (draft, workIndex) => {
         const mediaUrls = await persistImageRefs((assignments[workIndex] ?? []).filter(Boolean), `finished_${Date.now()}_${workIndex + 1}`);
         return {
@@ -2170,7 +2265,12 @@ export default function ContentPage() {
                 })}
                 <div className="flex flex-wrap justify-end gap-2">
                   <Button onClick={addImagePlanPage}>新增页面</Button>
-                  <Button variant="primary" onClick={() => setSaveDialogOpen(true)}>保存本地</Button>
+                  <Button variant="primary" onClick={() => {
+                    setLocalSaveSelectedUrls([]);
+                    setLocalSaveDirectory(null);
+                    setSavePath("尚未选择文件夹");
+                    setSaveDialogOpen(true);
+                  }}>保存本地</Button>
                   <Button variant="success" onClick={openFinishedPreview}>预览并打包成品内容</Button>
                 </div>
                 </div>
@@ -2436,17 +2536,17 @@ export default function ContentPage() {
       )}
 
       {previewImage ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4" onClick={() => setPreviewImage(null)}>
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/70 p-4" onClick={() => setPreviewImage(null)}>
           <div className="max-h-[92vh] max-w-4xl overflow-hidden rounded-lg bg-white shadow-xl" onClick={(event) => event.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-line px-4 py-3">
               <div>
-                <p className="text-sm font-semibold text-ink">P{previewImage.planPage} 生成结果预览</p>
+                <p className="text-sm font-semibold text-ink">{generatedImagePageLabel(previewImage)} 图片预览</p>
                 <p className="text-xs text-muted">{previewImage.provider}</p>
               </div>
               <button onClick={() => setPreviewImage(null)} className="rounded-md px-3 py-1 text-sm text-muted hover:bg-slate-100">关闭</button>
             </div>
             <div className="max-h-[82vh] overflow-auto bg-slate-50 p-4">
-              <img src={previewImage.url} alt={`P${previewImage.planPage} 生成结果预览`} className="mx-auto max-h-[76vh] max-w-full rounded-md object-contain" />
+              <img src={previewImage.url} alt={`${generatedImagePageLabel(previewImage)} 图片预览`} className="mx-auto max-h-[76vh] max-w-full rounded-md object-contain" />
             </div>
           </div>
         </div>
@@ -2526,13 +2626,14 @@ export default function ContentPage() {
               <div className="grid gap-4 md:grid-cols-2">
                 {selectedBatchDrafts.map((work, workIndex) => {
                   const selectedUrls = finishedImageAssignments[workIndex] ?? [];
-                  const workImages = generatedImages
-                    .filter((image) => selectedUrls.includes(image.url))
-                    .sort((a, b) => a.planPage - b.planPage);
-                  const pageOptions = ["全部", ...Array.from(new Set(generatedImages.map((image) => `P${image.planPage}`)))];
+                  const workImages = selectedUrls.flatMap((imageUrl) => {
+                    const image = generatedImages.find((item) => generatedImageKey(item) === imageUrl);
+                    return image ? [image] : [];
+                  });
+                  const pageOptions = ["全部", ...Array.from(new Set(generatedImages.filter((image) => image.planPage > 0).map((image) => `P${image.planPage}`)))];
                   const visibleImages = [...generatedImages]
                     .sort((a, b) => a.planPage - b.planPage || a.id.localeCompare(b.id))
-                    .filter((image) => previewImagePageFilter === "全部" || `P${image.planPage}` === previewImagePageFilter);
+                    .filter((image) => previewImagePageFilter === "全部" || generatedImagePageLabel(image) === previewImagePageFilter);
                   const expanded = expandedPreviewWork === workIndex;
                   return (
                     <div key={work.id} className="overflow-hidden rounded-lg border border-line bg-white">
@@ -2557,40 +2658,59 @@ export default function ContentPage() {
                             <p className="text-xs font-medium text-muted">已选 {workImages.length} 张图片</p>
                             {!generatedImages.length ? <span className="text-xs text-orange-600">请先返回生成图片</span> : null}
                           </div>
-                          {workImages.length ? (
-                            <div className="flex gap-2 overflow-x-auto pb-1">
-                              {workImages.map((image) => (
-                                <button key={`selected-${work.id}-${image.id}`} onClick={() => setPreviewImage(image)} className="w-20 shrink-0 overflow-hidden rounded-lg border border-emerald-200 bg-emerald-50 text-left">
-                                  <img src={image.url} alt={`已选 P${image.planPage}`} className="aspect-[3/4] w-full object-cover" />
-                                  <p className="truncate px-1 py-0.5 text-[10px] text-emerald-700">P{image.planPage}</p>
-                                </button>
-                              ))}
-                            </div>
+                           {workImages.length ? (
+                             <div className="flex gap-2 overflow-x-auto pb-1">
+                              {workImages.map((image) => {
+                                const imageKey = generatedImageKey(image);
+                                return (
+                                  <div
+                                    key={`selected-${work.id}-${image.id}`}
+                                    draggable
+                                    onDragStart={() => setDraggingFinishedImageUrl(imageKey)}
+                                    onDragOver={(event) => event.preventDefault()}
+                                    onDrop={(event) => {
+                                      event.preventDefault();
+                                      if (draggingFinishedImageUrl) reorderFinishedImageAssignment(workIndex, draggingFinishedImageUrl, imageKey);
+                                      setDraggingFinishedImageUrl(null);
+                                    }}
+                                    onDragEnd={() => setDraggingFinishedImageUrl(null)}
+                                    className={cn("w-20 shrink-0 cursor-grab overflow-hidden rounded-lg border border-emerald-200 bg-emerald-50 text-left active:cursor-grabbing", draggingFinishedImageUrl === imageKey ? "opacity-60" : "")}
+                                  >
+                                    <button type="button" onClick={() => setPreviewImage(image)} className="block w-full text-left">
+                                      <img src={image.url} alt={`已选 ${generatedImagePageLabel(image)}`} className="aspect-[3/4] w-full object-cover" />
+                                      <p className="truncate px-1 py-0.5 text-[10px] text-emerald-700">{generatedImagePageLabel(image)}</p>
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                             </div>
                           ) : (
                             <div className="flex h-16 items-center justify-center rounded-lg border border-dashed border-line bg-slate-50 text-xs text-muted">暂未选择图片</div>
                           )}
-                          {expanded && generatedImages.length ? (
+                          {expanded ? (
                             <div className="mt-3 rounded-lg border border-line bg-slate-50 p-3">
-                              <div className="mb-3 flex flex-wrap gap-2">
-                                {pageOptions.map((page) => (
-                                  <button key={`${work.id}-${page}`} onClick={() => setPreviewImagePageFilter(page)} className={cn("h-7 rounded-full border px-3 text-xs transition", previewImagePageFilter === page ? "border-orange-300 bg-orange-500 text-white" : "border-line bg-white text-muted hover:bg-orange-50")}>{page}</button>
-                                ))}
+                              <div className="mb-3 flex flex-wrap items-center gap-2">
+                                {pageOptions.map((page) => <button key={`${work.id}-${page}`} onClick={() => setPreviewImagePageFilter(page)} className={cn("h-7 rounded-full border px-3 text-xs transition", previewImagePageFilter === page ? "border-orange-300 bg-orange-500 text-white" : "border-line bg-white text-muted hover:bg-orange-50")}>{page}</button>)}
+                                <input id={`finished-image-upload-${workIndex}`} type="file" accept="image/*" multiple className="hidden" onChange={(event) => void uploadFinishedImages(workIndex, event.target.files)} />
+                                <Button className="h-7 px-3 text-xs" onClick={() => document.getElementById(`finished-image-upload-${workIndex}`)?.click()}>上传图片</Button>
                               </div>
                               <div className="grid max-h-72 grid-cols-4 gap-2 overflow-y-auto pr-1">
                               {visibleImages.map((image) => {
-                                const checked = selectedUrls.includes(image.url);
+                                const imageKey = generatedImageKey(image);
+                                const checked = selectedUrls.includes(imageKey);
                                 return (
                                   <div key={`${work.id}-${image.id}`} className={cn("overflow-hidden rounded-lg border bg-slate-50 text-left transition", checked ? "border-emerald-300 ring-2 ring-emerald-100" : "border-line")}>
                                     <button onClick={() => setPreviewImage(image)} className="block w-full">
                                       <img src={image.url} alt={`P${image.planPage} 生成结果`} className="aspect-[3/4] w-full object-cover" />
                                     </button>
-                                    <button onClick={() => toggleFinishedImageAssignment(workIndex, image.url)} className={cn("flex w-full items-center justify-between px-2 py-1 text-xs", checked ? "bg-emerald-50 text-emerald-700" : "bg-white text-muted hover:bg-orange-50 hover:text-orange-700")}>
-                                      <span className="truncate">P{image.planPage} · {image.provider}</span>
+                                    <button onClick={() => toggleFinishedImageAssignment(workIndex, imageKey)} className={cn("flex w-full items-center justify-between px-2 py-1 text-xs", checked ? "bg-emerald-50 text-emerald-700" : "bg-white text-muted hover:bg-orange-50 hover:text-orange-700")}>
+                                      <span className="truncate">{generatedImagePageLabel(image)} · {image.provider}</span>
                                       <span className={cn("ml-1 grid h-4 w-4 shrink-0 place-items-center rounded-full border text-[10px]", checked ? "border-emerald-500 bg-emerald-500 text-white" : "border-slate-300")}>{checked ? "✓" : ""}</span>
                                     </button>
                                   </div>
                                 );
                               })}
+                              {!visibleImages.length ? <div className="col-span-4 py-8 text-center text-xs text-muted">暂无图片，可点击上方“上传图片”从本地添加。</div> : null}
                               </div>
                             </div>
                           ) : null}
@@ -2669,28 +2789,38 @@ export default function ContentPage() {
 
       {saveDialogOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6">
-          <div className="w-full max-w-lg rounded-lg bg-white shadow-soft">
+          <div className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-lg bg-white shadow-soft">
             <div className="border-b border-line px-5 py-4">
-              <h2 className="text-base font-semibold text-ink">选择本地保存位置</h2>
-              <p className="mt-1 text-sm text-muted">请选择本地文件夹作为保存位置。</p>
+              <h2 className="text-base font-semibold text-ink">选择图片并保存到本地</h2>
+              <p className="mt-1 text-sm text-muted">只会保存你勾选的图片，然后写入你选择的文件夹。</p>
             </div>
-            <div className="space-y-4 p-5">
-              <input
-                ref={saveFolderInputRef}
-                type="file"
-                className="hidden"
-                onChange={(event) => handleFallbackSaveFolder(event.target.files)}
-                {...{ webkitdirectory: "true", directory: "true" }}
-              />
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+              {generatedImages.length ? (
+                <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 lg:grid-cols-6">
+                  {generatedImages.map((image) => {
+                    const imageKey = generatedImageKey(image);
+                    const checked = localSaveSelectedUrls.includes(imageKey);
+                    return (
+                      <button key={`local-save-${image.id}`} type="button" onClick={() => toggleLocalSaveSelection(imageKey)} className={cn("relative overflow-hidden rounded-lg border bg-slate-50 text-left transition", checked ? "border-emerald-400 ring-2 ring-emerald-100" : "border-line hover:border-orange-200")}>
+                        <img src={image.url} alt={`${generatedImagePageLabel(image)} 保存预览`} className="aspect-[3/4] w-full object-cover" />
+                        <span className={cn("absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-full text-xs font-bold", checked ? "bg-emerald-500 text-white" : "bg-white/90 text-muted")}>{checked ? "✓" : ""}</span>
+                        <p className="truncate px-2 py-1 text-xs text-muted">{generatedImagePageLabel(image)} · {image.provider}</p>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="flex h-32 items-center justify-center rounded-lg border border-dashed border-line bg-slate-50 text-sm text-muted">还没有可保存的生成图片。</div>
+              )}
               <div className="rounded-lg border border-line bg-slate-50 p-4">
-                <p className="text-xs font-medium text-muted">当前保存位置</p>
+                <p className="text-xs font-medium text-muted">已选 {localSaveSelectedUrls.length} 张 · 当前保存位置</p>
                 <p className="mt-2 break-all text-sm font-medium text-ink">{savePath}</p>
-                <Button className="mt-3" icon={<FolderOpen className="h-4 w-4" />} onClick={() => void chooseLocalSaveFolder()}>选择文件夹</Button>
+                <Button className="mt-3" icon={<FolderOpen className="h-4 w-4" />} onClick={() => void chooseLocalSaveFolder()}>{directoryPickerSupported ? "选择文件夹" : "使用浏览器下载"}</Button>
               </div>
-              <div className="flex justify-end gap-2">
-                <Button onClick={() => setSaveDialogOpen(false)}>取消</Button>
-                <Button variant="primary" onClick={saveImageProjectLocally}>确认保存</Button>
-              </div>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-line px-5 py-4">
+              <Button disabled={localSaveSaving} onClick={() => setSaveDialogOpen(false)}>取消</Button>
+              <Button variant="primary" disabled={localSaveSaving || !localSaveSelectedUrls.length || (directoryPickerSupported && !localSaveDirectory)} onClick={() => void saveImageProjectLocally()}>{localSaveSaving ? "保存中..." : "确认保存"}</Button>
             </div>
           </div>
         </div>
