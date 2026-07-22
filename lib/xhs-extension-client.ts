@@ -59,8 +59,32 @@ interface PendingRequest {
 export interface XhsExtensionClient {
   detect(): Promise<{ version: string; protocolVersion: number }>;
   collect(task: XhsCollectTask, onProgress?: (progress: ExtensionProgress) => void): Promise<ExtensionCollectResult>;
-  cancel(requestId: string): void;
+  cancel(requestId: string): Promise<void>;
   dispose(): void;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isPongPayload(value: unknown): value is { version: string } {
+  return isRecord(value) && typeof value.version === "string";
+}
+
+function isProgressPayload(value: unknown): value is ExtensionProgress {
+  return isRecord(value) &&
+    (value.stage === "opening" || value.stage === "searching" || value.stage === "enriching") &&
+    typeof value.completed === "number" && Number.isFinite(value.completed) &&
+    typeof value.total === "number" && Number.isFinite(value.total) &&
+    typeof value.message === "string";
+}
+
+function isResultPayload(value: unknown): value is ExtensionCollectResult {
+  return isRecord(value) && Array.isArray(value.topics) && typeof value.message === "string";
+}
+
+function isErrorPayload(value: unknown): value is { message: string; code?: string } {
+  return isRecord(value) && typeof value.message === "string" && (value.code === undefined || typeof value.code === "string");
 }
 
 export function createXhsExtensionClient(target: ExtensionTarget = getDefaultTarget(), timeoutMs?: number): XhsExtensionClient {
@@ -68,6 +92,7 @@ export function createXhsExtensionClient(target: ExtensionTarget = getDefaultTar
   if (!origin) throw new Error("The XHS extension client requires a page origin.");
 
   const pending = new Map<string, PendingRequest>();
+  let disposed = false;
   const send = (type: PageMessageType, requestId: string, payload: unknown) => {
     const message: MessageEnvelope = {
       channel: XHS_EXTENSION_CHANNEL,
@@ -107,17 +132,30 @@ export function createXhsExtensionClient(target: ExtensionTarget = getDefaultTar
 
     const request = pending.get(message.requestId)!;
     if (message.type === "progress") {
-      request.onProgress?.(message.payload as ExtensionProgress);
+      if (request.expectedTerminalType !== "result") return;
+      if (!isProgressPayload(message.payload)) {
+        rejectPending(message.requestId, new Error("扩展响应格式异常。"));
+        return;
+      }
+      request.onProgress?.(message.payload);
       return;
     }
     if (message.type === "error") {
-      const payload = message.payload as { code?: string; message?: string };
-      const error = new Error(payload.message ?? "The XHS extension reported an error.") as Error & { code?: string };
-      error.code = payload.code;
+      if (!isErrorPayload(message.payload)) {
+        rejectPending(message.requestId, new Error("扩展响应格式异常。"));
+        return;
+      }
+      const error = new Error(message.payload.message) as Error & { code?: string };
+      error.code = message.payload.code;
       rejectPending(message.requestId, error);
       return;
     }
     if (message.type === request.expectedTerminalType) {
+      const validPayload = message.type === "pong" ? isPongPayload(message.payload) : isResultPayload(message.payload);
+      if (!validPayload) {
+        rejectPending(message.requestId, new Error("扩展响应格式异常。"));
+        return;
+      }
       clearTimeout(request.timer);
       pending.delete(message.requestId);
       request.resolve(message.payload);
@@ -137,17 +175,26 @@ export function createXhsExtensionClient(target: ExtensionTarget = getDefaultTar
 
   return {
     detect() {
+      if (disposed) return Promise.reject(new Error("The XHS extension client was disposed."));
       const requestId = crypto.randomUUID();
       return startRequest<{ version: string }>(requestId, "ping", {}, timeoutMs ?? DEFAULT_PING_TIMEOUT_MS, "pong")
         .then((payload) => ({ version: payload.version, protocolVersion: XHS_EXTENSION_PROTOCOL_VERSION }));
     },
     collect(task, onProgress) {
+      if (disposed) return Promise.reject(new Error("The XHS extension client was disposed."));
       return startRequest<ExtensionCollectResult>(task.requestId, "collect", task, DEFAULT_COLLECT_TIMEOUT_MS, "result", onProgress);
     },
     cancel(requestId) {
+      if (disposed) return Promise.reject(new Error("The XHS extension client was disposed."));
       send("cancel", requestId, { requestId });
+      if (pending.get(requestId)?.expectedTerminalType === "result") {
+        rejectPending(requestId, new Error("XHS extension collection was canceled."));
+      }
+      return Promise.resolve();
     },
     dispose() {
+      if (disposed) return;
+      disposed = true;
       target.removeEventListener("message", listener);
       for (const requestId of pending.keys()) rejectPending(requestId, new Error("The XHS extension client was disposed."));
     }

@@ -8,6 +8,7 @@ import {
 } from "../lib/xhs-extension-client";
 
 type MessageListener = (event: MessageEvent) => void;
+const REQUEST_ID = "11111111-1111-4111-8111-111111111111";
 
 class FakeMessageTarget {
   readonly origin = "https://studio.example.test";
@@ -36,11 +37,11 @@ class FakeMessageTarget {
   }
 }
 
-function collectTask(requestId = "collect-1"): XhsCollectTask {
+function collectTask(requestId = REQUEST_ID): XhsCollectTask {
   return {
     requestId,
     queries: ["夏日穿搭"],
-    limitPerQuery: 10,
+    limitPerQuery: 5,
     mediaType: "全部",
     dateRange: "全部",
     sortBy: "浏览量",
@@ -78,10 +79,10 @@ test("streams progress before the final collection result", async () => {
   const progress: string[] = [];
   const collected = client.collect(collectTask(), (update) => progress.push(update.stage));
 
-  target.receive(extensionMessage("progress", "collect-1", {
+  target.receive(extensionMessage("progress", REQUEST_ID, {
     stage: "searching", completed: 1, total: 2, message: "正在搜索"
   }));
-  target.receive(extensionMessage("result", "collect-1", { topics: [], message: "完成" }));
+  target.receive(extensionMessage("result", REQUEST_ID, { topics: [], message: "完成" }));
 
   assert.deepEqual(progress, ["searching"]);
   assert.deepEqual(await collected, { topics: [], message: "完成" });
@@ -112,11 +113,11 @@ test("does not resolve collection from a pong", async () => {
   let settled = false;
   void collected.then(() => { settled = true; }, () => { settled = true; });
 
-  target.receive(extensionMessage("pong", "collect-1", { version: "0.1.0" }));
+  target.receive(extensionMessage("pong", REQUEST_ID, { version: "0.1.0" }));
   await Promise.resolve();
 
   assert.equal(settled, false);
-  target.receive(extensionMessage("result", "collect-1", { topics: [], message: "完成" }));
+  target.receive(extensionMessage("result", REQUEST_ID, { topics: [], message: "完成" }));
   await collected;
   client.dispose();
 });
@@ -126,7 +127,7 @@ test("rejects collection when the extension reports an error", async () => {
   const client = createXhsExtensionClient(target, 100);
   const collected = client.collect(collectTask());
 
-  target.receive(extensionMessage("error", "collect-1", { code: "LOGIN_REQUIRED", message: "请先登录小红书" }));
+  target.receive(extensionMessage("error", REQUEST_ID, { code: "LOGIN_REQUIRED", message: "请先登录小红书" }));
 
   await assert.rejects(collected, (error: Error & { code?: string }) => error.message === "请先登录小红书" && error.code === "LOGIN_REQUIRED");
   client.dispose();
@@ -186,4 +187,80 @@ test("uses the fixed collection timeout when a custom ping timeout is supplied",
   } finally {
     globalThis.setTimeout = originalSetTimeout;
   }
+});
+
+test("cancels the local collection and ignores late extension messages", async () => {
+  const target = new FakeMessageTarget();
+  const client = createXhsExtensionClient(target, 100);
+  const progress: string[] = [];
+  const collected = client.collect(collectTask(), (update) => progress.push(update.stage));
+  let cancellation: Error | undefined;
+  void collected.catch((error) => { cancellation = error; });
+
+  await client.cancel(REQUEST_ID);
+  await Promise.resolve();
+
+  try {
+    assert.equal((target.messages[1]?.message as { type: string }).type, "cancel");
+    assert.match(cancellation?.message ?? "", /取消|canceled/i);
+    assert.doesNotThrow(() => target.receive(extensionMessage("progress", REQUEST_ID, {
+      stage: "searching", completed: 1, total: 1, message: "late"
+    })));
+    assert.doesNotThrow(() => target.receive(extensionMessage("result", REQUEST_ID, { topics: [], message: "late" })));
+    assert.doesNotThrow(() => target.receive(extensionMessage("error", REQUEST_ID, { message: "late" })));
+    assert.deepEqual(progress, []);
+  } finally {
+    client.dispose();
+    await assert.rejects(collected);
+  }
+});
+
+test("rejects malformed pong and error payloads without throwing from the listener", async () => {
+  const target = new FakeMessageTarget();
+  const client = createXhsExtensionClient(target, 100);
+  const detection = client.detect();
+  const ping = target.messages[0]?.message as { requestId: string };
+
+  assert.doesNotThrow(() => target.receive(extensionMessage("pong", ping.requestId, null)));
+  await assert.rejects(detection, /扩展响应格式异常/);
+
+  const collected = client.collect(collectTask());
+  assert.doesNotThrow(() => target.receive(extensionMessage("error", REQUEST_ID, null)));
+  await assert.rejects(collected, /扩展响应格式异常/);
+  client.dispose();
+});
+
+test("rejects malformed progress and result payloads and clears the collection", async () => {
+  const target = new FakeMessageTarget();
+  const client = createXhsExtensionClient(target, 100);
+  const malformedProgress = client.collect(collectTask());
+  let progressError: Error | undefined;
+  void malformedProgress.catch((error) => { progressError = error; });
+
+  assert.doesNotThrow(() => target.receive(extensionMessage("progress", REQUEST_ID, {
+    stage: "bad", completed: Number.NaN, total: 1, message: 3
+  })));
+  await Promise.resolve();
+  try {
+    assert.match(progressError?.message ?? "", /扩展响应格式异常/);
+    assert.doesNotThrow(() => target.receive(extensionMessage("result", REQUEST_ID, { topics: [], message: "late" })));
+
+    const malformedResult = client.collect(collectTask());
+    assert.doesNotThrow(() => target.receive(extensionMessage("result", REQUEST_ID, { topics: null, message: "bad" })));
+    await assert.rejects(malformedResult, /扩展响应格式异常/);
+  } finally {
+    client.dispose();
+    await assert.rejects(malformedProgress);
+  }
+});
+
+test("rejects every public operation after disposal without posting messages", async () => {
+  const target = new FakeMessageTarget();
+  const client = createXhsExtensionClient(target, 100);
+  client.dispose();
+
+  await assert.rejects(client.detect(), /disposed/i);
+  await assert.rejects(client.collect(collectTask()), /disposed/i);
+  await assert.rejects(client.cancel(REQUEST_ID), /disposed/i);
+  assert.deepEqual(target.messages, []);
 });
