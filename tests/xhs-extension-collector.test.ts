@@ -97,6 +97,7 @@ test("security markers accept direct strings without blocking ordinary note pros
     ["300013", "RATE_LIMITED"],
     ["安全限制", "RATE_LIMITED"],
     ["访问频繁", "RATE_LIMITED"],
+    ["安全限制 访问频繁 300013", "RATE_LIMITED"],
     ["验证码", "CAPTCHA"],
     ["请完成验证", "CAPTCHA"],
     ["滑块验证", "CAPTCHA"],

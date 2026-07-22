@@ -78,7 +78,7 @@
   function pageStateFromText(value, direct) {
     const pageText = clean(value);
     const exact = (pattern) => pattern.test(pageText);
-    const directRateLimit = /^(?:300013|安全限制|访问频繁|安全限制\s*[\/、，,]\s*访问频繁|访问频繁\s*[\/、，,]\s*安全限制)$/;
+    const directRateLimit = /^(?:300013|安全限制|访问频繁|安全限制\s*[\/、，,]\s*访问频繁|访问频繁\s*[\/、，,]\s*安全限制|安全限制\s+访问频繁\s+300013)$/;
     const rateLimitPage = /^(?:错误\s*)?300013\s*[：:,，]\s*(?:访问频繁|安全限制)(?:\s*[，,].*)?$|^(?:小红书|系统)(?:提示)?\s*(?:访问频繁|安全限制)\s*[，,:：]\s*(?:请稍后再试|操作频繁).*$/;
     const directCaptcha = /^(?:验证码|请完成(?:安全)?验证码|请完成验证|滑块验证)$/;
     if (rateLimitPage.test(pageText) || (direct && exact(directRateLimit))) {
