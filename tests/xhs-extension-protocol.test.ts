@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 
 const require = createRequire(import.meta.url);
 const protocol = require("../browser-extension/shared/protocol.js") as {
@@ -347,7 +348,7 @@ test("bridge and background use validated messages and visible fixed-tab orchest
   assert.match(background, /SEND_RETRY_DELAY_MS\s*=\s*500/);
   assert.doesNotMatch(background, /navigate\(context,\s*detailUrl\)/);
   assert.match(background, /action:\s*["']xhs:detail["'][\s\S]*targetUrl:\s*row\.url/);
-  assert.match(background, /SKIPPABLE_DETAIL_CODES\s*=\s*new Set\(\[["']NOTE_UNAVAILABLE["']\]\)/);
+  assert.match(background, /SKIPPABLE_DETAIL_CODES\s*=\s*new Set\(\[["']NOTE_UNAVAILABLE["'],\s*["']DETAIL_INCOMPLETE["']\]\)/);
   assert.match(background, /SEARCH_CANDIDATE_LIMIT\s*=\s*5/);
   assert.match(background, /limit:\s*SEARCH_CANDIDATE_LIMIT/);
   assert.match(background, /capturedForQuery/);
@@ -358,6 +359,54 @@ test("bridge and background use validated messages and visible fixed-tab orchest
       assert.equal(forbidden.test(source), false);
     }
   }
+});
+
+test("bridge reconnects on the next valid page message after an idle port disconnect", () => {
+  const bridge = readFileSync(new URL("../browser-extension/app-bridge.js", import.meta.url), "utf8");
+  const origin = "https://xhstw.qycm.top";
+  const windowListeners = new Map<string, Array<(event: any) => void>>();
+  const ports: Array<{
+    posted: unknown[];
+    disconnectListeners: Array<() => void>;
+  }> = [];
+  const fakeWindow = {
+    addEventListener(type: string, listener: (event: any) => void) {
+      windowListeners.set(type, [...(windowListeners.get(type) ?? []), listener]);
+    },
+    removeEventListener() {},
+    postMessage() {}
+  };
+  const chrome = {
+    runtime: {
+      connect() {
+        const state = { posted: [] as unknown[], disconnectListeners: [] as Array<() => void> };
+        ports.push(state);
+        return {
+          postMessage(message: unknown) { state.posted.push(message); },
+          disconnect() {},
+          onMessage: { addListener() {} },
+          onDisconnect: { addListener(listener: () => void) { state.disconnectListeners.push(listener); } }
+        };
+      }
+    }
+  };
+
+  runInNewContext(bridge, {
+    XhsExtensionProtocol: protocol,
+    chrome,
+    location: { origin },
+    window: fakeWindow
+  });
+  assert.equal(ports.length, 1);
+
+  ports[0].disconnectListeners[0]?.();
+  const ping = envelope("ping", {});
+  for (const listener of windowListeners.get("message") ?? []) {
+    listener({ source: fakeWindow, origin, data: ping });
+  }
+
+  assert.equal(ports.length, 2);
+  assert.deepEqual(ports[1].posted, [ping]);
 });
 
 test("packages a scoped extension for one exact app origin", { skip: process.platform !== "win32" }, () => {

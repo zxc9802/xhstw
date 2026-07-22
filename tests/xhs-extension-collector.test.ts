@@ -206,11 +206,58 @@ test("search-card matching skips a hidden duplicate link before the visible cove
   `).document;
 
   assert.equal(collector.findSearchCardLink(page, `https://www.xiaohongshu.com/explore/${noteId}`)?.className, "cover");
+  assert.equal(collector.parseSearchCards(page, "防晒", 1)[0]?.url, `https://www.xiaohongshu.com/explore/${noteId}?xsec_token=live&xsec_source=pc_search`);
+});
+
+test("detail parsing rejects title-only fallbacks without both body copy and post media", () => {
+  const missingCopy = parseHTML(`
+    <div class="note-detail-mask" role="dialog">
+      <h1 class="title">只有标题</h1>
+      <a class="author">测试作者</a>
+      <img src="https://sns-webpic-qc.xhscdn.com/detail.webp" alt="正文图">
+    </div>
+  `).document;
+  const missingMedia = parseHTML(`
+    <div class="note-detail-mask" role="dialog">
+      <h1 class="title">只有文案</h1>
+      <div id="detail-desc">这是正文</div>
+    </div>
+  `).document;
+
+  for (const page of [missingCopy, missingMedia]) {
+    assert.deepEqual(collector.parseDetail(page, "搜索卡片标题"), {
+      ok: false,
+      code: "DETAIL_INCOMPLETE",
+      message: "详情正文或图片未完整加载"
+    });
+  }
+});
+
+test("detail engagement counts come from the note action bar instead of comments", () => {
+  const page = parseHTML(`
+    <div class="note-detail-mask" role="dialog">
+      <h1 class="title">防晒实测</h1>
+      <div id="detail-desc">完整正文</div>
+      <img src="https://sns-webpic-qc.xhscdn.com/detail.webp" alt="正文图">
+      <div class="comment"><span class="like-wrapper"><span class="count">99</span></span></div>
+      <div class="buttons engage-bar-style">
+        <span class="like-wrapper"><span class="count">331</span></span>
+        <span class="collect-wrapper"><span class="count">202</span></span>
+        <span class="chat-wrapper"><span class="count">38</span></span>
+      </div>
+    </div>
+  `).document;
+  const detail = collector.parseDetail(page, "搜索卡片标题");
+
+  assert.equal(detail.likes, "331");
+  assert.equal(detail.saves, "202");
+  assert.equal(detail.comments, "38");
 });
 
 test("detail media ignores comment and profile ancestor containers", () => {
   const detailDocument = parseHTML(`
     <div class="note-detail-mask" role="dialog">
+      <div id="detail-desc">完整正文</div>
       <img src="https://sns-webpic-qc.xhscdn.com/detail-1.webp" alt="正文图">
       <div class="comment"><img src="https://sns-webpic-qc.xhscdn.com/context-3.webp" alt="普通图片"></div>
       <div class="profile"><video src="https://sns-webpic-qc.xhscdn.com/context-4.mp4"></video></div>
@@ -250,7 +297,7 @@ test("detail parsing preserves every image in an eighteen-image Xiaohongshu post
 });
 
 test("detail tags are deduplicated and capped independently from topic output", () => {
-  const detailDocument = parseHTML(`<div class="note-detail-mask" role="dialog"><article class="content">#防晒 #防晒 ${Array.from({ length: 11 }, (_, index) => `#标签${index + 1}`).join(" ")}</article></div>`).document;
+  const detailDocument = parseHTML(`<div class="note-detail-mask" role="dialog"><article class="content">#防晒 #防晒 ${Array.from({ length: 11 }, (_, index) => `#标签${index + 1}`).join(" ")}</article><img src="https://sns-webpic-qc.xhscdn.com/tags.webp"></div>`).document;
   const detail = collector.parseDetail(detailDocument, "标签测试");
 
   assert.deepEqual(detail.tags, ["防晒", "标签1", "标签2", "标签3", "标签4", "标签5", "标签6", "标签7", "标签8", "标签9"]);
@@ -363,7 +410,7 @@ test("note identifiers and canonical URLs support public Xiaohongshu routes", ()
 
 test("collector tolerates malformed documents and omits absent optional wire fields", () => {
   const empty = parseHTML("<main></main>").document;
-  const video = parseHTML("<div class=note-detail-mask role=dialog><h1 class=title>视频笔记</h1><video src=\"https://sns-webpic-qc.xhscdn.com/demo.mp4\"></video></div>").document;
+  const video = parseHTML("<div class=note-detail-mask role=dialog><h1 class=title>视频笔记</h1><div class=content>完整正文</div><video src=\"https://sns-webpic-qc.xhscdn.com/demo.mp4\"></video></div>").document;
   const detail = collector.parseDetail(video, "备用标题");
   const topic = collector.buildTopic({ title: "没有 ID 的标题", url: "not-a-url", query: "关键词" }, detail, new Date("2026-07-22T00:00:00.000Z"));
 
@@ -431,21 +478,92 @@ test("detail actions click only the matching search card, parse its dialog, and 
   }
 });
 
+test("detail actions wait for complete copy and every carousel image before closing", async () => {
+  const noteId = "6a608792000000001c012dc4";
+  const page = parseHTML(`
+    <section class="note-item"><a id="target" href="/search_result/${noteId}?xsec_token=live">防晒实测</a></section>
+    <div class="note-detail-mask" hidden>
+      <button aria-label="关闭"></button>
+      <div class="note-content">
+        <h1 class="title">防晒实测</h1>
+        <div id="detail-desc"></div>
+      </div>
+      <div class="swiper-slide" data-swiper-slide-index="0"><img id="image-1"></div>
+      <div class="swiper-slide" data-swiper-slide-index="1"><img id="image-2"></div>
+    </div>
+  `).document;
+  const target = page.querySelector("#target") as HTMLAnchorElement;
+  const dialog = page.querySelector(".note-detail-mask") as HTMLElement;
+  const close = page.querySelector('[aria-label="关闭"]') as HTMLButtonElement;
+  target.addEventListener("click", (event) => {
+    event.preventDefault();
+    dialog.hidden = false;
+    setTimeout(() => {
+      const description = page.querySelector("#detail-desc");
+      if (description) description.textContent = "这是完整正文，不应只抓标题";
+      page.querySelector("#image-1")?.setAttribute("src", "https://sns-webpic-qc.xhscdn.com/detail-1.webp");
+    }, 50);
+    setTimeout(() => {
+      page.querySelector("#image-2")?.setAttribute("src", "https://sns-webpic-qc.xhscdn.com/detail-2.webp");
+    }, 350);
+  });
+  close.addEventListener("click", () => { dialog.hidden = true; });
+
+  const actions = require("../browser-extension/xhs-content.js") as {
+    handleMessage(message: unknown): Promise<Record<string, unknown>>;
+  };
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const previousCollector = Object.getOwnPropertyDescriptor(globalThis, "XhsPageCollector");
+  Object.defineProperty(globalThis, "document", { configurable: true, value: page });
+  Object.defineProperty(globalThis, "XhsPageCollector", { configurable: true, value: collector });
+  try {
+    const response = await actions.handleMessage({
+      action: "xhs:detail",
+      expectedTitle: "防晒实测",
+      targetUrl: `https://www.xiaohongshu.com/search_result/${noteId}?xsec_token=live`
+    });
+
+    assert.equal(response.ok, true);
+    assert.equal(response.content, "这是完整正文，不应只抓标题");
+    assert.deepEqual((response.media as Array<{ url: string }>).map((item) => item.url), [
+      "https://sns-webpic-qc.xhscdn.com/detail-1.webp",
+      "https://sns-webpic-qc.xhscdn.com/detail-2.webp"
+    ]);
+    assert.equal(dialog.hidden, true);
+  } finally {
+    if (previousDocument) Object.defineProperty(globalThis, "document", previousDocument);
+    else delete (globalThis as { document?: Document }).document;
+    if (previousCollector) Object.defineProperty(globalThis, "XhsPageCollector", previousCollector);
+    else delete (globalThis as { XhsPageCollector?: unknown }).XhsPageCollector;
+  }
+});
+
 test("search actions ignore exact-label controls inside hidden ancestors", async () => {
   const page = parseHTML(`
+    <input placeholder="搜索小红书" value="防晒">
+    <div class="input-button"><div class="search-icon" aria-label="提交搜索"></div></div>
     <div aria-hidden="true"><span id="hidden-filter">筛选</span></div>
-    <div id="real-filter">筛选</div>
+    <div class="filter"><span id="real-filter">筛选</span></div>
     <div aria-hidden="true"><span id="hidden-sort">最多点赞</span></div>
     <div id="real-sort">最多点赞</div>
     <div aria-hidden="true"><span id="hidden-media">图文</span></div>
     <div id="real-media">图文</div>
-    <section class="note-item">
-      <a href="/explore/64f0a1b2c3d4e5f60718293a"><span class="title">防晒实测</span></a>
-    </section>
+    <div id="results"><section class="note-item">
+      <a href="/explore/64f0a1b2c3d4e5f60718293a"><span class="title">旧推荐卡片</span></a>
+    </section></div>
   `).document;
   const clicks = new Map<string, number>();
   for (const id of ["hidden-filter", "real-filter", "hidden-sort", "real-sort", "hidden-media", "real-media"]) {
     page.querySelector(`#${id}`)?.addEventListener("click", () => clicks.set(id, (clicks.get(id) || 0) + 1));
+  }
+  let searchClicks = 0;
+  page.querySelector(".search-icon")?.addEventListener("click", () => {
+    searchClicks += 1;
+    const results = page.querySelector("#results");
+    if (results) results.innerHTML = `<section class="note-item"><a href="/search_result/74f0a1b2c3d4e5f60718293b?xsec_token=live"><span class="title">防晒搜索结果</span></a></section>`;
+  });
+  for (const id of ["real-sort", "real-media"]) {
+    page.querySelector(`#${id}`)?.addEventListener("click", (event) => (event.currentTarget as Element).classList.add("active"));
   }
 
   const actions = require("../browser-extension/xhs-content.js") as {
@@ -466,6 +584,8 @@ test("search actions ignore exact-label controls inside hidden ancestors", async
     });
 
     assert.equal(response.ok, true);
+    assert.equal(searchClicks, 1);
+    assert.equal((response.rows as Array<{ title: string }>)[0]?.title, "防晒搜索结果");
     assert.equal(clicks.get("hidden-filter") || 0, 0);
     assert.equal(clicks.get("hidden-sort") || 0, 0);
     assert.equal(clicks.get("hidden-media") || 0, 0);
@@ -480,8 +600,101 @@ test("search actions ignore exact-label controls inside hidden ancestors", async
   }
 });
 
+test("search actions wait for asynchronously rendered filter options", async () => {
+  const page = parseHTML(`
+    <input placeholder="\u641c\u7d22\u5c0f\u7ea2\u4e66" value="\u9632\u6652">
+    <div class="input-button"><div class="search-icon"></div></div>
+    <div class="filter"><span id="filter-text">\u7b5b\u9009</span></div>
+    <section class="note-item">
+      <a href="/search_result/64f0a1b2c3d4e5f60718293a?xsec_token=live"><span class="title">\u9632\u6652\u5b9e\u6d4b</span></a>
+    </section>
+  `).document;
+  let sortClicks = 0;
+  let mediaClicks = 0;
+  page.querySelector("#filter-text")?.addEventListener("click", () => {
+    setTimeout(() => {
+      const sort = page.createElement("div");
+      sort.textContent = "\u6700\u591a\u70b9\u8d5e";
+      sort.addEventListener("click", () => {
+        sortClicks += 1;
+        sort.classList.add("active");
+      });
+      const media = page.createElement("div");
+      media.textContent = "\u56fe\u6587";
+      media.addEventListener("click", () => {
+        mediaClicks += 1;
+        media.classList.add("active");
+      });
+      page.body.append(sort, media);
+    }, 50);
+  });
+
+  const actions = require("../browser-extension/xhs-content.js") as {
+    handleMessage(message: unknown): Promise<Record<string, unknown>>;
+  };
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const previousCollector = Object.getOwnPropertyDescriptor(globalThis, "XhsPageCollector");
+  Object.defineProperty(globalThis, "document", { configurable: true, value: page });
+  Object.defineProperty(globalThis, "XhsPageCollector", { configurable: true, value: collector });
+  try {
+    const response = await actions.handleMessage({
+      action: "xhs:search",
+      query: "\u9632\u6652",
+      limit: 1,
+      mediaType: "\u56fe\u6587",
+      dateRange: "\u5168\u90e8",
+      sortBy: "\u70b9\u8d5e\u91cf"
+    });
+
+    assert.equal(response.ok, true);
+    assert.equal(sortClicks, 1);
+    assert.equal(mediaClicks, 1);
+  } finally {
+    if (previousDocument) Object.defineProperty(globalThis, "document", previousDocument);
+    else delete (globalThis as { document?: Document }).document;
+    if (previousCollector) Object.defineProperty(globalThis, "XhsPageCollector", previousCollector);
+    else delete (globalThis as { XhsPageCollector?: unknown }).XhsPageCollector;
+  }
+});
+
+test("search actions fail closed when a requested filter is unavailable", async () => {
+  const page = parseHTML(`
+    <input placeholder="搜索小红书" value="防晒">
+    <button class="min-width-search-icon"></button>
+    <div>筛选</div>
+    <section class="note-item"><a href="/search_result/64f0a1b2c3d4e5f60718293a?xsec_token=live"><span class="title">防晒实测</span></a></section>
+  `).document;
+  const actions = require("../browser-extension/xhs-content.js") as {
+    handleMessage(message: unknown): Promise<Record<string, unknown>>;
+  };
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const previousCollector = Object.getOwnPropertyDescriptor(globalThis, "XhsPageCollector");
+  Object.defineProperty(globalThis, "document", { configurable: true, value: page });
+  Object.defineProperty(globalThis, "XhsPageCollector", { configurable: true, value: collector });
+  try {
+    const response = await actions.handleMessage({
+      action: "xhs:search",
+      query: "防晒",
+      limit: 1,
+      mediaType: "图文",
+      dateRange: "全部",
+      sortBy: "点赞量"
+    });
+
+    assert.equal(response.ok, false);
+    assert.equal(response.code, "PAGE_ACTION_FAILED");
+  } finally {
+    if (previousDocument) Object.defineProperty(globalThis, "document", previousDocument);
+    else delete (globalThis as { document?: Document }).document;
+    if (previousCollector) Object.defineProperty(globalThis, "XhsPageCollector", previousCollector);
+    else delete (globalThis as { XhsPageCollector?: unknown }).XhsPageCollector;
+  }
+});
+
 test("xhs content actions accept only the two fixed commands", () => {
   const source = readFileSync(new URL("../browser-extension/xhs-content.js", import.meta.url), "utf8");
+  assert.match(source, /const SORT_LABELS = \{ "浏览量": "综合", "点赞量": "最多点赞", "评论量": "最多评论", "收藏量": "最多收藏" \}/);
+  assert.match(source, /applyFilter\(SORT_LABELS\[message\.sortBy\]\)/);
   const actions = require("../browser-extension/xhs-content.js") as {
     validateMessage(message: unknown):
       | { ok: true; action: "xhs:search" | "xhs:detail"; value: Record<string, unknown> }

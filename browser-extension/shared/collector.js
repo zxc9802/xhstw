@@ -204,13 +204,21 @@
     return null;
   }
 
+  function visibleSearchCardLink(card) {
+    const links = queryAll(card, 'a[href*="/explore/"], a[href*="/discovery/item/"], a[href*="/item/"], a[href*="/search_result/"]');
+    for (const link of links) {
+      if (!isHidden(link)) return link;
+    }
+    return null;
+  }
+
   function parseSearchCards(document, queryText, limit) {
     try {
       const maximum = Math.min(5, Math.max(0, Number.isInteger(limit) ? limit : 0));
       const rows = [];
       for (const card of queryAll(document, "section.note-item, .note-item, [data-note-id]")) {
         if (rows.length >= maximum) break;
-        const link = query(card, 'a[href*="/explore/"], a[href*="/discovery/item/"], a[href*="/item/"], a[href*="/search_result/"]');
+        const link = visibleSearchCardLink(card);
         const href = attr(link, "href");
         const url = normalizeNoteUrl(href);
         const title = text(card, ".title") || text(link);
@@ -290,11 +298,15 @@
       const content = text(detailRoot, ".note-content .desc, .desc, .content, #detail-desc");
       const author = text(detailRoot, ".author .username, .author-name, .user .name, .username, .author");
       const publishedAt = text(detailRoot, "time, .date, .published-at");
-      const likes = text(detailRoot, ".like-wrapper .count, .likes, .like-count");
-      const comments = text(detailRoot, ".chat-wrapper .count, .comments, .comment-count");
-      const saves = text(detailRoot, ".collect-wrapper .count, .saves, .collect-count, .favorite-count");
+      const engagementRoot = query(detailRoot, ".buttons.engage-bar-style, .interact-container") || detailRoot;
+      const likes = text(engagementRoot, ".like-wrapper .count, .likes, .like-count");
+      const comments = text(engagementRoot, ".chat-wrapper .count, .comments, .comment-count");
+      const saves = text(engagementRoot, ".collect-wrapper .count, .saves, .collect-count, .favorite-count");
       const media = parseMedia(detailRoot);
-      if (!title || (!content && !author && !likes && !comments && !saves && !media.length)) {
+      if (!content || !media.length) {
+        return { ok: false, code: "DETAIL_INCOMPLETE", message: "详情正文或图片未完整加载" };
+      }
+      if (!title) {
         return { ok: false, code: "PAGE_STRUCTURE_CHANGED", message: "未检测到有效的小红书详情内容" };
       }
       return {

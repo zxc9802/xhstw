@@ -8,7 +8,7 @@ const SEND_RETRY_DELAY_MS = 500;
 const ACTIVE_STORAGE_KEY = "xhsActiveTask";
 const COOLDOWN_STORAGE_KEY = "xhsCooldownUntil";
 const BLOCK_CODES = new Set(["LOGIN_REQUIRED", "CAPTCHA", "RATE_LIMITED"]);
-const SKIPPABLE_DETAIL_CODES = new Set(["NOTE_UNAVAILABLE"]);
+const SKIPPABLE_DETAIL_CODES = new Set(["NOTE_UNAVAILABLE", "DETAIL_INCOMPLETE"]);
 const SEARCH_CANDIDATE_LIMIT = 5;
 const protocol = globalThis.XhsExtensionProtocol;
 const collector = globalThis.XhsPageCollector;
@@ -268,7 +268,7 @@ async function runCollection(context, task) {
     await closeTaskTab(context);
     await restoreOrigin(context);
     await clearPersisted();
-    const skippedMessage = skippedUnavailable ? `，跳过 ${skippedUnavailable} 条不可浏览内容` : "";
+    const skippedMessage = skippedUnavailable ? `，跳过 ${skippedUnavailable} 条不可浏览或不完整内容` : "";
     post(context, "result", { topics, message: `本机浏览器已抓取 ${topics.length} 条${skippedMessage}` });
     if (active === context) active = null;
   } catch (error) {

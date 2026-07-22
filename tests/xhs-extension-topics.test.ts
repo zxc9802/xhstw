@@ -23,10 +23,11 @@ function topic(id: string, keyword: string, url: string, title = id): Topic {
   };
 }
 
-test("merges extension topics without reviving rejected or duplicate URLs", () => {
+test("adds new extension topics without replacing existing rows or reviving rejected URLs", () => {
   const refreshedUrl = "https://www.xiaohongshu.com/explore/64f0a1b2c3d4e5f60718293a?xsec_token=old";
   const otherUrl = "https://www.xiaohongshu.com/explore/74f0a1b2c3d4e5f60718293b";
   const rejectedUrl = "https://www.xiaohongshu.com/explore/84f0a1b2c3d4e5f60718293c";
+  const newUrl = "https://www.xiaohongshu.com/explore/94f0a1b2c3d4e5f60718293d";
   const current = [
     topic("old-active", "防晒", refreshedUrl, "旧的防晒结果"),
     topic("other", "通勤", otherUrl, "保留的其它关键词结果")
@@ -35,15 +36,17 @@ test("merges extension topics without reviving rejected or duplicate URLs", () =
     topic("new-active", "防晒", refreshedUrl.replace("old", "new"), "刷新的防晒结果"),
     topic("duplicate-active", "防晒", refreshedUrl.replace("old", "another"), "同链接的后到结果"),
     topic("updated-other", "防晒", otherUrl, "同链接的新数据"),
+    topic("brand-new", "防晒", newUrl, "真正新增的结果"),
     topic("rejected", "防晒", rejectedUrl, "不应恢复")
   ];
 
   const merged = mergeExtensionTopics(current, incoming, ["防晒"], [topic("blocked", "防晒", `${rejectedUrl}?xsec_token=blocked`)]);
 
-  assert.deepEqual(merged.map((item) => item.url), [refreshedUrl.replace("old", "another"), otherUrl]);
-  assert.equal(merged[0]?.title, "同链接的后到结果");
-  assert.equal(merged[1]?.title, "同链接的新数据");
-  assert.equal(merged.some((item) => item.id === "old-active"), false);
+  assert.deepEqual(merged.map((item) => item.url), [newUrl, refreshedUrl, otherUrl]);
+  assert.equal(merged[0]?.title, "真正新增的结果");
+  assert.equal(merged[1]?.title, "旧的防晒结果");
+  assert.equal(merged[2]?.title, "保留的其它关键词结果");
+  assert.equal(merged.some((item) => item.id === "old-active"), true);
   assert.equal(merged.some((item) => item.id === "rejected"), false);
 });
 
@@ -67,6 +70,9 @@ test("topic page uses one local extension task and direct browser media URLs", (
   assert.doesNotMatch(source, /fetch\(["']\/api\/topics\/opencli-xhs/);
   assert.doesNotMatch(source, /\/api\/topics\/media-proxy/);
   assert.equal(source.match(/referrerPolicy="no-referrer"/g)?.length, 2);
+  assert.match(source, /useState<"全部" \| "图文" \| "视频">\("全部"\)/);
+  assert.match(source, /useState<"浏览量" \| "点赞量" \| "评论量" \| "收藏量">\("浏览量"\)/);
+  assert.match(source, /sortBy: collectMethod/);
 });
 
 test("extension detection replaces the temporary checking feedback", () => {

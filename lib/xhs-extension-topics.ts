@@ -19,25 +19,19 @@ function topicKey(item: Topic) {
 export function mergeExtensionTopics(
   current: Topic[],
   incoming: Topic[],
-  activeKeywords: string[],
+  _activeKeywords: string[],
   rejected: Topic[]
 ): Topic[] {
   const rejectedKeys = new Set(rejected.map(topicKey));
-  const incomingByKey = new Map<string, Topic>();
+  const retained = current.filter((item) => !rejectedKeys.has(topicKey(item)));
+  const knownKeys = new Set(retained.map(topicKey));
+  const added: Topic[] = [];
   for (const item of incoming) {
     const key = topicKey(item);
-    if (!rejectedKeys.has(key)) incomingByKey.set(key, item);
+    if (rejectedKeys.has(key) || knownKeys.has(key)) continue;
+    knownKeys.add(key);
+    added.push(item);
   }
 
-  const active = new Set(activeKeywords);
-  const retained = current.filter((item) => !active.has(item.keyword ?? "") && !rejectedKeys.has(topicKey(item)));
-  const mergedRetained = retained.map((item) => {
-    const key = topicKey(item);
-    const replacement = incomingByKey.get(key);
-    if (!replacement) return item;
-    incomingByKey.delete(key);
-    return { ...item, ...replacement };
-  });
-
-  return [...incomingByKey.values(), ...mergedRetained];
+  return [...added, ...retained];
 }
