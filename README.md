@@ -6,8 +6,8 @@
 
 - 本地内容生产、审核、检测、素材规划和归档工具。
 - 不自动发布任何平台内容。
-- 不登录小红书、抖音、TikTok、Instagram、Facebook。
-- 不模拟浏览器进入平台后台抓取数据。
+- 服务器不登录小红书、抖音、TikTok、Instagram、Facebook。
+- 小红书选题采集由用户可选安装的本机浏览器扩展执行，使用用户当前浏览器的登录状态；服务器不代理平台访问。
 - 不接管电脑，不做真实剪映自动剪辑。
 
 ## 启动方式
@@ -53,17 +53,13 @@ Copy-Item .env.example .env.local
 - 参考解析：`lib/adapters/reference-parser.ts`
 - 本地保存：`lib/adapters/local-storage.ts`
 - 自动剪辑占位：`lib/adapters/editing-adapter.ts`
-- OpenCLI 小红书公开选题采集：`lib/adapters/opencli-xiaohongshu.ts`
+- 小红书本机浏览器采集：`lib/xhs-extension-client.ts`、`browser-extension/`
 
-## OpenCLI 小红书选题采集
+## 小红书本机浏览器选题采集
 
-项目已预留 `POST /api/topics/opencli-xhs`，由本地 API route 调用 OpenCLI adapter，再写入平台选题库页面状态。当前只用于只读公开搜索，不发布、不关注、不读取创作者后台、不使用平台登录后台数据。
+选题库页面通过本机浏览器扩展下达固定的搜索和详情读取任务。扩展只读取当前页面可见的公开内容，采集结果直接回传给当前网页并保存在浏览器本地；服务器不登录小红书，也不转发小红书页面、图片或视频请求。
 
-如果 OpenCLI Browser Bridge extension 未连接，接口会自动返回 `data/topics/xiaohongshu-opencli-hot.json` 中的 fallback 选题样本，并在页面提示原因。可在 `.env.local` 配置：
-
-```text
-OPENCLI_BIN=opencli.cmd
-```
+部署后需要为正式网站域名打包扩展，并由每位使用者在 Chrome 或 Edge 中安装。详细步骤、权限范围和风控处理方式见 [小红书本机浏览器扩展安装说明](docs/xhs-browser-extension-install.md)。旧的 `POST /api/topics/opencli-xhs`、`/api/topics/open-xhs-link` 和 `/api/topics/media-proxy` 路由已停用并返回 `410 Gone`。
 
 ## 目录结构说明
 
