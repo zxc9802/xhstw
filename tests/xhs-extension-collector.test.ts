@@ -7,7 +7,7 @@ import { parseHTML } from "linkedom";
 const require = createRequire(import.meta.url);
 const collector = require("../browser-extension/shared/collector.js") as {
   clean(value: unknown): string;
-  detectPageState(document: Document): { ok: true } | { ok: false; code: string; message: string };
+  detectPageState(document: unknown): { ok: true } | { ok: false; code: string; message: string };
   noteId(value: unknown): string;
   normalizeNoteUrl(value: unknown): string;
   parseSearchCards(document: Document, query: string, limit: number): Array<Record<string, unknown>>;
@@ -90,6 +90,74 @@ test("security blocks are recognized before detail parsing", () => {
   if (!loginState.ok) assert.equal(loginState.code, "LOGIN_REQUIRED");
   assert.deepEqual(collector.detectPageState(ordinaryText), { ok: true });
   assert.deepEqual(collector.parseDetail(rateLimited, "备用标题"), { ok: false, code: "RATE_LIMITED", message: "小红书提示访问频繁，请稍后再试" });
+});
+
+test("security markers accept direct strings without blocking ordinary note prose", () => {
+  const directMarkers = [
+    ["300013", "RATE_LIMITED"],
+    ["安全限制", "RATE_LIMITED"],
+    ["访问频繁", "RATE_LIMITED"],
+    ["验证码", "CAPTCHA"],
+    ["请完成验证", "CAPTCHA"],
+    ["滑块验证", "CAPTCHA"],
+    ["登录后查看", "LOGIN_REQUIRED"],
+    ["手机号登录", "LOGIN_REQUIRED"],
+    ["扫码登录", "LOGIN_REQUIRED"]
+  ] as const;
+  const ordinaryNote = "这篇笔记讨论访问频繁、验证码和登录三个常见产品问题，并给出了处理建议。";
+
+  for (const [marker, code] of directMarkers) {
+    const state = collector.detectPageState(marker);
+    assert.equal(state.ok, false);
+    if (!state.ok) assert.equal(state.code, code);
+  }
+  assert.deepEqual(collector.detectPageState(ordinaryNote), { ok: true });
+});
+
+test("hidden login markup does not block collection", () => {
+  const hiddenLogin = parseHTML("<section hidden class=\"login-container\"><input type=password></section><article>公开正文</article>").document;
+  const ariaHiddenLogin = parseHTML("<section aria-hidden=\"true\" class=\"login-container\"><input type=password></section><article>公开正文</article>").document;
+  const styledHiddenLogin = parseHTML("<section style=\"display:none\" class=\"login-container\"><input type=password></section><article>公开正文</article>").document;
+  const hiddenRateLimit = parseHTML("<section hidden>300013</section>").document.querySelector("section");
+
+  assert.deepEqual(collector.detectPageState(hiddenLogin), { ok: true });
+  assert.deepEqual(collector.detectPageState(ariaHiddenLogin), { ok: true });
+  assert.deepEqual(collector.detectPageState(styledHiddenLogin), { ok: true });
+  assert.deepEqual(collector.detectPageState(hiddenRateLimit), { ok: true });
+});
+
+test("detail media ignores comment and profile ancestor containers", () => {
+  const detail = collector.parseDetail(fixture("xhs-detail.html"), "通勤防晒实测");
+  const urls = (detail.media as Array<{ url: string }>).map((item) => item.url);
+
+  assert.deepEqual(urls, [
+    "https://sns-webpic-qc.xhscdn.com/detail-1.webp",
+    "https://sns-webpic-qc.xhscdn.com/detail-2.webp"
+  ]);
+});
+
+test("search covers become protocol-safe media when detail media is absent", () => {
+  const topic = collector.buildTopic({
+    title: "搜索封面回退",
+    url: "https://www.xiaohongshu.com/explore/64f0a1b2c3d4e5f60718293a",
+    coverUrl: "https://sns-webpic-qc.xhscdn.com/search-cover.webp",
+    query: "防晒"
+  }, { title: "搜索封面回退", author: "测试作者", media: [] }, new Date("2026-07-22T00:00:00.000Z"));
+  const wireTopic = JSON.parse(JSON.stringify(topic));
+  const envelope = {
+    channel: protocol.CHANNEL,
+    protocolVersion: protocol.PROTOCOL_VERSION,
+    direction: "extension-to-page",
+    type: "result",
+    requestId: REQUEST_ID,
+    payload: { topics: [wireTopic], message: "完成" }
+  };
+
+  assert.deepEqual(topic.media, [{ type: "image", url: "https://sns-webpic-qc.xhscdn.com/search-cover.webp", name: "搜索封面" }]);
+  assert.equal(topic.coverUrl, "https://sns-webpic-qc.xhscdn.com/search-cover.webp");
+  assert.equal(topic.coverType, "image");
+  assert.equal(topic.mediaType, "图文");
+  assert.equal(protocol.isEnvelope(envelope, "extension-to-page"), true);
 });
 
 test("note identifiers and canonical URLs support public Xiaohongshu routes", () => {

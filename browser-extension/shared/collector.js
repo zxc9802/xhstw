@@ -44,19 +44,65 @@
     }
   }
 
-  function detectPageState(document) {
-    const pageText = clean(`${document && document.body ? document.body.textContent : ""} ${document && document.documentElement ? document.documentElement.textContent : ""}`);
-    if (/300013|安全限制|访问频繁/.test(pageText)) {
+  function isHidden(element) {
+    let current = element;
+    while (current && current.nodeType === 1) {
+      const style = attr(current, "style").toLowerCase();
+      if ((typeof current.hasAttribute === "function" && current.hasAttribute("hidden")) || attr(current, "aria-hidden").toLowerCase() === "true" || /(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\s*(?:;|$)/.test(style)) return true;
+      current = current.parentElement;
+    }
+    return false;
+  }
+
+  function visibleText(root) {
+    try {
+      const collect = (node) => {
+        if (!node) return "";
+        if (node.nodeType === 1 && isHidden(node)) return "";
+        if (node.nodeType === 3) return node.nodeValue || "";
+        if (!node.childNodes) return "";
+        return Array.from(node.childNodes).map(collect).join(" ");
+      };
+      const value = clean(collect(root));
+      if (value || (root && root.childNodes && root.childNodes.length)) return value;
+      return clean(root && root.textContent);
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function hasVisible(root, selector) {
+    return queryAll(root, selector).some((element) => !isHidden(element));
+  }
+
+  function pageStateFromText(value, direct) {
+    const pageText = clean(value);
+    const exact = (pattern) => pattern.test(pageText);
+    const strongRateLimit = /300013|(?:安全限制|访问频繁).{0,12}(?:请稍后|稍后再试|操作频繁)|(?:小红书|系统).{0,12}(?:安全限制|访问频繁)/;
+    const strongCaptcha = /请完成(?:安全)?验证|请进行滑块验证|需要(?:安全)?验证码/;
+    if (strongRateLimit.test(pageText) || (direct && exact(/^(?:安全限制|访问频繁|安全限制\s*[\/、，,]\s*访问频繁|访问频繁\s*[\/、，,]\s*安全限制)$/))) {
       return { ok: false, code: "RATE_LIMITED", message: BLOCK_MESSAGES.RATE_LIMITED };
     }
-    if (/验证码|请完成验证|滑块验证/.test(pageText)) {
+    if (strongCaptcha.test(pageText) || (direct && exact(/^(?:验证码|请完成验证|滑块验证)$/))) {
       return { ok: false, code: "CAPTCHA", message: BLOCK_MESSAGES.CAPTCHA };
     }
-    const loginInput = query(document, 'input[type="password"], input[name*="password" i]');
-    const loginPanel = query(document, ".login-container, .login-panel, [data-login-form], [data-testid='login']");
-    if (loginInput || loginPanel) {
+    if (direct && exact(/^(?:登录后查看|手机号登录|扫码登录)$/)) {
       return { ok: false, code: "LOGIN_REQUIRED", message: BLOCK_MESSAGES.LOGIN_REQUIRED };
     }
+    return null;
+  }
+
+  function detectPageState(input) {
+    if (typeof input === "string") return pageStateFromText(input, true) || { ok: true };
+    const pageText = visibleText(input);
+    const textState = pageStateFromText(pageText, true);
+    if (textState) return textState;
+    if (hasVisible(input, ".captcha, .verify, .slider-verify, [data-captcha], [data-verify]") && /验证码|验证|滑块/.test(pageText)) {
+      return { ok: false, code: "CAPTCHA", message: BLOCK_MESSAGES.CAPTCHA };
+    }
+    const loginInput = hasVisible(input, 'input[type="password"], input[name*="password" i]');
+    const loginPanel = hasVisible(input, ".login-container, .login-panel, [data-login-form], [data-testid='login']");
+    if (loginInput || loginPanel) return { ok: false, code: "LOGIN_REQUIRED", message: BLOCK_MESSAGES.LOGIN_REQUIRED };
     return { ok: true };
   }
 
@@ -134,7 +180,13 @@
     for (const element of queryAll(document, "img, video")) {
       if (media.length >= 10) break;
       const url = mediaUrl(element);
-      const descriptor = `${url} ${attr(element, "class")} ${attr(element, "alt")}`.toLowerCase();
+      let ancestor = element;
+      let context = "";
+      while (ancestor && ancestor.nodeType === 1) {
+        context += ` ${attr(ancestor, "class")} ${attr(ancestor, "id")} ${attr(ancestor, "role")} ${attr(ancestor, "aria-label")}`;
+        ancestor = ancestor.parentElement;
+      }
+      const descriptor = `${url} ${attr(element, "class")} ${attr(element, "alt")} ${context}`.toLowerCase();
       if (!isHttpsUrl(url) || /avatar|profile|icon|emoji|comment/.test(descriptor) || seen.has(url)) continue;
       seen.add(url);
       const type = String(element.tagName).toLowerCase() === "video" ? "video" : "image";
@@ -209,7 +261,10 @@
     const sourceRow = row && typeof row === "object" ? row : {};
     const sourceDetail = detail && typeof detail === "object" ? detail : {};
     const title = clean(sourceDetail.title) || clean(sourceRow.title) || "未命名笔记";
-    const media = safeMedia(sourceDetail.media);
+    let media = safeMedia(sourceDetail.media);
+    if (!media.length && isHttpsUrl(sourceRow.coverUrl)) {
+      media = [{ type: "image", url: sourceRow.coverUrl, name: "搜索封面" }];
+    }
     const coverUrl = isHttpsUrl(sourceRow.coverUrl) ? sourceRow.coverUrl : (media[0] && media[0].url);
     const cover = media.find((item) => item.url === coverUrl);
     const url = normalizeNoteUrl(sourceRow.url);
