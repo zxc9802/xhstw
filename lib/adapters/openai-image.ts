@@ -25,6 +25,7 @@ type Image2Config = {
 
 const MAX_IMAGES_PER_RUN = 10;
 const MAX_PARALLEL_IMAGE_REQUESTS = Math.max(1, Math.min(10, Number(process.env.OPENAI_IMAGE_PARALLEL_REQUESTS) || 4));
+const PRIMARY_IMAGE_ATTEMPTS = 4;
 const MAX_RESPONSE_DEPTH = 6;
 const RESPONSE_CONTAINER_KEYS = new Set([
   "content",
@@ -267,7 +268,20 @@ async function queryImageTask(config: Image2Config, taskId: string) {
   throw new Error(`Image 2.0 生成超时：任务 ${taskId} 在限定次数内未完成。`);
 }
 
-async function requestImage(config: Image2Config, prompt: string, scale: string) {
+async function requestImage(
+  config: Image2Config,
+  prompt: string,
+  scale: string,
+  sourceImageUrls: string[]
+) {
+  const payload: Record<string, unknown> = {
+    params: {
+      resolution: config.resolution,
+      scale
+    }
+  };
+  if (sourceImageUrls.length) payload.resources = sourceImageUrls;
+
   const response = await fetch(config.apiUrl, {
     method: "POST",
     headers: providerHeaders(config),
@@ -275,12 +289,7 @@ async function requestImage(config: Image2Config, prompt: string, scale: string)
       modelId: config.modelId,
       abilityType: "IMAGE",
       prompt,
-      payload: {
-        params: {
-          resolution: config.resolution,
-          scale
-        }
-      }
+      payload
     }),
     signal: AbortSignal.timeout(IMAGE_PROVIDER_TIMEOUT_MS)
   });
@@ -290,7 +299,25 @@ async function requestImage(config: Image2Config, prompt: string, scale: string)
   if (extractImageUrls(data).length) return data;
 
   const taskId = extractTaskId(data);
-  return taskId ? queryImageTask(config, taskId) : data;
+  if (taskId) return queryImageTask(config, taskId);
+  throw new Error("Image 2.0 生成失败：响应未返回图片或 taskId。");
+}
+
+async function requestCurrentImageWithRetries(
+  config: Image2Config,
+  prompt: string,
+  scale: string,
+  sourceImageUrls: string[]
+) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < PRIMARY_IMAGE_ATTEMPTS; attempt += 1) {
+    try {
+      return await requestImage(config, prompt, scale, sourceImageUrls);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 async function runWithConcurrency<T>(tasks: Array<() => Promise<T>>, concurrency: number) {
@@ -321,18 +348,21 @@ export async function generateImage(input: unknown) {
     return mockImages(body);
   }
 
-  if (body.sourceImageUrls?.length) {
-    throw new Error("Image 2.0 新接口暂不支持参考图编辑。");
-  }
-
   const prompt = [
     "请生成真实摄影质感的图片，优先像手机或相机拍摄的真实产品图/生活场景图。避免假海报感、3D 渲染感、塑料质感、过度磨皮、卡通插画、AI 拼贴感和虚假品牌包装。光线自然，材质真实，产品边缘清晰。",
     body.prompt || "生成一张适合内容生产中台图文页面的真实图片。",
-    body.sourceImages?.length ? `参考素材名称：${body.sourceImages.join("、")}` : ""
+    body.sourceImages?.length ? `参考素材名称：${body.sourceImages.join("、")}` : "",
+    body.sourceImageUrls?.length
+      ? "已随请求传入参考图。请严格按用户提示处理参考图关系，只修改指定对象，其他构图、背景、文字位置、光线和风格尽量保持不变。"
+      : ""
   ].filter(Boolean).join("\n");
   const requestedCount = Math.max(1, Math.min(MAX_IMAGES_PER_RUN, Number(body.count) || 1));
   const scale = imageScaleFromSize(body.size);
-  const tasks = Array.from({ length: requestedCount }, () => () => requestImage(config, prompt, scale));
+  const sourceImageUrls = body.sourceImageUrls ?? [];
+  const tasks = Array.from(
+    { length: requestedCount },
+    () => () => requestCurrentImageWithRetries(config, prompt, scale, sourceImageUrls)
+  );
   const results = await runWithConcurrency(tasks, MAX_PARALLEL_IMAGE_REQUESTS);
   const images = results.flatMap(extractImageUrls).slice(0, requestedCount).map((url, index) => ({
     id: `image2_${Date.now()}_${index}`,

@@ -100,20 +100,41 @@ test("treats an HTTP 200 provider rejection as an error", async () => {
   });
 });
 
-test("rejects reference-image input before making a provider request", async () => {
+test("sends reference images to the project OpenAPI resources field", async () => {
+  let requestBody: Record<string, unknown> | undefined;
+  await withProvider(async (_url, init) => {
+    requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return Response.json({
+      success: true,
+      data: { images: [{ url: "https://img.test/edited.jpg" }] }
+    });
+  }, async () => {
+    const result = await generateImage({
+      prompt: "只换背景",
+      sourceImageUrls: ["https://img.test/source.jpg"]
+    });
+
+    assert.deepEqual(requestBody?.payload, {
+      resources: ["https://img.test/source.jpg"],
+      params: { resolution: "1K", scale: "1:1" }
+    });
+    assert.equal(result.images?.[0]?.url, "https://img.test/edited.jpg");
+  });
+});
+
+test("retries the project OpenAPI three times after the first failure", async () => {
   let calls = 0;
   await withProvider(async () => {
     calls += 1;
-    return Response.json({ success: true, data: null });
+    if (calls < 4) return Response.json({ success: false, msg: `失败 ${calls}` });
+    return Response.json({
+      success: true,
+      data: { images: [{ url: "https://img.test/fourth-attempt.jpg" }] }
+    });
   }, async () => {
-    await assert.rejects(
-      generateImage({
-        prompt: "只换背景",
-        sourceImageUrls: ["https://img.test/source.jpg"]
-      }),
-      /新接口暂不支持参考图编辑/
-    );
-    assert.equal(calls, 0);
+    const result = await generateImage({ prompt: "橘猫", count: 1 });
+    assert.equal(calls, 4);
+    assert.equal(result.images?.[0]?.url, "https://img.test/fourth-attempt.jpg");
   });
 });
 
