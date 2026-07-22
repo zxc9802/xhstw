@@ -66,9 +66,9 @@ test("detects a compatible local extension", async () => {
   const request = target.messages[0]?.message as { requestId: string; type: string };
 
   assert.equal(request.type, "ping");
-  target.receive(extensionMessage("pong", request.requestId, { version: "1.2.3", protocolVersion: 1 }));
+  target.receive(extensionMessage("pong", request.requestId, { version: "0.1.0" }));
 
-  assert.deepEqual(await detection, { version: "1.2.3", protocolVersion: 1 });
+  assert.deepEqual(await detection, { version: "0.1.0", protocolVersion: 1 });
   client.dispose();
 });
 
@@ -85,6 +85,39 @@ test("streams progress before the final collection result", async () => {
 
   assert.deepEqual(progress, ["searching"]);
   assert.deepEqual(await collected, { topics: [], message: "完成" });
+  client.dispose();
+});
+
+test("does not resolve detection from a collection result", async () => {
+  const target = new FakeMessageTarget();
+  const client = createXhsExtensionClient(target, 100);
+  const detection = client.detect();
+  const request = target.messages[0]?.message as { requestId: string };
+  let settled = false;
+  void detection.then(() => { settled = true; }, () => { settled = true; });
+
+  target.receive(extensionMessage("result", request.requestId, { topics: [], message: "完成" }));
+  await Promise.resolve();
+
+  assert.equal(settled, false);
+  target.receive(extensionMessage("pong", request.requestId, { version: "0.1.0" }));
+  await detection;
+  client.dispose();
+});
+
+test("does not resolve collection from a pong", async () => {
+  const target = new FakeMessageTarget();
+  const client = createXhsExtensionClient(target, 100);
+  const collected = client.collect(collectTask());
+  let settled = false;
+  void collected.then(() => { settled = true; }, () => { settled = true; });
+
+  target.receive(extensionMessage("pong", "collect-1", { version: "0.1.0" }));
+  await Promise.resolve();
+
+  assert.equal(settled, false);
+  target.receive(extensionMessage("result", "collect-1", { topics: [], message: "完成" }));
+  await collected;
   client.dispose();
 });
 
@@ -132,4 +165,25 @@ test("ignores messages from the wrong origin or source", async () => {
 
   await assert.rejects(detection, /timed out/i);
   client.dispose();
+});
+
+test("uses the fixed collection timeout when a custom ping timeout is supplied", async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  const delays: number[] = [];
+  globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: any[]) => {
+    delays.push(timeout ?? 0);
+    return originalSetTimeout(handler, 1_000, ...args);
+  }) as typeof setTimeout;
+
+  try {
+    const target = new FakeMessageTarget();
+    const client = createXhsExtensionClient(target, 25);
+    const collected = client.collect(collectTask());
+    client.dispose();
+
+    await assert.rejects(collected, /disposed/i);
+    assert.deepEqual(delays, [600_000]);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
 });

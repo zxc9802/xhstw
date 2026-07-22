@@ -49,6 +49,7 @@ interface MessageEnvelope<T = unknown> {
 }
 
 interface PendingRequest {
+  expectedTerminalType: "pong" | "result";
   reject: (reason: Error) => void;
   resolve: (value: any) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -116,7 +117,7 @@ export function createXhsExtensionClient(target: ExtensionTarget = getDefaultTar
       rejectPending(message.requestId, error);
       return;
     }
-    if (message.type === "pong" || message.type === "result") {
+    if (message.type === request.expectedTerminalType) {
       clearTimeout(request.timer);
       pending.delete(message.requestId);
       request.resolve(message.payload);
@@ -125,11 +126,11 @@ export function createXhsExtensionClient(target: ExtensionTarget = getDefaultTar
 
   target.addEventListener("message", listener);
 
-  const startRequest = <T>(requestId: string, type: PageMessageType, payload: unknown, requestTimeout: number, onProgress?: (progress: ExtensionProgress) => void) => {
+  const startRequest = <T>(requestId: string, type: "ping" | "collect", payload: unknown, requestTimeout: number, expectedTerminalType: "pong" | "result", onProgress?: (progress: ExtensionProgress) => void) => {
     if (pending.has(requestId)) return Promise.reject(new Error(`A request with id ${requestId} is already pending.`)) as Promise<T>;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => rejectPending(requestId, new Error(`XHS extension request timed out after ${requestTimeout}ms.`)), requestTimeout);
-      pending.set(requestId, { resolve, reject, timer, onProgress });
+      pending.set(requestId, { expectedTerminalType, resolve, reject, timer, onProgress });
       send(type, requestId, payload);
     });
   };
@@ -137,10 +138,11 @@ export function createXhsExtensionClient(target: ExtensionTarget = getDefaultTar
   return {
     detect() {
       const requestId = crypto.randomUUID();
-      return startRequest("" + requestId, "ping", {}, timeoutMs ?? DEFAULT_PING_TIMEOUT_MS) as Promise<{ version: string; protocolVersion: number }>;
+      return startRequest<{ version: string }>(requestId, "ping", {}, timeoutMs ?? DEFAULT_PING_TIMEOUT_MS, "pong")
+        .then((payload) => ({ version: payload.version, protocolVersion: XHS_EXTENSION_PROTOCOL_VERSION }));
     },
     collect(task, onProgress) {
-      return startRequest(task.requestId, "collect", task, timeoutMs ?? DEFAULT_COLLECT_TIMEOUT_MS, onProgress) as Promise<ExtensionCollectResult>;
+      return startRequest<ExtensionCollectResult>(task.requestId, "collect", task, DEFAULT_COLLECT_TIMEOUT_MS, "result", onProgress);
     },
     cancel(requestId) {
       send("cancel", requestId, { requestId });
