@@ -1,0 +1,42 @@
+{
+    "manifest_version":  3,
+    "name":  "小红书本机抓取助手",
+    "version":  "0.1.10",
+    "description":  "在用户自己的浏览器中执行内容生产中台下达的小红书公开页面抓取任务。",
+    "permissions":  [
+                        "storage"
+                    ],
+    "host_permissions":  [
+                             "https://www.xiaohongshu.com/*",
+                             "https://xhstw.qycm.top/*"
+                         ],
+    "background":  {
+                       "service_worker":  "background.js"
+                   },
+    "content_scripts":  [
+                            {
+                                "matches":  [
+                                                "https://xhstw.qycm.top/*"
+                                            ],
+                                "js":  [
+                                           "shared/protocol.js",
+                                           "app-bridge.js"
+                                       ],
+                                "run_at":  "document_start"
+                            },
+                            {
+                                "matches":  [
+                                                "https://www.xiaohongshu.com/*"
+                                            ],
+                                "js":  [
+                                           "shared/protocol.js",
+                                           "shared/collector.js",
+                                           "xhs-content.js"
+                                       ],
+                                "run_at":  "document_idle"
+                            }
+                        ],
+    "action":  {
+                   "default_title":  "小红书本机抓取助手"
+               }
+}
