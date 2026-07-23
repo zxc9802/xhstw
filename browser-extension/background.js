@@ -1,4 +1,4 @@
-importScripts("shared/protocol.js", "shared/collector.js", "shared/task-state.js");
+importScripts("shared/protocol.js", "shared/collector.js", "shared/task-state.js", "shared/media-transfer.js");
 
 const DETAIL_DELAY_MS = 4_000;
 const QUERY_DELAY_MS = 15_000;
@@ -10,9 +10,11 @@ const COOLDOWN_STORAGE_KEY = "xhsCooldownUntil";
 const BLOCK_CODES = new Set(["LOGIN_REQUIRED", "CAPTCHA", "RATE_LIMITED"]);
 const SKIPPABLE_DETAIL_CODES = new Set(["NOTE_UNAVAILABLE", "DETAIL_INCOMPLETE"]);
 const SEARCH_CANDIDATE_LIMIT = 5;
+const MEDIA_REPLY_TIMEOUT_MS = 30_000;
 const protocol = globalThis.XhsExtensionProtocol;
 const collector = globalThis.XhsPageCollector;
 const taskState = globalThis.XhsTaskState;
+const mediaTransfer = globalThis.XhsMediaTransfer;
 let active = null;
 let recoveryPromise = null;
 
@@ -93,6 +95,32 @@ function wait(context, milliseconds) {
       reject(context.cancelReason || new TaskError("CANCELED", "抓取任务已取消"));
     };
   });
+}
+
+function waitForMediaReply(context, assetKey, allowedTypes, expectedChunkIndex) {
+  ensureRunning(context);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      context.mediaWaiter = null;
+      reject(new TaskError("MEDIA_ACK_TIMEOUT", "网页保存媒体超时"));
+    }, MEDIA_REPLY_TIMEOUT_MS);
+    context.mediaWaiter = { assetKey, allowedTypes, expectedChunkIndex, resolve, reject, timer };
+  });
+}
+
+function routeMediaReply(context, message) {
+  const waiter = context && context.mediaWaiter;
+  if (!waiter || message.requestId !== context.requestId || !waiter.allowedTypes.has(message.type)) return;
+  if (!message.payload || message.payload.assetKey !== waiter.assetKey) return;
+  if (message.type === "media:ack" && message.payload.chunkIndex !== waiter.expectedChunkIndex) return;
+  clearTimeout(waiter.timer);
+  context.mediaWaiter = null;
+  if (message.type === "media:abort") {
+    const error = new TaskError(message.payload.code, message.payload.message);
+    waiter.reject(error);
+  } else {
+    waiter.resolve(message);
+  }
 }
 
 async function waitForTabComplete(context) {
@@ -195,7 +223,90 @@ function cancelContext(context, error, suppressError) {
   context.cancelReason = error;
   context.suppressError = context.suppressError || suppressError;
   if (context.abortWait) context.abortWait();
+  if (context.mediaWaiter) {
+    clearTimeout(context.mediaWaiter.timer);
+    context.mediaWaiter.reject(error);
+    context.mediaWaiter = null;
+  }
   void closeTaskTab(context);
+}
+
+function attachLocalKey(topic, job, assetKey, metadata) {
+  const item = topic.media[job.itemIndex];
+  if (!item) return;
+  if (job.role === "poster") item.posterLocalAssetKey = assetKey;
+  else {
+    item.localAssetKey = assetKey;
+    item.mimeType = metadata.mimeType;
+    item.size = metadata.byteLength;
+  }
+}
+
+async function downloadOneMedia(context, topicKey, topic, job, order) {
+  const assetKey = await mediaTransfer.createAssetKey(topicKey, job.role, order, job.sourceUrl);
+  let lastError;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      post(context, "media:start", { assetKey, topicKey, mediaRole: job.role, sourceUrl: job.sourceUrl });
+      const startReply = await waitForMediaReply(context, assetKey, new Set(["media:ready", "media:skip", "media:abort"]));
+      if (startReply.type === "media:skip") {
+        attachLocalKey(topic, job, assetKey, {
+          mimeType: topic.media[job.itemIndex]?.mimeType || (job.role === "video" ? "video/mp4" : "image/jpeg"),
+          byteLength: topic.media[job.itemIndex]?.size || 0
+        });
+        return;
+      }
+      const metadata = await mediaTransfer.downloadMedia({
+        sourceUrl: job.sourceUrl,
+        async onChunk(chunk) {
+          post(context, "media:chunk", { assetKey, ...chunk });
+          await waitForMediaReply(context, assetKey, new Set(["media:ack", "media:abort"]), chunk.chunkIndex);
+        }
+      });
+      post(context, "media:complete", { assetKey, ...metadata });
+      await waitForMediaReply(context, assetKey, new Set(["media:ack", "media:abort"]), metadata.chunkCount);
+      attachLocalKey(topic, job, assetKey, metadata);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (error instanceof TaskError && error.code === "QUOTA_EXCEEDED") throw error;
+      post(context, "media:error", {
+        assetKey,
+        code: error && error.code ? String(error.code).slice(0, 80) : "MEDIA_FETCH_FAILED",
+        message: error instanceof Error ? error.message.slice(0, 300) : "媒体下载失败"
+      });
+    }
+  }
+  throw lastError || new TaskError("MEDIA_FETCH_FAILED", "媒体下载失败");
+}
+
+async function transferTopicMedia(context, topic, topicKey, completed, total) {
+  const jobs = mediaTransfer.buildMediaJobs(topic);
+  for (let order = 0; order < jobs.length; order += 1) {
+    if (context.mediaStorageBlocked) break;
+    const job = jobs[order];
+    post(context, "progress", {
+      stage: "downloading",
+      completed,
+      total,
+      message: `正在下载第 ${completed + 1}/${total} 篇的媒体 ${order + 1}/${jobs.length}`
+    });
+    try {
+      await downloadOneMedia(context, topicKey, topic, job, order);
+      context.mediaCompleted += 1;
+    } catch (error) {
+      const failure = error instanceof TaskError
+        ? error
+        : new TaskError(error && error.code ? error.code : "MEDIA_FETCH_FAILED", error instanceof Error ? error.message : "媒体下载失败");
+      context.mediaFailed += 1;
+      if (failure.code === "QUOTA_EXCEEDED") context.mediaStorageBlocked = true;
+      post(context, "media:error", {
+        assetKey: await mediaTransfer.createAssetKey(topicKey, job.role, order, job.sourceUrl),
+        code: failure.code,
+        message: failure.message
+      });
+    }
+  }
 }
 
 async function runCollection(context, task) {
@@ -252,6 +363,7 @@ async function runCollection(context, task) {
         }
         const detailResponse = pageResult(rawDetailResponse, "detail");
         const topic = collector.buildTopic(row, detailResponse, new Date());
+        await transferTopicMedia(context, topic, key, topics.length, total);
         topics.push(topic);
         capturedForQuery += 1;
         seen.add(key);
@@ -269,7 +381,12 @@ async function runCollection(context, task) {
     await restoreOrigin(context);
     await clearPersisted();
     const skippedMessage = skippedUnavailable ? `，跳过 ${skippedUnavailable} 条不可浏览或不完整内容` : "";
-    post(context, "result", { topics, message: `本机浏览器已抓取 ${topics.length} 条${skippedMessage}` });
+    post(context, "result", {
+      topics,
+      message: `本机浏览器已抓取 ${topics.length} 条${skippedMessage}`,
+      mediaCompleted: context.mediaCompleted,
+      mediaFailed: context.mediaFailed
+    });
     if (active === context) active = null;
   } catch (error) {
     const failure = error instanceof TaskError ? error : new TaskError("PAGE_ACTION_FAILED", error instanceof Error ? error.message.slice(0, 300) : "本机抓取失败");
@@ -304,6 +421,10 @@ async function startCollection(port, originTabId, message) {
     cancelled: false,
     cancelReason: null,
     abortWait: null,
+    mediaWaiter: null,
+    mediaStorageBlocked: false,
+    mediaCompleted: 0,
+    mediaFailed: 0,
     suppressError: false,
     state: null
   };
@@ -348,7 +469,11 @@ chrome.runtime.onConnect.addListener((port) => {
       }
       return;
     }
-    void startCollection(port, originTabId, message);
+    if (["media:ready", "media:skip", "media:ack", "media:abort"].includes(message.type)) {
+      if (active && active.port === port) routeMediaReply(active, message);
+      return;
+    }
+    if (message.type === "collect") void startCollection(port, originTabId, message);
   });
   port.onDisconnect.addListener(() => {
     if (active && active.port === port) {

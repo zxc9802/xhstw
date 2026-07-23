@@ -432,6 +432,19 @@ test("bridge and background use validated messages and visible fixed-tab orchest
   assert.match(background, /limit:\s*SEARCH_CANDIDATE_LIMIT/);
   assert.match(background, /capturedForQuery/);
   assert.match(background, /skippedUnavailable/);
+  assert.match(background, /importScripts\([\s\S]*shared\/media-transfer\.js/);
+  assert.match(background, /async function transferTopicMedia/);
+  assert.match(background, /mediaTransfer\.buildMediaJobs\(topic\)/);
+  assert.match(background, /await waitForMediaReply\(context, assetKey, new Set\(\["media:ready", "media:skip", "media:abort"\]\)\)/);
+  assert.match(background, /post\(context, "media:chunk"/);
+  assert.match(background, /post\(context, "media:complete"/);
+  assert.match(background, /mediaCompleted/);
+  assert.match(background, /mediaFailed/);
+  assert.match(background, /await transferTopicMedia\(context, topic/);
+  assert.match(background, /\["media:ready", "media:skip", "media:ack", "media:abort"\]\.includes\(message\.type\)/);
+  assert.match(background, /routeMediaReply\(active, message\)/);
+  assert.match(background, /message\.type === "collect"\) void startCollection\(port, originTabId, message\)/);
+  assert.doesNotMatch(background, /^\s*void startCollection\(port, originTabId, message\);/m);
 
   for (const source of [bridge, background]) {
     for (const forbidden of [/eval\s*\(/, /new\s+Function/, /chrome\.cookies/, /document\.cookie/]) {
