@@ -1,15 +1,27 @@
 import { NextResponse, type NextRequest } from "next/server";
+import {
+  getMainAppSessionCookieName,
+  getMainAppSessionCookieOptions,
+  getMainAppSsoLaunchUrl,
+  readMainAppSessionCookie,
+  validateMainAppSession
+} from "./lib/main-app-sso";
 
-export function middleware(request: NextRequest) {
+export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  if (pathname === "/login") {
-    return NextResponse.redirect(new URL("/content?tab=image", request.url));
+  if (pathname === "/api/sso/callback") {
+    return NextResponse.next();
   }
 
-  return NextResponse.next();
+  const session = await readMainAppSessionCookie(request.cookies.get(getMainAppSessionCookieName())?.value);
+  if (session && await validateMainAppSession(session)) return NextResponse.next();
+
+  const response = NextResponse.redirect(getMainAppSsoLaunchUrl());
+  response.cookies.set(getMainAppSessionCookieName(), "", { ...getMainAppSessionCookieOptions(), maxAge: 0 });
+  return response;
 }
 
 export const config = {
-  matcher: ["/login"]
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"]
 };
