@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { mergeExtensionTopics } from "../lib/xhs-extension-topics";
+import {
+  mergeExtensionTopics,
+  resolveTopicMedia,
+  stripTopicLocalMedia,
+  topicMediaAssetKeys
+} from "../lib/xhs-extension-topics";
 import type { Topic } from "../types/topic";
 
 function topic(id: string, keyword: string, url: string, title = id): Topic {
@@ -57,10 +62,58 @@ test("keeps unrelated keyword rows when no refreshed row shares their URL", () =
   assert.deepEqual(mergeExtensionTopics([unrelated], [incoming], ["防晒"], []), [incoming, unrelated]);
 });
 
+test("local keys resolve to Blob URLs while legacy and failed media keep remote URLs", () => {
+  const item = topic("media", "防晒", "https://www.xiaohongshu.com/explore/94f0a1b2c3d4e5f60718293d");
+  item.media = [
+    {
+      type: "image",
+      url: "https://ci.xiaohongshu.com/a.jpg",
+      localAssetKey: "sha256-0123456789abcdef0123456789abcdef"
+    },
+    { type: "image", url: "https://ci.xiaohongshu.com/failed.jpg" },
+    {
+      type: "video",
+      url: "https://sns-video-qc.xhscdn.com/a.mp4",
+      posterUrl: "https://sns-webpic-qc.xhscdn.com/a.jpg",
+      localAssetKey: "sha256-11111111111111111111111111111111",
+      posterLocalAssetKey: "sha256-22222222222222222222222222222222"
+    }
+  ];
+  const resolved = resolveTopicMedia(item, new Map([
+    ["sha256-0123456789abcdef0123456789abcdef", "blob:image"],
+    ["sha256-11111111111111111111111111111111", "blob:video"],
+    ["sha256-22222222222222222222222222222222", "blob:poster"]
+  ]));
+  assert.deepEqual(resolved.map((media) => [media.url, media.posterUrl]), [
+    ["blob:image", undefined],
+    ["https://ci.xiaohongshu.com/failed.jpg", undefined],
+    ["blob:video", "blob:poster"]
+  ]);
+});
+
+test("delete helpers collect and strip every local media reference", () => {
+  const item = topic("media", "防晒", "https://www.xiaohongshu.com/explore/94f0a1b2c3d4e5f60718293d");
+  item.media = [{
+    type: "video",
+    url: "https://sns-video-qc.xhscdn.com/a.mp4",
+    localAssetKey: "sha256-11111111111111111111111111111111",
+    posterLocalAssetKey: "sha256-22222222222222222222222222222222"
+  }];
+  assert.deepEqual(topicMediaAssetKeys(item), [
+    "sha256-11111111111111111111111111111111",
+    "sha256-22222222222222222222222222222222"
+  ]);
+  assert.deepEqual(stripTopicLocalMedia(item).media, [{
+    type: "video",
+    url: "https://sns-video-qc.xhscdn.com/a.mp4"
+  }]);
+});
+
 test("topic page uses one local extension task and direct browser media URLs", () => {
   const source = readFileSync(new URL("../app/topics/page.tsx", import.meta.url), "utf8");
 
-  assert.match(source, /createXhsExtensionClient\(\)/);
+  assert.match(source, /createXhsTopicMediaStore\(\)/);
+  assert.match(source, /createXhsExtensionClient\(window, undefined, mediaStore\)/);
   assert.match(source, /extensionClientRef\.current\.collect\(task/);
   assert.match(source, /queries:\s*activeKeywords\.slice\(0,\s*2\)/);
   assert.match(source, /\.slice\(0,\s*2_000\)/);
@@ -73,11 +126,18 @@ test("topic page uses one local extension task and direct browser media URLs", (
   assert.match(source, /useState<"全部" \| "图文" \| "视频">\("全部"\)/);
   assert.match(source, /useState<"浏览量" \| "点赞量" \| "评论量" \| "收藏量">\("浏览量"\)/);
   assert.match(source, /sortBy: collectMethod/);
+  assert.match(source, /resolveTopicMedia\(item, localMediaUrls\)/);
+  assert.match(source, /URL\.createObjectURL\(blob\)/);
+  assert.match(source, /URL\.revokeObjectURL\(url\)/);
+  assert.match(source, /topicMediaStoreRef\.current\?\.deleteAssets\(keysToDelete\)/);
+  assert.match(source, /navigator\.storage\.persist\(\)/);
+  assert.match(source, /navigator\.storage\.estimate\(\)/);
+  assert.doesNotMatch(source, /appendMaterialLibrary|createLibraryAsset/);
 });
 
 test("extension detection replaces the temporary checking feedback", () => {
   const source = readFileSync(new URL("../app/topics/page.tsx", import.meta.url), "utf8");
 
-  assert.match(source, /client\.detect\(\)\.then\(\(\) => \{[\s\S]*?setExtensionStatus\("ready"\);[\s\S]*?setFeedback\("本机抓取扩展已连接/);
+  assert.match(source, /mediaStore\.cleanupIncomplete\(\)[\s\S]*?client\.detect\(\)[\s\S]*?setExtensionStatus\("ready"\);[\s\S]*?setFeedback\("本机抓取扩展已连接/);
   assert.match(source, /\.catch\(\(error: unknown\) => \{[\s\S]*?setExtensionStatus\([\s\S]*?setFeedback\("未检测到本机抓取扩展/);
 });

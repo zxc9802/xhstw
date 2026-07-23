@@ -1,4 +1,4 @@
-import type { Topic } from "@/types/topic";
+import type { Topic, TopicMedia } from "@/types/topic";
 
 function topicKey(item: Topic) {
   const url = item.url ?? "";
@@ -34,4 +34,25 @@ export function mergeExtensionTopics(
   }
 
   return [...added, ...retained];
+}
+
+export function topicMediaAssetKeys(item: Topic) {
+  return Array.from(new Set((item.media ?? []).flatMap((media) =>
+    [media.localAssetKey, media.posterLocalAssetKey].filter((key): key is string => Boolean(key))
+  )));
+}
+
+export function stripTopicLocalMedia(item: Topic): Topic {
+  return {
+    ...item,
+    media: item.media?.map(({ localAssetKey: _local, posterLocalAssetKey: _poster, mimeType: _mime, size: _size, ...media }) => media)
+  };
+}
+
+export function resolveTopicMedia(item: Topic, objectUrls: ReadonlyMap<string, string>): TopicMedia[] {
+  return (item.media ?? []).map((media) => ({
+    ...media,
+    url: media.localAssetKey ? objectUrls.get(media.localAssetKey) ?? "" : media.url,
+    posterUrl: media.posterLocalAssetKey ? objectUrls.get(media.posterLocalAssetKey) ?? "" : media.posterUrl
+  }));
 }

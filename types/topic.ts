@@ -1,5 +1,16 @@
 export type TopicStatus = "pending" | "approved" | "rejected" | "used" | "optimizing";
 
+export interface TopicMedia {
+  type: "image" | "video";
+  url: string;
+  name?: string;
+  posterUrl?: string;
+  localAssetKey?: string;
+  posterLocalAssetKey?: string;
+  mimeType?: string;
+  size?: number;
+}
+
 export interface Topic {
   id: string;
   platform: string;
@@ -18,7 +29,7 @@ export interface Topic {
   authorUrl?: string;
   coverUrl?: string;
   coverType?: "image" | "video";
-  media?: Array<{ type: "image" | "video"; url: string; name?: string; posterUrl?: string }>;
+  media?: TopicMedia[];
   mediaType?: "图文" | "视频";
   keyword?: string;
   parsedContent?: string;

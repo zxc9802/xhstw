@@ -7,7 +7,8 @@ import { Button } from "@/components/ui/Button";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { topics as initialTopics } from "@/lib/mock/data";
 import { createXhsExtensionClient, type XhsCollectTask, type XhsExtensionClient } from "@/lib/xhs-extension-client";
-import { mergeExtensionTopics } from "@/lib/xhs-extension-topics";
+import { mergeExtensionTopics, resolveTopicMedia, stripTopicLocalMedia, topicMediaAssetKeys } from "@/lib/xhs-extension-topics";
+import { createXhsTopicMediaStore, type XhsTopicMediaStore } from "@/lib/xhs-topic-media-store";
 import type { Topic } from "@/types/topic";
 
 const topicTabs = ["小红书"] as const;
@@ -180,6 +181,7 @@ function topicTimeValue(item: Topic) {
 
 export default function TopicsPage() {
   const extensionClientRef = useRef<XhsExtensionClient | null>(null);
+  const topicMediaStoreRef = useRef<XhsTopicMediaStore | null>(null);
   const [platform, setPlatform] = useState<(typeof topicTabs)[number]>("小红书");
   const [keyword, setKeyword] = useState("");
   const [topicRows, setTopicRows] = useState<Topic[]>(initialTopics);
@@ -201,6 +203,7 @@ export default function TopicsPage() {
   const [topicKeywordFilter, setTopicKeywordFilter] = useState("全部关键词");
   const [extensionStatus, setExtensionStatus] = useState<ExtensionStatus>("checking");
   const [feedback, setFeedback] = useState("正在检测本机抓取扩展，抓取结果只保存在当前浏览器。");
+  const [localMediaUrls, setLocalMediaUrls] = useState<Map<string, string>>(new Map());
   const listSourceRows = useMemo(() => {
     return listMode === "rejected" ? rejectedTopics : listMode === "deleted" ? deletedTopics : topicRows;
   }, [deletedTopics, listMode, rejectedTopics, topicRows]);
@@ -234,27 +237,33 @@ export default function TopicsPage() {
   }, [availableTopicKeywords, topicKeywordFilter]);
 
   useEffect(() => {
-    const client = createXhsExtensionClient();
+    const mediaStore = createXhsTopicMediaStore();
+    topicMediaStoreRef.current = mediaStore;
+    const client = createXhsExtensionClient(window, undefined, mediaStore);
     extensionClientRef.current = client;
     let mounted = true;
-    client.detect().then(() => {
-      if (!mounted) return;
-      setExtensionStatus("ready");
-      setFeedback("本机抓取扩展已连接，抓取结果只会保存在当前浏览器。");
-    }).catch((error: unknown) => {
-      if (!mounted) return;
-      const message = error instanceof Error ? error.message.toLowerCase() : "";
-      if (message.includes("incompatible") || message.includes("upgrade")) {
-        setExtensionStatus("outdated");
-        setFeedback("本机抓取扩展版本过低，请更新扩展后刷新页面。");
-      } else {
-        setExtensionStatus("missing");
-        setFeedback("未检测到本机抓取扩展，请安装或启用扩展后刷新页面。");
-      }
-    });
+    void mediaStore.cleanupIncomplete()
+      .then(() => client.detect())
+      .then(() => {
+        if (!mounted) return;
+        setExtensionStatus("ready");
+        setFeedback("本机抓取扩展已连接，抓取结果只会保存在当前浏览器。");
+      })
+      .catch((error: unknown) => {
+        if (!mounted) return;
+        const message = error instanceof Error ? error.message.toLowerCase() : "";
+        if (message.includes("incompatible") || message.includes("upgrade")) {
+          setExtensionStatus("outdated");
+          setFeedback("本机抓取扩展版本过低，请更新扩展后刷新页面。");
+        } else {
+          setExtensionStatus("missing");
+          setFeedback("未检测到本机抓取扩展，或本机媒体存储无法初始化，请检查后刷新页面。");
+        }
+      });
     return () => {
       mounted = false;
       extensionClientRef.current = null;
+      topicMediaStoreRef.current = null;
       client.dispose();
     };
   }, []);
@@ -297,6 +306,34 @@ export default function TopicsPage() {
     window.localStorage.setItem(KEYWORDS_STORAGE_KEY, JSON.stringify(savedKeywords));
   }, [hydrated, savedKeywords]);
 
+  useEffect(() => {
+    if (!hydrated || !topicMediaStoreRef.current) return;
+    let cancelled = false;
+    const created: string[] = [];
+    const keys = Array.from(new Set([...topicRows, ...rejectedTopics].flatMap(topicMediaAssetKeys)));
+    void Promise.all(keys.map(async (key) => {
+      try {
+        const blob = await topicMediaStoreRef.current!.getBlob(key);
+        if (!blob) return null;
+        const url = URL.createObjectURL(blob);
+        created.push(url);
+        return [key, url] as const;
+      } catch {
+        return null;
+      }
+    })).then((entries) => {
+      if (cancelled) {
+        for (const url of created) URL.revokeObjectURL(url);
+        return;
+      }
+      setLocalMediaUrls(new Map(entries.filter((entry): entry is readonly [string, string] => Boolean(entry))));
+    });
+    return () => {
+      cancelled = true;
+      for (const url of created) URL.revokeObjectURL(url);
+    };
+  }, [hydrated, rejectedTopics, topicRows]);
+
   const collectXhsHotTopics = async (keywordOverride?: string[]) => {
     const activeKeywords = Array.from(new Set((keywordOverride?.length ? keywordOverride : selectedKeywords).map((item) => item.trim()).filter(Boolean)));
     const requestedLimit = Number(collectLimit);
@@ -325,6 +362,14 @@ export default function TopicsPage() {
       return;
     }
     const activeLimit = Math.max(1, Math.min(5, requestedLimit));
+    if (navigator.storage) {
+      await navigator.storage.persist().catch(() => false);
+      const estimate = await navigator.storage.estimate().catch(() => null);
+      if (estimate?.quota && (estimate.usage ?? 0) >= estimate.quota) {
+        setFeedback("本机浏览器存储空间不足，请先清理空间后再抓取。");
+        return;
+      }
+    }
     setCollectOpen(false);
     setCollecting(true);
     setFeedback(`正在通过本机浏览器抓取：每个关键词 ${activeLimit} 篇，时间：${collectDateRange}，方式：${collectMethod}，类型：${collectMediaType}。`);
@@ -353,7 +398,7 @@ export default function TopicsPage() {
       setCollectOpen(false);
       setSelectedKeywords([]);
       setFeedback(result.topics.length
-        ? `本机抓取完成：${activeKeywords.length} 个关键词，每个关键词最多 ${activeLimit} 条，本次返回 ${result.topics.length} 条，已跳过本机已有内容。`
+        ? `本机抓取完成：返回 ${result.topics.length} 条，本地媒体成功 ${result.mediaCompleted} 个、失败 ${result.mediaFailed} 个。`
         : (result.message || "这次没有新增内容：可能已经重复，或当前筛选条件下没有新笔记。"));
     } catch (error) {
       const code = error instanceof Error ? (error as Error & { code?: string }).code : undefined;
@@ -382,11 +427,21 @@ export default function TopicsPage() {
     setFeedback(`已拒绝选题：${item.title}。以后采集会跳过这篇。`);
   };
 
-  const deleteTopic = (item: Topic) => {
-    const nextItem: Topic = { ...item, status: "pending" };
+  const deleteTopic = async (item: Topic) => {
+    const remaining = [...topicRows, ...rejectedTopics, ...deletedTopics]
+      .filter((row) => topicUrl(row) !== topicUrl(item));
+    const retainedKeys = new Set(remaining.flatMap(topicMediaAssetKeys));
+    const keysToDelete = topicMediaAssetKeys(item).filter((key) => !retainedKeys.has(key));
+    try {
+      await topicMediaStoreRef.current?.deleteAssets(keysToDelete);
+    } catch (error) {
+      setFeedback(error instanceof Error ? `删除本地媒体失败：${error.message}` : "删除本地媒体失败。");
+      return;
+    }
+    const nextItem: Topic = { ...stripTopicLocalMedia(item), status: "pending" };
     setDeletedTopics((items) => [nextItem, ...items.filter((row) => topicUrl(row) !== topicUrl(item))]);
     setTopicRows((rows) => rows.filter((row) => topicUrl(row) !== topicUrl(item)));
-    setFeedback(`已删除选题：${item.title}。删除仅从当前选题列表隐藏，不会加入拒绝名单。`);
+    setFeedback(`已删除选题及其本地媒体：${item.title}。不会加入拒绝名单。`);
   };
 
   const restoreDeletedTopic = (item: Topic) => {
@@ -472,13 +527,14 @@ export default function TopicsPage() {
               <TopicCard
                 key={item.id}
                 item={item}
+                localMediaUrls={localMediaUrls}
                 mode={listMode === "approved" || item.status === "approved" ? "approved" : "candidate"}
                 listMode={listMode === "approved" ? "approved" : "all"}
                 onPreview={() => openTopicPreview(item)}
                 onMediaPreview={(media) => setPreviewMedia({ title: item.title, url: media.url, type: media.type, name: media.name, posterUrl: media.posterUrl })}
                 onApprove={() => approveTopic(item)}
                 onCancelApprove={() => cancelApproveTopic(item)}
-                onDelete={() => deleteTopic(item)}
+                onDelete={() => void deleteTopic(item)}
               />
             ))}
           </div>
@@ -538,6 +594,7 @@ export default function TopicsPage() {
 
 function TopicCard({
   item,
+  localMediaUrls,
   mode,
   listMode,
   onPreview,
@@ -547,6 +604,7 @@ function TopicCard({
   onDelete
 }: {
   item: Topic;
+  localMediaUrls: ReadonlyMap<string, string>;
   mode: "candidate" | "approved";
   listMode: "all" | "approved";
   onPreview: () => void;
@@ -555,7 +613,7 @@ function TopicCard({
   onCancelApprove: () => void;
   onDelete: () => void;
 }) {
-  const mediaItems = topicMediaItems(item);
+  const mediaItems = resolveTopicMedia(item, localMediaUrls).filter((media) => media.url);
   const copy = topicCopy(item);
   const mediaKind = topicMediaKind(item);
   const keywordTags = Array.from(new Set((item.keyword ? [item.keyword] : []).concat(copy.match(/#[\p{L}\p{N}_-]+/gu) ?? []))).slice(0, 8);
