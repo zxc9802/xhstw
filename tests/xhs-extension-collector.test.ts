@@ -39,7 +39,7 @@ test("normalized local-browser topics preserve the protocol wire contract", () =
     direction: "extension-to-page",
     type: "result",
     requestId: REQUEST_ID,
-    payload: { topics: [wireTopic], message: "完成" }
+    payload: { topics: [wireTopic], message: "完成", mediaCompleted: 0, mediaFailed: 0 }
   };
 
   assert.equal(collector.clean("  通勤\n 防晒  "), "通勤 防晒");
@@ -288,7 +288,7 @@ test("detail parsing preserves every image in an eighteen-image Xiaohongshu post
     direction: "extension-to-page",
     type: "result",
     requestId: REQUEST_ID,
-    payload: { topics: [JSON.parse(JSON.stringify(topic))], message: "完成" }
+    payload: { topics: [JSON.parse(JSON.stringify(topic))], message: "完成", mediaCompleted: 0, mediaFailed: 0 }
   };
 
   assert.equal((detail.media as Array<unknown>).length, 18);
@@ -317,7 +317,7 @@ test("search covers become protocol-safe media when detail media is absent", () 
     direction: "extension-to-page",
     type: "result",
     requestId: REQUEST_ID,
-    payload: { topics: [wireTopic], message: "完成" }
+    payload: { topics: [wireTopic], message: "完成", mediaCompleted: 0, mediaFailed: 0 }
   };
 
   assert.deepEqual(topic.media, [{ type: "image", url: "https://sns-webpic-qc.xhscdn.com/search-cover.webp", name: "搜索封面" }]);
@@ -382,7 +382,7 @@ test("oversized topic inputs serialize within the extension protocol bounds", ()
     direction: "extension-to-page",
     type: "result",
     requestId: REQUEST_ID,
-    payload: { topics: [wireTopic], message: "完成" }
+    payload: { topics: [wireTopic], message: "完成", mediaCompleted: 0, mediaFailed: 0 }
   };
   const media = topic.media as Array<Record<string, unknown>>;
 
