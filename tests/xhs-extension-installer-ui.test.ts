@@ -15,10 +15,10 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 
 test("renders a direct extension download control", () => {
   const markup = renderToStaticMarkup(React.createElement(ExtensionInstaller));
-  assert.equal(XHS_EXTENSION_DOWNLOAD_PATH, "/downloads/xhs-browser-extension-0.1.10.zip");
+  assert.equal(XHS_EXTENSION_DOWNLOAD_PATH, "/downloads/xhs-browser-extension-0.1.11.zip");
   assert.match(markup, /下载插件/);
   assert.match(markup, /安装说明/);
-  assert.match(markup, /href="\/downloads\/xhs-browser-extension-0\.1\.10\.zip"/);
+  assert.match(markup, /href="\/downloads\/xhs-browser-extension-0\.1\.11\.zip"/);
   assert.match(markup, /download=""/);
 });
 
@@ -31,8 +31,8 @@ test("renders the complete Chrome and Edge installation guide", () => {
     "chrome://extensions",
     "edge://extensions",
     "开发者模式",
-    "加载已解压的扩展",
-    "manifest.json",
+    "把刚刚下载的压缩包里的文件放在一个文件夹里",
+    "选择这个文件夹",
     "本机抓取已连接",
     "升级插件",
     "300013",

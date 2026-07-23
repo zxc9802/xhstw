@@ -86,14 +86,6 @@
   }
 
   function isVisible(element) {
-    try {
-      if (typeof element?.getClientRects === "function") {
-        const rects = Array.from(element.getClientRects());
-        if (!rects.some((rect) => rect.width > 0 && rect.height > 0)) return false;
-      }
-    } catch (_) {
-      // Test DOMs may not implement layout; ancestor checks below still apply.
-    }
     let current = element;
     while (current && current.nodeType === 1) {
       if (current.hidden || current.getAttribute("aria-hidden") === "true") return false;
@@ -173,8 +165,7 @@
   function openFilterPanel() {
     for (const selector of [".filter span", ".filter"]) {
       for (const element of root.document.querySelectorAll(selector)) {
-        const label = collector().clean(element.textContent);
-        if (!["筛选", "已筛选"].includes(label) || !isVisible(element)) continue;
+        if (collector().clean(element.textContent) !== "筛选" || !isVisible(element)) continue;
         element.click();
         return true;
       }

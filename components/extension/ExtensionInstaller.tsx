@@ -4,7 +4,7 @@ import React, { useState } from "react";
 import { createPortal } from "react-dom";
 import { CircleHelp, Download, X } from "lucide-react";
 
-export const XHS_EXTENSION_DOWNLOAD_PATH = "/downloads/xhs-browser-extension-0.1.10.zip";
+export const XHS_EXTENSION_DOWNLOAD_PATH = "/downloads/xhs-browser-extension-0.1.11.zip";
 
 export function ExtensionInstaller() {
   const [guideOpen, setGuideOpen] = useState(false);
@@ -65,7 +65,7 @@ export function ExtensionInstallDialog({ onClose }: { onClose: () => void }) {
             <li>点击顶部“下载插件”，将 ZIP 完整解压到一个固定目录。</li>
             <li>Chrome 打开 <code className="rounded bg-slate-100 px-1.5 py-0.5">chrome://extensions</code>；Edge 打开 <code className="rounded bg-slate-100 px-1.5 py-0.5">edge://extensions</code>。</li>
             <li>开启扩展管理页右上角的“开发者模式”。</li>
-            <li>点击“加载已解压的扩展”，选择直接包含 <code className="rounded bg-slate-100 px-1.5 py-0.5">manifest.json</code> 的目录。</li>
+            <li>把刚刚下载的压缩包里的文件放在一个文件夹里，然后点击“加载已解压的扩展”并选择这个文件夹。</li>
             <li>在同一个浏览器中打开小红书并完成登录。</li>
             <li>刷新生产网站，确认选题页显示“本机抓取已连接”。</li>
           </ol>
