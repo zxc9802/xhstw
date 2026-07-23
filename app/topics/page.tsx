@@ -1,11 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Search, X } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { topics as initialTopics } from "@/lib/mock/data";
+import { createXhsExtensionClient, type XhsCollectTask, type XhsExtensionClient } from "@/lib/xhs-extension-client";
+import { mergeExtensionTopics, resolveTopicMedia, stripTopicLocalMedia, topicMediaAssetKeys } from "@/lib/xhs-extension-topics";
+import { createXhsTopicMediaStore, type XhsTopicMediaStore } from "@/lib/xhs-topic-media-store";
 import type { Topic } from "@/types/topic";
 
 const topicTabs = ["小红书"] as const;
@@ -16,6 +19,14 @@ const REJECTED_TOPIC_STORAGE_KEY = "content-production-studio-xhs.rejected-topic
 const DELETED_TOPIC_STORAGE_KEY = "content-production-studio-xhs.deleted-topics";
 const KEYWORDS_STORAGE_KEY = "content-production-studio-xhs.topic-keywords";
 type CollectDateRange = "全部" | "一天内" | "一周内" | "半年内";
+type ExtensionStatus = "checking" | "ready" | "missing" | "outdated";
+
+const extensionStatusText: Record<ExtensionStatus, string> = {
+  checking: "正在检测本机抓取扩展",
+  ready: "本机抓取已连接",
+  missing: "未安装本机抓取扩展",
+  outdated: "抓取扩展版本过低"
+};
 
 type TopicMediaPreview = {
   title: string;
@@ -51,11 +62,16 @@ function topicUrl(item: Topic) {
 }
 
 function displayMediaUrl(url?: string) {
-  if (!url) return "";
-  if (/^https?:\/\/.*(?:xhscdn|xiaohongshu)\.com/i.test(url)) {
-    return `/api/topics/media-proxy?url=${encodeURIComponent(url)}`;
+  return url || "";
+}
+
+function isXhsHttpsUrl(value: string): value is string {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && (url.hostname === "www.xiaohongshu.com" || url.hostname.endsWith(".xiaohongshu.com"));
+  } catch {
+    return false;
   }
-  return url;
 }
 
 function topicCoverUrl(item: Topic) {
@@ -164,6 +180,8 @@ function topicTimeValue(item: Topic) {
 }
 
 export default function TopicsPage() {
+  const extensionClientRef = useRef<XhsExtensionClient | null>(null);
+  const topicMediaStoreRef = useRef<XhsTopicMediaStore | null>(null);
   const [platform, setPlatform] = useState<(typeof topicTabs)[number]>("小红书");
   const [keyword, setKeyword] = useState("");
   const [topicRows, setTopicRows] = useState<Topic[]>(initialTopics);
@@ -183,7 +201,9 @@ export default function TopicsPage() {
   const [previewMedia, setPreviewMedia] = useState<TopicMediaPreview | null>(null);
   const [sortMode, setSortMode] = useState<"最新采集" | "浏览量" | "点赞量" | "评论量" | "收藏量">("最新采集");
   const [topicKeywordFilter, setTopicKeywordFilter] = useState("全部关键词");
-  const [feedback, setFeedback] = useState("爆款选题库使用本地 mock 数据，平台公开链接解析通过 adapter 预留。");
+  const [extensionStatus, setExtensionStatus] = useState<ExtensionStatus>("checking");
+  const [feedback, setFeedback] = useState("正在检测本机抓取扩展，抓取结果只保存在当前浏览器。");
+  const [localMediaUrls, setLocalMediaUrls] = useState<Map<string, string>>(new Map());
   const listSourceRows = useMemo(() => {
     return listMode === "rejected" ? rejectedTopics : listMode === "deleted" ? deletedTopics : topicRows;
   }, [deletedTopics, listMode, rejectedTopics, topicRows]);
@@ -215,6 +235,38 @@ export default function TopicsPage() {
       setTopicKeywordFilter("全部关键词");
     }
   }, [availableTopicKeywords, topicKeywordFilter]);
+
+  useEffect(() => {
+    const mediaStore = createXhsTopicMediaStore();
+    topicMediaStoreRef.current = mediaStore;
+    const client = createXhsExtensionClient(window, undefined, mediaStore);
+    extensionClientRef.current = client;
+    let mounted = true;
+    void mediaStore.cleanupIncomplete()
+      .then(() => client.detect())
+      .then(() => {
+        if (!mounted) return;
+        setExtensionStatus("ready");
+        setFeedback("本机抓取扩展已连接，抓取结果只会保存在当前浏览器。");
+      })
+      .catch((error: unknown) => {
+        if (!mounted) return;
+        const message = error instanceof Error ? error.message.toLowerCase() : "";
+        if (message.includes("incompatible") || message.includes("upgrade")) {
+          setExtensionStatus("outdated");
+          setFeedback("本机抓取扩展版本过低，请更新扩展后刷新页面。");
+        } else {
+          setExtensionStatus("missing");
+          setFeedback("未检测到本机抓取扩展，或本机媒体存储无法初始化，请检查后刷新页面。");
+        }
+      });
+    return () => {
+      mounted = false;
+      extensionClientRef.current = null;
+      topicMediaStoreRef.current = null;
+      client.dispose();
+    };
+  }, []);
 
   useEffect(() => {
     const storedTopics = window.localStorage.getItem(TOPIC_STORAGE_KEY);
@@ -254,55 +306,90 @@ export default function TopicsPage() {
     window.localStorage.setItem(KEYWORDS_STORAGE_KEY, JSON.stringify(savedKeywords));
   }, [hydrated, savedKeywords]);
 
+  useEffect(() => {
+    if (!hydrated || !topicMediaStoreRef.current) return;
+    let cancelled = false;
+    const created: string[] = [];
+    const keys = Array.from(new Set([...topicRows, ...rejectedTopics].flatMap(topicMediaAssetKeys)));
+    void Promise.all(keys.map(async (key) => {
+      try {
+        const blob = await topicMediaStoreRef.current!.getBlob(key);
+        if (!blob) return null;
+        const url = URL.createObjectURL(blob);
+        created.push(url);
+        return [key, url] as const;
+      } catch {
+        return null;
+      }
+    })).then((entries) => {
+      if (cancelled) {
+        for (const url of created) URL.revokeObjectURL(url);
+        return;
+      }
+      setLocalMediaUrls(new Map(entries.filter((entry): entry is readonly [string, string] => Boolean(entry))));
+    });
+    return () => {
+      cancelled = true;
+      for (const url of created) URL.revokeObjectURL(url);
+    };
+  }, [hydrated, rejectedTopics, topicRows]);
+
   const collectXhsHotTopics = async (keywordOverride?: string[]) => {
-    const activeKeywords = keywordOverride?.length ? keywordOverride : selectedKeywords;
+    const activeKeywords = Array.from(new Set((keywordOverride?.length ? keywordOverride : selectedKeywords).map((item) => item.trim()).filter(Boolean)));
     const requestedLimit = Number(collectLimit);
+    if (extensionStatus !== "ready" || !extensionClientRef.current) {
+      setFeedback(extensionStatus === "outdated" ? "抓取扩展版本过低，请更新扩展后刷新页面。" : "未检测到本机抓取扩展，请安装或启用扩展后刷新页面。");
+      return;
+    }
     if (!activeKeywords.length) {
       setFeedback("请先在弹窗里选择至少一个关键词，再开始抓取。");
       return;
     }
-    if (!Number.isFinite(requestedLimit) || requestedLimit <= 0) {
+    if (activeKeywords.length > 2) {
+      setFeedback("每次最多选择 2 个关键词，请减少关键词后再抓取。");
+      return;
+    }
+    if (activeKeywords.some((item) => item.length > 40)) {
+      setFeedback("每个关键词最多 40 个字符，请缩短后再抓取。");
+      return;
+    }
+    if (!Number.isInteger(requestedLimit) || requestedLimit <= 0) {
       setFeedback("请先填写每个关键词要抓取的数量。");
       return;
     }
-    const activeLimit = Math.max(1, Math.min(30, requestedLimit));
+    if (requestedLimit > 5) {
+      setFeedback("每个关键词最多抓取 5 条，请把数量调整为 1 到 5。");
+      return;
+    }
+    const activeLimit = Math.max(1, Math.min(5, requestedLimit));
+    if (navigator.storage) {
+      await navigator.storage.persist().catch(() => false);
+      const estimate = await navigator.storage.estimate().catch(() => null);
+      if (estimate?.quota && (estimate.usage ?? 0) >= estimate.quota) {
+        setFeedback("本机浏览器存储空间不足，请先清理空间后再抓取。");
+        return;
+      }
+    }
     setCollectOpen(false);
     setCollecting(true);
-    setFeedback(`正在按小红书筛选项抓取：每个关键词 ${activeLimit} 篇，时间：${collectDateRange}，方式：${collectMethod}，类型：${collectMediaType}，会自动跳过重复。`);
+    setFeedback(`正在通过本机浏览器抓取：每个关键词 ${activeLimit} 篇，时间：${collectDateRange}，方式：${collectMethod}，类型：${collectMediaType}。`);
     try {
-      const results = [];
-      for (const query of activeKeywords) {
-        setFeedback(`正在小红书搜索「${query}」并套用筛选项：${collectDateRange} / ${collectMethod} / ${collectMediaType}；目标 ${activeLimit} 篇，不重复入库。`);
-        const response = await fetch("/api/topics/opencli-xhs", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          query,
-          limit: activeLimit,
-          mediaType: collectMediaType,
-          dateRange: collectDateRange,
-          sortBy: collectMethod,
-          noDuplicate: true,
-          existingUrls: [
-            ...topicRows.filter((row) => !activeKeywords.includes(row.keyword ?? "")),
-            ...deletedTopics,
-            ...rejectedTopics
-          ].map(topicUrl).filter(Boolean)
-        })
-        });
-        if (!response.ok) throw new Error(`接口返回 ${response.status}`);
-        results.push(await response.json());
-      }
-      const rejectedUrls = new Set(rejectedTopics.map(topicUrl));
-      const incoming = results.flatMap((result) => Array.isArray(result.topics) ? result.topics as Topic[] : [])
-        .filter((item) => !rejectedUrls.has(topicUrl(item)));
-      setTopicRows((rows) => {
-        const retainedRows = rows.filter((row) => row.platform === "小红书" && !activeKeywords.includes(row.keyword ?? ""));
-        const incomingByUrl = new Map(incoming.map((item) => [topicUrl(item), item]));
-        const mergedRows = retainedRows.map((row) => incomingByUrl.has(topicUrl(row)) ? { ...row, ...incomingByUrl.get(topicUrl(row)) } : row);
-        const existingKeys = new Set(mergedRows.map((item) => topicUrl(item)));
-        return [...incoming.filter((item) => !existingKeys.has(topicUrl(item))), ...mergedRows];
+      const task: XhsCollectTask = {
+        requestId: crypto.randomUUID(),
+        queries: activeKeywords.slice(0, 2),
+        limitPerQuery: activeLimit,
+        mediaType: collectMediaType,
+        dateRange: collectDateRange,
+        sortBy: collectMethod,
+        existingUrls: [...topicRows, ...deletedTopics, ...rejectedTopics]
+          .map(topicUrl)
+          .filter(isXhsHttpsUrl)
+          .slice(0, 2_000)
+      };
+      const result = await extensionClientRef.current.collect(task, (progress) => {
+        setFeedback(`${progress.message}（${progress.completed}/${progress.total}）`);
       });
+      setTopicRows((rows) => mergeExtensionTopics(rows, result.topics, activeKeywords, rejectedTopics));
       setPlatform("小红书");
       setListMode("all");
       setKeyword("");
@@ -310,12 +397,13 @@ export default function TopicsPage() {
       setSortMode("最新采集");
       setCollectOpen(false);
       setSelectedKeywords([]);
-      const messages = results.map((result) => result?.message).filter(Boolean).join("；");
-      setFeedback(incoming.length
-        ? `抓取完成：${activeKeywords.length} 个关键词，每个关键词最多入库 ${activeLimit} 条，时间：${collectDateRange}，方式：${collectMethod}，类型：${collectMediaType}，本次新增 ${incoming.length} 条，已跳过重复。`
-        : (messages || "这次没有新增内容：可能是已经重复，或当前筛选条件下没有新笔记。可以放宽时间或切到“全部”再试。"));
+      setFeedback(result.topics.length
+        ? `本机抓取完成：返回 ${result.topics.length} 条，本地媒体成功 ${result.mediaCompleted} 个、失败 ${result.mediaFailed} 个。`
+        : (result.message || "这次没有新增内容：可能已经重复，或当前筛选条件下没有新笔记。"));
     } catch (error) {
-      setFeedback(error instanceof Error ? `OpenCLI 抓取失败：${error.message}` : "OpenCLI 抓取失败。");
+      const code = error instanceof Error ? (error as Error & { code?: string }).code : undefined;
+      if (code === "EXTENSION_DISCONNECTED") setExtensionStatus("missing");
+      setFeedback(error instanceof Error ? `本机浏览器抓取失败：${error.message}` : "本机浏览器抓取失败。");
     } finally {
       setCollecting(false);
     }
@@ -339,11 +427,21 @@ export default function TopicsPage() {
     setFeedback(`已拒绝选题：${item.title}。以后采集会跳过这篇。`);
   };
 
-  const deleteTopic = (item: Topic) => {
-    const nextItem: Topic = { ...item, status: "pending" };
+  const deleteTopic = async (item: Topic) => {
+    const remaining = [...topicRows, ...rejectedTopics, ...deletedTopics]
+      .filter((row) => topicUrl(row) !== topicUrl(item));
+    const retainedKeys = new Set(remaining.flatMap(topicMediaAssetKeys));
+    const keysToDelete = topicMediaAssetKeys(item).filter((key) => !retainedKeys.has(key));
+    try {
+      await topicMediaStoreRef.current?.deleteAssets(keysToDelete);
+    } catch (error) {
+      setFeedback(error instanceof Error ? `删除本地媒体失败：${error.message}` : "删除本地媒体失败。");
+      return;
+    }
+    const nextItem: Topic = { ...stripTopicLocalMedia(item), status: "pending" };
     setDeletedTopics((items) => [nextItem, ...items.filter((row) => topicUrl(row) !== topicUrl(item))]);
     setTopicRows((rows) => rows.filter((row) => topicUrl(row) !== topicUrl(item)));
-    setFeedback(`已删除选题：${item.title}。删除仅从当前选题列表隐藏，不会加入拒绝名单。`);
+    setFeedback(`已删除选题及其本地媒体：${item.title}。不会加入拒绝名单。`);
   };
 
   const restoreDeletedTopic = (item: Topic) => {
@@ -388,8 +486,8 @@ export default function TopicsPage() {
     <>
       <PageHeader
         title="爆款选题库"
-        description="管理来自小红书公开内容灵感的本地选题，不登录平台、不自动发布。"
-        action={<Button variant="primary" onClick={() => { setSelectedKeywords([]); setKeywordDraft(""); setCollectLimit(""); setCollectDateRange("全部"); setCollectMethod("浏览量"); setCollectOpen(true); }} disabled={collecting}>{collecting ? "抓取中..." : "抓取"}</Button>}
+        description="使用当前浏览器的小红书登录状态采集公开内容，结果仅保存在本机，不自动发布。"
+        action={<div className="flex flex-wrap items-center justify-end gap-2"><span className={`rounded-full px-3 py-1 text-xs font-medium ring-1 ${extensionStatus === "ready" ? "bg-emerald-50 text-emerald-700 ring-emerald-100" : "bg-orange-50 text-orange-700 ring-orange-100"}`}>{extensionStatusText[extensionStatus]}</span><Button variant="primary" onClick={() => { setSelectedKeywords([]); setKeywordDraft(""); setCollectLimit(""); setCollectDateRange("全部"); setCollectMethod("浏览量"); setCollectOpen(true); }} disabled={collecting || extensionStatus !== "ready"}>{collecting ? "抓取中..." : "抓取"}</Button></div>}
       />
 
       <div className="rounded-md bg-orange-50 px-4 py-3 text-sm text-orange-700">{feedback}</div>
@@ -429,13 +527,14 @@ export default function TopicsPage() {
               <TopicCard
                 key={item.id}
                 item={item}
+                localMediaUrls={localMediaUrls}
                 mode={listMode === "approved" || item.status === "approved" ? "approved" : "candidate"}
                 listMode={listMode === "approved" ? "approved" : "all"}
                 onPreview={() => openTopicPreview(item)}
                 onMediaPreview={(media) => setPreviewMedia({ title: item.title, url: media.url, type: media.type, name: media.name, posterUrl: media.posterUrl })}
                 onApprove={() => approveTopic(item)}
                 onCancelApprove={() => cancelApproveTopic(item)}
-                onDelete={() => deleteTopic(item)}
+                onDelete={() => void deleteTopic(item)}
               />
             ))}
           </div>
@@ -456,6 +555,7 @@ export default function TopicsPage() {
           collectDateRange={collectDateRange}
           collectMethod={collectMethod}
           collecting={collecting}
+          extensionStatus={extensionStatus}
           onKeywordDraftChange={setKeywordDraft}
           onToggleKeyword={toggleKeyword}
           onDeleteKeyword={deleteKeyword}
@@ -482,7 +582,7 @@ export default function TopicsPage() {
             <div className="flex min-h-0 flex-1 items-center justify-center bg-slate-950 p-4">
               {previewMedia.type === "video"
                 ? <video src={previewMedia.url} poster={displayMediaUrl(previewMedia.posterUrl)} className="max-h-[78vh] max-w-full bg-black object-contain" controls autoPlay />
-                : <img src={displayMediaUrl(previewMedia.url)} alt={previewMedia.name || previewMedia.title} className="max-h-[78vh] max-w-full object-contain" />}
+                : <img src={displayMediaUrl(previewMedia.url)} alt={previewMedia.name || previewMedia.title} className="max-h-[78vh] max-w-full object-contain" referrerPolicy="no-referrer" />}
             </div>
           </div>
         </div>
@@ -494,6 +594,7 @@ export default function TopicsPage() {
 
 function TopicCard({
   item,
+  localMediaUrls,
   mode,
   listMode,
   onPreview,
@@ -503,6 +604,7 @@ function TopicCard({
   onDelete
 }: {
   item: Topic;
+  localMediaUrls: ReadonlyMap<string, string>;
   mode: "candidate" | "approved";
   listMode: "all" | "approved";
   onPreview: () => void;
@@ -511,7 +613,7 @@ function TopicCard({
   onCancelApprove: () => void;
   onDelete: () => void;
 }) {
-  const mediaItems = topicMediaItems(item);
+  const mediaItems = resolveTopicMedia(item, localMediaUrls).filter((media) => media.url);
   const copy = topicCopy(item);
   const mediaKind = topicMediaKind(item);
   const keywordTags = Array.from(new Set((item.keyword ? [item.keyword] : []).concat(copy.match(/#[\p{L}\p{N}_-]+/gu) ?? []))).slice(0, 8);
@@ -548,7 +650,7 @@ function TopicCard({
                 <button key={`${media.url}-${index}`} onClick={() => onMediaPreview(media)} className="relative h-56 w-44 shrink-0 overflow-hidden rounded-md border border-line bg-slate-100 text-left transition hover:border-orange-300 hover:shadow-sm">
                   {media.type === "video" && !media.posterUrl
                     ? <video src={media.url} className="h-full w-full object-cover" muted playsInline preload="metadata" />
-                    : <img src={displayMediaUrl(media.type === "video" ? media.posterUrl || media.url : media.url)} alt={media.name || item.title} className="h-full w-full object-cover" />}
+                    : <img src={displayMediaUrl(media.type === "video" ? media.posterUrl || media.url : media.url)} alt={media.name || item.title} className="h-full w-full object-cover" referrerPolicy="no-referrer" />}
                   <span className="absolute left-2 top-2 rounded bg-slate-950/70 px-2 py-0.5 text-xs font-medium text-white">{media.type === "video" ? "视频" : "图片"}</span>
                 </button>
               ))}
@@ -585,6 +687,7 @@ function CollectModal({
   collectDateRange,
   collectMethod,
   collecting,
+  extensionStatus,
   onKeywordDraftChange,
   onToggleKeyword,
   onDeleteKeyword,
@@ -604,6 +707,7 @@ function CollectModal({
   collectDateRange: CollectDateRange;
   collectMethod: "浏览量" | "点赞量" | "评论量" | "收藏量";
   collecting: boolean;
+  extensionStatus: ExtensionStatus;
   onKeywordDraftChange: (value: string) => void;
   onToggleKeyword: (value: string) => void;
   onDeleteKeyword: (value: string) => void;
@@ -615,13 +719,16 @@ function CollectModal({
   onCollect: () => void;
   onClose: () => void;
 }) {
-  const canCollect = selectedKeywords.length > 0 && Number(collectLimit) > 0;
+  const requestedLimit = Number(collectLimit);
+  const tooManyKeywords = selectedKeywords.length > 2;
+  const tooManyResults = Number.isFinite(requestedLimit) && requestedLimit > 5;
+  const canCollect = extensionStatus === "ready" && selectedKeywords.length > 0 && !tooManyKeywords && Number.isInteger(requestedLimit) && requestedLimit > 0 && requestedLimit <= 5;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 p-4">
       <div className="w-full max-w-3xl rounded-lg border border-line bg-white shadow-xl">
         <div className="flex items-start justify-between gap-4 border-b border-line px-5 py-4">
-          <div><h2 className="text-lg font-semibold text-ink">OpenCLI 采集小红书爆款</h2><p className="mt-1 text-sm text-muted">按每天选择的关键词采集公开小红书爆款图文 / 视频。</p></div>
+          <div><h2 className="text-lg font-semibold text-ink">本机浏览器采集小红书爆款</h2><p className="mt-1 text-sm text-muted">确认后会自动打开一个可见的小红书标签页，并使用当前浏览器的登录状态。</p></div>
           <button onClick={onClose} className="rounded-md p-2 text-muted hover:bg-slate-100"><X className="h-5 w-5" /></button>
         </div>
         <div className="space-y-5 p-5">
@@ -631,7 +738,7 @@ function CollectModal({
               <input
                 type="number"
                 min={1}
-                max={30}
+                max={5}
                 value={collectLimit}
                 placeholder="自己填写数量"
                 onChange={(event) => onCollectLimitChange(event.target.value)}
@@ -696,7 +803,10 @@ function CollectModal({
           <div className="rounded-lg bg-orange-50 px-4 py-3 text-sm text-orange-700">
             本次抓取：{selectedKeywords.length ? selectedKeywords.join(" / ") : "请选择关键词"}；每个关键词 {collectLimit ? `${collectLimit} 篇` : "请填写数量"}；时间：{collectDateRange}；方式：{collectMethod}；类型：{collectMediaType}
           </div>
-          {!canCollect ? <div className="text-sm text-orange-700">请选择至少一个关键词，并填写每个关键词的抓取数量。</div> : null}
+          {selectedKeywords.length === 0 || !Number.isInteger(requestedLimit) || requestedLimit <= 0 ? <div className="text-sm text-orange-700">请选择至少一个关键词，并填写每个关键词的抓取数量。</div> : null}
+          {tooManyKeywords ? <div className="text-sm text-red-600">每次最多选择 2 个关键词。</div> : null}
+          {tooManyResults ? <div className="text-sm text-red-600">每个关键词最多抓取 5 条。</div> : null}
+          {extensionStatus !== "ready" ? <div className="text-sm text-red-600">本机抓取扩展未连接，暂时不能开始抓取。</div> : null}
         </div>
         <div className="flex justify-end gap-2 border-t border-line px-5 py-4">
           <Button onClick={onClose}>取消</Button>

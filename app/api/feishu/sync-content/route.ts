@@ -1,4 +1,7 @@
 import { ok, readJson } from "@/lib/utils/api";
+import { resolveFeishuContentFieldNames } from "@/lib/adapters/feishu-content-fields";
+import { buildFeishuBaseUrl } from "@/lib/adapters/feishu-target";
+import { getFeishuUploadDateValue } from "@/lib/utils/feishu-upload-date";
 import { NextResponse } from "next/server";
 
 type SyncPayload = {
@@ -9,8 +12,6 @@ type SyncPayload = {
   body?: string;
   tags?: string[];
 };
-
-type FeishuFieldMap = Map<string, number>;
 
 const FEISHU_OPEN_API = "https://open.feishu.cn/open-apis";
 
@@ -64,8 +65,7 @@ function parseDataUrl(url: string) {
   const match = url.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
   if (!match) return null;
   const mime = match[1];
-  const ext = mime.split("/")[1]?.replace("jpeg", "jpg") || "jpg";
-  return { mime, ext, buffer: Buffer.from(match[2], "base64") };
+  return { mime, buffer: Buffer.from(match[2], "base64") };
 }
 
 async function imageToBlob(url: string, index: number) {
@@ -73,7 +73,7 @@ async function imageToBlob(url: string, index: number) {
   if (parsed) {
     return {
       blob: new Blob([parsed.buffer], { type: parsed.mime }),
-      fileName: `content-image-${index + 1}.${parsed.ext}`
+      fileName: `${index + 1}.jpg`
     };
   }
 
@@ -81,10 +81,9 @@ async function imageToBlob(url: string, index: number) {
   if (!response.ok) throw new Error(`图片下载失败：HTTP ${response.status}`);
   const arrayBuffer = await response.arrayBuffer();
   const contentType = response.headers.get("content-type") || "image/jpeg";
-  const ext = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
   return {
     blob: new Blob([arrayBuffer], { type: contentType }),
-    fileName: `content-image-${index + 1}.${ext}`
+    fileName: `${index + 1}.jpg`
   };
 }
 
@@ -111,12 +110,9 @@ async function uploadImageToFeishu(imageUrl: string, index: number, appToken: st
   return fileToken as string;
 }
 
-function isAttachmentField(fields: FeishuFieldMap, name: string) {
-  return fields.get(name) === 17;
-}
-
 export async function POST(request: Request) {
   try {
+    const uploadedAt = Date.now();
     const payload = await readJson(request) as SyncPayload;
     const appToken = parseAppToken(process.env.FEISHU_BASE_URL);
     if (!appToken) throw new Error("缺少 FEISHU_BASE_URL 或 FEISHU_APP_TOKEN");
@@ -124,43 +120,54 @@ export async function POST(request: Request) {
     const token = await getTenantAccessToken();
     const tableId = await getTableId(appToken, token);
     const fields = await getFieldNames(appToken, tableId, token);
+    const { titleFieldName, attachmentFieldName } = resolveFeishuContentFieldNames(fields);
     const imageText = (payload.images ?? []).filter(Boolean).join("\n");
     const tagText = (payload.tags ?? []).map((tag) => tag.startsWith("#") ? tag : `#${tag}`).join(" ");
-    const attachmentFieldNames = ["图片", "平台图片"].filter((name) => isAttachmentField(fields, name));
     const uploadWarnings: string[] = [];
     let attachmentValues: Array<{ file_token: string }> = [];
 
-    if (attachmentFieldNames.length && payload.images?.length) {
-      const uploaded = await Promise.all((payload.images ?? []).slice(0, 9).map(async (url, index) => {
+    if (payload.images?.length && !attachmentFieldName) {
+      uploadWarnings.push("飞书表中未找到附件字段：图片或视频、图片、平台图片");
+    }
+
+    if (attachmentFieldName && payload.images?.length) {
+      for (const [index, url] of payload.images.slice(0, 9).entries()) {
         try {
-          return await uploadImageToFeishu(url, index, appToken, token);
+          const fileToken = await uploadImageToFeishu(url, index, appToken, token);
+          attachmentValues.push({ file_token: fileToken });
         } catch (error) {
           uploadWarnings.push(error instanceof Error ? error.message : "图片上传飞书失败");
-          return "";
         }
-      }));
-      attachmentValues = uploaded.filter(Boolean).map((fileToken) => ({ file_token: fileToken }));
+      }
+    }
+
+    if (attachmentFieldName && payload.images?.length && !attachmentValues.length) {
+      throw new Error(uploadWarnings[0] ?? "图片上传飞书失败");
     }
 
     const candidateFields: Record<string, unknown> = {
       平台: payload.platform ?? "",
       账号名称: payload.accountName ?? "",
       账号: payload.accountName ?? "",
-      图片: attachmentValues.length && isAttachmentField(fields, "图片") ? attachmentValues : imageText,
-      平台图片: attachmentValues.length && isAttachmentField(fields, "平台图片") ? attachmentValues : imageText,
+      上传日期: getFeishuUploadDateValue(fields, uploadedAt),
+      图片: imageText,
+      平台图片: imageText,
       图片链接: imageText,
       平台图片链接: imageText,
-      内容标题: payload.title ?? "",
       内容正文: payload.body ?? "",
       小红书tag: tagText
     };
+    if (titleFieldName) candidateFields[titleFieldName] = payload.title ?? "";
+    if (attachmentFieldName && attachmentValues.length) {
+      candidateFields[attachmentFieldName] = attachmentValues;
+    }
     const recordFields = Object.fromEntries(Object.entries(candidateFields).filter(([name, value]) => {
       if (!fields.has(name) || value === "") return false;
       const type = fields.get(name);
       return type !== 17 || Array.isArray(value);
     }));
     if (!Object.keys(recordFields).length) {
-      throw new Error("飞书表中未匹配到字段：平台、账号名称、图片、内容标题、内容正文、小红书tag");
+      throw new Error("飞书表中未匹配到字段：平台、账号名称、图片或视频、标题、内容正文、小红书tag");
     }
 
     const result = await feishuRequest(`/bitable/v1/apps/${appToken}/tables/${tableId}/records`, {
@@ -168,7 +175,7 @@ export async function POST(request: Request) {
       body: JSON.stringify({ fields: recordFields })
     }, token);
 
-    return ok({ appToken, tableId, fields: recordFields, warnings: uploadWarnings, result });
+    return ok({ appToken, tableId, baseUrl: buildFeishuBaseUrl(appToken, tableId), fields: recordFields, warnings: uploadWarnings, result });
   } catch (error) {
     return NextResponse.json({ ok: false, message: error instanceof Error ? error.message : "飞书同步失败" }, { status: 500 });
   }

@@ -8,6 +8,7 @@ import { DataTable } from "@/components/ui/DataTable";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { PlatformBadge } from "@/components/ui/PlatformBadge";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { feishuSyncPlatformOptions } from "@/lib/constants/platforms";
 import { accounts as productionAccounts } from "@/lib/mock/data";
 import { cn } from "@/lib/utils/cn";
 import { imageRefToUploadUrl, isStoredImageRef, resolveImageRefs } from "@/lib/utils/image-store";
@@ -171,10 +172,9 @@ const finishedContentsSeed: FinishedContent[] = [
 const FINISHED_CONTENT_STORAGE_KEY = "content-production-studio-xhs.finished-content";
 const DELETED_CONTENT_STORAGE_KEY = "content-production-studio-xhs.deleted-content-ids";
 const CUSTOM_FOLDERS_STORAGE_KEY = "content-production-studio-xhs.content-library-folders";
-const FEISHU_BASE_URL = "https://qcnzn8yqzf7v.feishu.cn/base/FIwCbNZxAaKdgUsqTaTcYp1cnPf?from=from_copylink";
 
 const platformOptions = ["全部平台", "小红书"];
-const publishPlatformOptions = ["小红书"];
+const publishPlatformOptions = feishuSyncPlatformOptions;
 const fallbackPublishAccounts: Array<{ platform: string; name: string }> = [];
 const publishAccounts = [
   ...productionAccounts.map((account) => ({ platform: account.platform, name: account.name })),
@@ -369,9 +369,12 @@ export default function ContentLibraryPage() {
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || data?.ok === false) throw new Error(data?.message || "飞书同步失败");
-    if (openAfterSync) window.open(FEISHU_BASE_URL, "_blank", "noopener,noreferrer");
+    const baseUrl = typeof data?.data?.baseUrl === "string" ? data.data.baseUrl : "";
+    if (!baseUrl) throw new Error("飞书同步成功，但接口未返回目标表格地址");
+    if (openAfterSync) window.open(baseUrl, "_blank", "noopener,noreferrer");
     const warnings = Array.isArray(data?.data?.warnings) ? data.data.warnings.filter(Boolean) : [];
     setFeedback(warnings.length ? `已同步文字到飞书，但图片上传有提示：${warnings[0]}` : `已同步到飞书表：${item.title}`);
+    return baseUrl;
   };
 
   const syncSelectedContentsToFeishu = async () => {
@@ -383,10 +386,11 @@ export default function ContentLibraryPage() {
     setSyncingFeishu(true);
     setFeedback(`正在同步 ${selectedItems.length} 条成品到飞书表，请稍等...`);
     try {
+      let baseUrl = "";
       for (const item of selectedItems) {
-        await syncContentToFeishu(item, false);
+        baseUrl = await syncContentToFeishu(item, false);
       }
-      window.open(FEISHU_BASE_URL, "_blank", "noopener,noreferrer");
+      window.open(baseUrl, "_blank", "noopener,noreferrer");
       setFeedback(`已同步 ${selectedItems.length} 条成品到飞书表。`);
     } catch (error) {
       setFeedback(error instanceof Error ? `飞书同步失败：${error.message}` : "飞书同步失败。");

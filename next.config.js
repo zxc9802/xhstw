@@ -2,6 +2,7 @@
 const nextConfig = {
   output: "standalone",
   reactStrictMode: true,
+  serverExternalPackages: ["@jackwener/opencli", "ws"],
   outputFileTracingExcludes: {
     "/api/reference/*": [
       "./xiaohongshu-downloads/**/*",
