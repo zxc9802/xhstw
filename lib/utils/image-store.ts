@@ -54,6 +54,12 @@ export function isStoredImageRef(url: string) {
   return url.startsWith(IMAGE_STORE_PREFIX);
 }
 
+export async function persistImageFile(blob: Blob, scope: string) {
+  const id = makeImageKey(scope, 0);
+  await putStoredImage({ id, blob, createdAt: new Date().toISOString() });
+  return `${IMAGE_STORE_PREFIX}${id}`;
+}
+
 export async function persistImageRefs(urls: string[], scope: string) {
   const refs: string[] = [];
   for (const [index, url] of urls.entries()) {

@@ -499,7 +499,7 @@ export default function TopicsPage() {
       <section className="space-y-3">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h2 className="text-lg font-semibold text-ink">{listMode === "approved" ? "全部保留" : `${platform} 选题列表`}</h2>
+            <h2 className="text-lg font-semibold text-ink">{listMode === "approved" ? "全部保留" : "选题列表"}</h2>
             <p className="mt-1 text-sm text-muted">{listMode === "approved" ? "保留下来的图文在这里继续做爆款裂变。" : "抓取结果按卡片展示，一行最多五条，方便快速挑选。"}</p>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Archive, Copy, Download, Edit3, ExternalLink, Eye, FileCheck2, FolderOpen, Grid2X2, ListChecks, MoreHorizontal, PackageCheck, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
@@ -10,8 +10,10 @@ import { PlatformBadge } from "@/components/ui/PlatformBadge";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { feishuSyncPlatformOptions } from "@/lib/constants/platforms";
 import { accounts as productionAccounts } from "@/lib/mock/data";
+import { imageExtension, safeFileName, writeBlobFiles, type WritableDirectoryLike } from "@/lib/utils/browser-file-export";
 import { cn } from "@/lib/utils/cn";
 import { imageRefToUploadUrl, isStoredImageRef, resolveImageRefs } from "@/lib/utils/image-store";
+import { selectExportTargets } from "@/lib/utils/production-workflow";
 
 type LibraryStatus = "可发布" | "已保存本地" | "需复查" | "已归档" | "已淘汰";
 type RiskLevel = "低" | "中" | "高";
@@ -193,7 +195,27 @@ function mockCover(item: FinishedContent) {
   return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
 }
 
+async function finishedImageBlob(url: string) {
+  const readableUrl = await imageRefToUploadUrl(url);
+  if (!readableUrl) throw new Error("图片数据不存在");
+  const response = await fetch(readableUrl);
+  if (!response.ok) throw new Error(`图片读取失败（${response.status}）`);
+  return response.blob();
+}
+
+function downloadFinishedImage(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+}
+
 function realMediaUrls(item: FinishedContent) {
+  if (item.mediaKind !== "image") return [];
   return [
     ...(item.mediaUrls ?? []),
     ...(item.pages ?? []).flatMap((page) => page.images ?? [])
@@ -232,7 +254,8 @@ export default function ContentLibraryPage() {
   const [publishAccountMap, setPublishAccountMap] = useState<Record<string, string>>({});
   const [resolvedMediaMap, setResolvedMediaMap] = useState<Record<string, string[]>>({});
   const [syncingFeishu, setSyncingFeishu] = useState(false);
-  const localFolderInputRef = useRef<HTMLInputElement | null>(null);
+  const [exportingLocal, setExportingLocal] = useState(false);
+  const [previewImageUrl, setPreviewImageUrl] = useState("");
 
   useEffect(() => {
     const stored = window.localStorage.getItem(FINISHED_CONTENT_STORAGE_KEY);
@@ -400,23 +423,71 @@ export default function ContentLibraryPage() {
   };
 
   const chooseLocalExportFolder = async () => {
-    const pickerWindow = window as Window & { showDirectoryPicker?: () => Promise<{ name: string }> };
-    if (pickerWindow.showDirectoryPicker) {
-      try {
-        const handle = await pickerWindow.showDirectoryPicker();
-        setFeedback(`已选择本地导出文件夹：${handle.name}。当前为本地 mock 导出，可继续接真实写文件。`);
-        return;
-      } catch {
-        return;
-      }
+    const targets = selectExportTargets(selectedItems, folderItems);
+    if (!targets.length) {
+      setFeedback("当前没有可导出的成品内容。");
+      return;
     }
-    localFolderInputRef.current?.click();
-  };
+    setExportingLocal(true);
+    const pickerWindow = window as Window & { showDirectoryPicker?: () => Promise<WritableDirectoryLike> };
+    try {
+      const rootDirectory = pickerWindow.showDirectoryPicker ? await pickerWindow.showDirectoryPicker() : null;
+      let saved = 0;
+      let failed = 0;
+      let skipped = 0;
 
-  const handleLocalFolderFallback = (files: FileList | null) => {
-    const firstFile = files?.[0] as (File & { webkitRelativePath?: string }) | undefined;
-    const folder = firstFile?.webkitRelativePath?.split("/")[0] || firstFile?.name;
-    if (folder) setFeedback(`已选择本地导出文件夹：${folder}。当前为本地 mock 导出，可继续接真实写文件。`);
+      for (const [itemIndex, item] of targets.entries()) {
+        const imageUrls = realMediaUrls(item);
+        if (!imageUrls.length) {
+          skipped += 1;
+          continue;
+        }
+
+        const blobs = [];
+        for (const [imageIndex, imageUrl] of imageUrls.entries()) {
+          try {
+            const blob = await finishedImageBlob(imageUrl);
+            blobs.push({
+              name: `${String(imageIndex + 1).padStart(2, "0")}.${imageExtension(blob)}`,
+              blob
+            });
+          } catch {
+            failed += 1;
+          }
+        }
+
+        if (!blobs.length) {
+          skipped += 1;
+          continue;
+        }
+
+        if (rootDirectory) {
+          const folderName = `${String(itemIndex + 1).padStart(2, "0")}_${safeFileName(item.title).slice(0, 80)}`;
+          const itemDirectory = rootDirectory.getDirectoryHandle
+            ? await rootDirectory.getDirectoryHandle(folderName, { create: true })
+            : rootDirectory;
+          const result = await writeBlobFiles(itemDirectory, rootDirectory.getDirectoryHandle
+            ? blobs
+            : blobs.map((file) => ({ ...file, name: `${folderName}_${file.name}` })));
+          saved += result.saved;
+          failed += result.failed;
+          continue;
+        }
+
+        const prefix = `${String(itemIndex + 1).padStart(2, "0")}_${safeFileName(item.title).slice(0, 60)}`;
+        blobs.forEach((file) => downloadFinishedImage(file.blob, `${prefix}_${file.name}`));
+        saved += blobs.length;
+      }
+
+      setFeedback(rootDirectory
+        ? `已导出 ${saved} 张真实图片到 ${rootDirectory.name}${failed ? `，${failed} 张失败` : ""}${skipped ? `，跳过 ${skipped} 条无图内容` : ""}。`
+        : `当前浏览器不支持直接写入文件夹，已下载 ${saved} 张真实图片${failed ? `，${failed} 张失败` : ""}${skipped ? `，跳过 ${skipped} 条无图内容` : ""}。`);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setFeedback(error instanceof Error ? `本地导出失败：${error.message}` : "本地导出失败，请重试。");
+    } finally {
+      setExportingLocal(false);
+    }
   };
 
   const saveEdit = () => {
@@ -469,14 +540,6 @@ export default function ContentLibraryPage() {
 
       <p className={cn("rounded-lg border px-4 py-3 text-sm", feedback.includes("失败") ? "border-red-200 bg-red-50 text-red-700" : feedback.includes("正在") ? "border-orange-200 bg-orange-50 text-orange-700" : "border-line bg-white text-muted")}>{feedback}</p>
 
-      <input
-        ref={localFolderInputRef}
-        type="file"
-        className="hidden"
-        onChange={(event) => handleLocalFolderFallback(event.target.files)}
-        {...{ webkitdirectory: "true", directory: "true" }}
-      />
-
       <section className="grid min-h-[680px] gap-5 xl:grid-cols-[280px_1fr]">
         <Card>
           <CardHeader
@@ -513,7 +576,7 @@ export default function ContentLibraryPage() {
               <div className="flex flex-wrap gap-2">
                 <Button onClick={toggleSelectionMode}>{selectionMode ? "退出多选" : "多选"}</Button>
                 <Button icon={<ExternalLink className="h-4 w-4" />} disabled={syncingFeishu} onClick={() => void syncSelectedContentsToFeishu()}>{syncingFeishu ? "同步中..." : `同步到飞书${selectedItems.length ? `（${selectedItems.length}）` : ""}`}</Button>
-                <Button variant="primary" icon={<Download className="h-4 w-4" />} onClick={() => void chooseLocalExportFolder()}>导入本地文件夹</Button>
+                <Button variant="primary" icon={<Download className="h-4 w-4" />} disabled={exportingLocal} onClick={() => void chooseLocalExportFolder()}>{exportingLocal ? "导出中..." : "导出到本地文件夹"}</Button>
               </div>
             }
           />
@@ -574,7 +637,7 @@ export default function ContentLibraryPage() {
                       {images.length ? (
                         <div className="grid grid-cols-3 gap-1 border-t border-line bg-slate-50 p-2">
                           {images.slice(0, 9).map((url, index) => (
-                            <button key={`${item.id}-${url}-${index}`} className="overflow-hidden rounded-md bg-white" title={`P${index + 1}`}>
+                            <button key={`${item.id}-${url}-${index}`} onClick={() => setPreviewImageUrl(url)} className="overflow-hidden rounded-md bg-white" title={`放大 P${index + 1}`}>
                               <img src={url} alt={`${item.title} P${index + 1}`} className="aspect-[3/4] w-full object-cover" />
                             </button>
                           ))}
@@ -616,7 +679,7 @@ export default function ContentLibraryPage() {
           {filteredItems.map((item) => (
             <tr key={item.id}>
               <td className="px-4 py-3"><input type="checkbox" checked={selectedIds.includes(item.id)} onChange={(event) => toggleSelected(item.id, event.target.checked)} className="h-4 w-4 accent-orange-500" /></td>
-              <td className="px-4 py-3"><img src={coverUrlFor(item)} alt={item.title} className="h-16 w-12 rounded-md object-cover" /></td>
+              <td className="px-4 py-3"><button onClick={() => setPreviewImageUrl(coverUrlFor(item))} title="放大图片"><img src={coverUrlFor(item)} alt={item.title} className="h-16 w-12 rounded-md object-cover" /></button></td>
               <td className="min-w-72 px-4 py-3"><p className="font-medium text-ink">{item.title}</p><p className="mt-1 line-clamp-2 text-xs leading-5 text-muted">{item.summary}</p></td>
               <td className="px-4 py-3"><div className="flex items-center gap-2"><PlatformBadge badge={item.platformBadge} platform={item.platform} /><div><p className="text-sm text-ink">{item.platform}</p><p className="text-xs text-muted">{item.account}</p></div></div></td>
               <td className="px-4 py-3 text-muted">{item.type}</td>
@@ -637,7 +700,7 @@ export default function ContentLibraryPage() {
             <Card key={item.id}>
               <CardBody>
                 <div className="relative overflow-hidden rounded-lg bg-slate-50">
-                  <img src={coverUrlFor(item)} alt={item.title} className="h-56 w-full object-cover" />
+                  <button onClick={() => setPreviewImageUrl(coverUrlFor(item))} className="block w-full" title="放大图片"><img src={coverUrlFor(item)} alt={item.title} className="h-56 w-full object-cover" /></button>
                   <div className="absolute left-3 top-3 flex gap-2"><PlatformBadge badge={item.platformBadge} platform={item.platform} /><StatusBadge status={statusKey(item.status)} label={item.status} /></div>
                   <span className="absolute bottom-3 left-3 rounded-full bg-white/90 px-2.5 py-1 text-xs font-medium text-ink">{item.type}</span>
                 </div>
@@ -659,8 +722,16 @@ export default function ContentLibraryPage() {
         </section>
       )}
 
-      {detailItem ? <DetailDrawer item={detailItem} mediaUrls={mediaUrlsFor(detailItem)} onClose={() => setDetailItem(null)} onEdit={setEditingItem} onCopy={copyContent} onExport={(item) => exportPackage([item])} onArchive={(item) => updateStatus([item], "已归档")} onFeedback={setFeedback} /> : null}
+      {detailItem ? <DetailDrawer item={detailItem} mediaUrls={mediaUrlsFor(detailItem)} onClose={() => setDetailItem(null)} onEdit={setEditingItem} onCopy={copyContent} onExport={(item) => exportPackage([item])} onArchive={(item) => updateStatus([item], "已归档")} onFeedback={setFeedback} onPreview={setPreviewImageUrl} /> : null}
       {editingItem ? <EditModal item={editingItem} onChange={setEditingItem} onClose={() => setEditingItem(null)} onSave={saveEdit} /> : null}
+      {previewImageUrl ? (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/75 p-4" onClick={() => setPreviewImageUrl("")}>
+          <div className="max-h-[92vh] max-w-5xl overflow-hidden rounded-lg bg-white shadow-xl" onClick={(event) => event.stopPropagation()}>
+            <div className="flex justify-end border-b border-line px-4 py-3"><button onClick={() => setPreviewImageUrl("")} className="rounded-md px-3 py-1 text-sm text-muted hover:bg-slate-100">关闭</button></div>
+            <div className="max-h-[84vh] overflow-auto bg-slate-50 p-4"><img src={previewImageUrl} alt="成品图片放大预览" className="mx-auto max-h-[78vh] max-w-full rounded-md object-contain" /></div>
+          </div>
+        </div>
+      ) : null}
       </div>
     </>
   );
@@ -688,20 +759,22 @@ function RowActions({ item, onDetail, onEdit, onCopy, onExport, onArchive, onMor
       <IconButton title="导出内容包" icon={<Download className="h-4 w-4" />} onClick={() => onExport(item)} />
       <IconButton title="进入初检查重" icon={<FileCheck2 className="h-4 w-4" />} onClick={() => { window.location.href = `/detection?contentId=${encodeURIComponent(item.id)}`; }} />
       <IconButton title="标记已归档" icon={<Archive className="h-4 w-4" />} onClick={() => onArchive(item)} />
-      <button title="更多操作" className="group relative inline-flex h-8 w-8 items-center justify-center rounded-md border border-line bg-white text-muted transition hover:border-orange-200 hover:bg-orange-50 hover:text-orange-700">
-        <MoreHorizontal className="h-4 w-4" />
+      <div className="group relative inline-flex h-8 w-8">
+        <button title="更多操作" aria-label="更多操作" className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-line bg-white text-muted transition hover:border-orange-200 hover:bg-orange-50 hover:text-orange-700">
+          <MoreHorizontal className="h-4 w-4" />
+        </button>
         <span className="invisible absolute right-0 top-8 z-20 w-32 rounded-md border border-line bg-white p-1 text-left text-xs text-muted shadow-lg group-hover:visible">
           <button className="block w-full rounded px-2 py-1 text-left hover:bg-slate-50" onClick={() => onFeedback("已重新检测，检测报告为 mock 结果。")}><RotateCcw className="mr-1 inline h-3 w-3" />重新检测</button>
           <button className="block w-full rounded px-2 py-1 text-left hover:bg-slate-50" onClick={() => onMore(item, "需复查")}>移入需复查</button>
           <button className="block w-full rounded px-2 py-1 text-left hover:bg-slate-50" onClick={() => onMore(item, "已淘汰")}>移入已淘汰</button>
           <button className="block w-full rounded px-2 py-1 text-left text-red-600 hover:bg-red-50" onClick={() => onDelete(item)}><Trash2 className="mr-1 inline h-3 w-3" />删除项目</button>
         </span>
-      </button>
+      </div>
     </div>
   );
 }
 
-function DetailDrawer({ item, mediaUrls, onClose, onEdit, onCopy, onExport, onArchive, onFeedback }: { item: FinishedContent; mediaUrls: string[]; onClose: () => void; onEdit: (item: FinishedContent) => void; onCopy: (item: FinishedContent) => void; onExport: (item: FinishedContent) => void; onArchive: (item: FinishedContent) => void; onFeedback: (value: string) => void }) {
+function DetailDrawer({ item, mediaUrls, onClose, onEdit, onCopy, onExport, onArchive, onFeedback, onPreview }: { item: FinishedContent; mediaUrls: string[]; onClose: () => void; onEdit: (item: FinishedContent) => void; onCopy: (item: FinishedContent) => void; onExport: (item: FinishedContent) => void; onArchive: (item: FinishedContent) => void; onFeedback: (value: string) => void; onPreview: (url: string) => void }) {
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/20" onClick={onClose}>
       <aside className="absolute right-0 top-0 h-full w-full max-w-2xl overflow-y-auto bg-white shadow-xl" onClick={(event) => event.stopPropagation()}>
@@ -712,7 +785,7 @@ function DetailDrawer({ item, mediaUrls, onClose, onEdit, onCopy, onExport, onAr
         <div className="space-y-4 p-5">
           <DetailSection title="基础信息" items={[["项目编号", item.id], ["平台", item.platform], ["目标账号", item.account], ["内容类型", item.type], ["状态", item.status], ["创建时间", item.createdAt], ["更新时间", item.updatedAt]]} />
           <Card><CardHeader title="内容正文" /><CardBody><h3 className="font-semibold text-ink">{item.title}</h3><p className="mt-3 whitespace-pre-line text-sm leading-7 text-muted">{item.body}</p><div className="mt-3"><TagList tags={item.tags} /></div></CardBody></Card>
-          <Card><CardHeader title="素材预览" /><CardBody><div className="grid grid-cols-3 gap-2">{(mediaUrls.length ? mediaUrls : [mockCover(item)]).slice(0, 9).map((url, index) => <img key={`${url}-${index}`} src={url} alt={`${item.title} 素材 ${index + 1}`} className="h-28 rounded-md object-cover" />)}</div><p className="mt-3 text-sm text-muted">{item.mediaCount}</p></CardBody></Card>
+          <Card><CardHeader title="素材预览" /><CardBody><div className="grid grid-cols-3 gap-2">{(mediaUrls.length ? mediaUrls : [mockCover(item)]).slice(0, 9).map((url, index) => <button key={`${url}-${index}`} onClick={() => onPreview(url)} title={`放大素材 ${index + 1}`}><img src={url} alt={`${item.title} 素材 ${index + 1}`} className="h-28 w-full rounded-md object-cover" /></button>)}</div><p className="mt-3 text-sm text-muted">{item.mediaCount}</p></CardBody></Card>
           <Card><CardHeader title="提示词" /><CardBody className="space-y-3">{item.prompts.map((prompt) => <p key={prompt} className="rounded-lg bg-slate-50 p-3 text-sm leading-6 text-muted">{prompt}</p>)}{item.negativePrompts.map((prompt) => <p key={prompt} className="rounded-lg bg-red-50 p-3 text-sm leading-6 text-red-700">反向：{prompt}</p>)}</CardBody></Card>
           <DetailSection title="检测结果" items={[["重复率", `${item.duplicateRate}%`], ["同质化", item.duplicateLabel], ["合规风险", "低"], ["低流量风险", item.lowFlowRisk], ["检测建议", item.checkAdvice.join("；")]]} />
           <Card><CardHeader title="本地文件" /><CardBody className="space-y-3"><p className="rounded-lg bg-slate-50 p-3 text-sm text-muted">{item.localPath}</p><div className="flex gap-2"><Button onClick={() => onFeedback(`已定位到本地文件夹：${item.localPath}`)}>打开本地文件夹</Button><Button onClick={() => onExport(item)}>导出内容包</Button></div></CardBody></Card>

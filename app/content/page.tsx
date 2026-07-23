@@ -1,6 +1,6 @@
 "use client";
 
-import { type DragEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type DragEvent, type ReactNode, useEffect, useMemo, useState } from "react";
 import { FileText, FolderOpen, ImagePlus, Link2, Sparkles, Trash2, UploadCloud } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
@@ -8,12 +8,15 @@ import { DataTable } from "@/components/ui/DataTable";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { accounts, copyCandidates, imagePlans, referenceSources, titleCandidates, trafficTags, videoExtraction, videoScriptRows, videoShots } from "@/lib/mock/data";
+import { directoryPickerFailure, imageExtension, writeBlobFiles, type WritableDirectoryLike } from "@/lib/utils/browser-file-export";
 import { cn } from "@/lib/utils/cn";
-import { persistImageRefs } from "@/lib/utils/image-store";
+import { imageRefToUploadUrl, isStoredImageRef, persistImageFile, persistImageRefs, resolveImageRef } from "@/lib/utils/image-store";
 import { appendMaterialLibrary, createLibraryAsset, getAssetBlob, readMaterialLibrary, type LibraryAsset } from "@/lib/utils/material-library";
+import { loadVersionedState, saveVersionedState } from "@/lib/utils/local-state";
 import { readProductLibrary, type ProductLibraryItem } from "@/lib/utils/product-library";
 import { loadGeneratedImages, saveGeneratedImages } from "@/lib/utils/image-generation-history";
 import { pollImageGenerationJob } from "@/lib/utils/image-generation-job-client";
+import { addKeywordValues, removeKeywordValue, reorderAssignedImages, withoutSelectedKeywords } from "@/lib/utils/production-workflow";
 import type { ImagePlanItem, ImageProvider } from "@/types/image";
 import type { VideoProvider, VideoScriptRow, VideoShotPlan } from "@/types/video";
 
@@ -29,6 +32,9 @@ const actionLinkClass = "inline-flex h-9 cursor-pointer items-center justify-cen
 const FINISHED_CONTENT_STORAGE_KEY = "content-production-studio-xhs.finished-content";
 const REFERENCE_HISTORY_STORAGE_KEY = "content-production-studio-xhs.reference-history";
 const GENERATED_IMAGES_STORAGE_KEY = "content-production-studio-xhs.generated-images";
+const KEYWORD_LIBRARY_STORAGE_KEY = "content-production-studio.keyword-library";
+const IMAGE_DRAFT_STORAGE_KEY = "content-production-studio.image-draft";
+const LOCAL_STATE_VERSION = 1;
 const defaultImagePlan: ImagePlanItem = { ...imagePlans[0], status: "pending" };
 const keywordLibrary = [
   "通勤防晒",
@@ -85,6 +91,7 @@ type GeneratedImagePreview = {
   planPage: number;
   url: string;
   provider: string;
+  storageUrl?: string;
 };
 
 type GeneratedVideoPreview = {
@@ -96,6 +103,7 @@ type GeneratedVideoPreview = {
 
 type ImageSourceAsset = ParsedReferenceMedia & {
   source: "链接解析" | "本地上传" | "素材库" | "产品素材库";
+  storageUrl?: string;
 };
 
 function productLibraryKey(product: ProductLibraryItem, index: number) {
@@ -110,6 +118,34 @@ type BatchDraft = {
   style: string;
 };
 
+type ImageProductionDraft = {
+  imageStep: ImageStep;
+  selectedBatchDrafts: BatchDraft[];
+  activeBatchIndex: number;
+  draftTitle: string;
+  draftCopy: string;
+  targetAccount: string;
+  contentType: string;
+  imageCount: string;
+  imageProvider: ImageProvider;
+  imagePlanItems: ImagePlanItem[];
+  activeImagePage: number;
+  imagePromptText: string;
+  imageSize: string;
+  generateCount: string;
+  productImage: ({ name: string; url: string; storageUrl?: string } | null);
+  localImageSources: ImageSourceAsset[];
+  libraryImageSources: ImageSourceAsset[];
+  productImageSources: ImageSourceAsset[];
+  selectedProductId: string;
+  planSourceMap: Record<number, ImageSourceAsset[]>;
+  planPromptMap: Record<number, string>;
+  planSizeMap: Record<number, string>;
+  planCountMap: Record<number, string>;
+  planProviderMap: Record<number, ImageProvider>;
+  parsedReference: ParsedReference | null;
+};
+
 function detectPlatformFromUrl(url: string) {
   if (url.includes("xiaohongshu.com")) return "小红书";
   return "小红书";
@@ -118,6 +154,37 @@ function detectPlatformFromUrl(url: string) {
 function mockSvg(label: string, tone = "#fff7ed") {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="720" height="960" viewBox="0 0 720 960"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="${tone}"/><stop offset="1" stop-color="#e0f2fe"/></linearGradient></defs><rect width="720" height="960" rx="36" fill="url(#g)"/><rect x="64" y="82" width="592" height="680" rx="30" fill="white" fill-opacity=".72"/><circle cx="178" cy="220" r="66" fill="#fb923c" fill-opacity=".22"/><rect x="270" y="190" width="270" height="34" rx="17" fill="#fb923c" fill-opacity=".35"/><rect x="150" y="330" width="420" height="28" rx="14" fill="#0f172a" fill-opacity=".18"/><rect x="150" y="382" width="360" height="24" rx="12" fill="#0f172a" fill-opacity=".12"/><text x="360" y="826" text-anchor="middle" font-size="38" font-family="Arial, sans-serif" fill="#ea580c" font-weight="700">${label}</text></svg>`;
   return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+}
+
+function generatedImageKey(image: GeneratedImagePreview) {
+  return image.storageUrl ?? image.url;
+}
+
+function generatedImageForStorage(image: GeneratedImagePreview): GeneratedImagePreview {
+  return image.storageUrl ? { ...image, url: image.storageUrl } : image;
+}
+
+function generatedImagePageLabel(image: GeneratedImagePreview) {
+  return image.planPage > 0 ? `P${image.planPage}` : "本地";
+}
+
+async function imageUrlToBlob(url: string) {
+  const readableUrl = await imageRefToUploadUrl(url);
+  if (!readableUrl) throw new Error("图片数据不存在");
+  const response = await fetch(readableUrl);
+  if (!response.ok) throw new Error(`图片读取失败（${response.status}）`);
+  return response.blob();
+}
+
+function downloadBlob(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
 }
 
 function buildMockReferenceMedia(platform: string, title: string): ParsedReferenceMedia[] {
@@ -201,6 +268,36 @@ function productAssetsForPool(product: ProductLibraryItem): ImageSourceAsset[] {
       source: "产品素材库" as const
     }];
   });
+}
+
+function imageSourceForStorage(asset: ImageSourceAsset): ImageSourceAsset {
+  const stableUrl = asset.storageUrl ?? asset.url;
+  return { ...asset, url: stableUrl, storageUrl: stableUrl };
+}
+
+async function hydrateImageSource(asset: ImageSourceAsset): Promise<ImageSourceAsset> {
+  const stableUrl = asset.storageUrl ?? asset.url;
+  if (!isStoredImageRef(stableUrl)) return { ...asset, storageUrl: stableUrl };
+  const resolvedUrl = await resolveImageRef(stableUrl);
+  return { ...asset, url: resolvedUrl || stableUrl, storageUrl: stableUrl };
+}
+
+async function stabilizeImageSource(asset: ImageSourceAsset, scope: string): Promise<ImageSourceAsset> {
+  const stableUrl = asset.storageUrl ?? asset.url;
+  if (isStoredImageRef(stableUrl) || /^https?:\/\//i.test(stableUrl) || stableUrl.startsWith("/")) {
+    return { ...asset, storageUrl: stableUrl };
+  }
+  const [storedUrl] = await persistImageRefs([stableUrl], scope);
+  const resolvedUrl = isStoredImageRef(storedUrl) ? await resolveImageRef(storedUrl) : stableUrl;
+  return { ...asset, url: resolvedUrl || stableUrl, storageUrl: storedUrl };
+}
+
+async function hydrateImageSourceMap(sourceMap: Record<number, ImageSourceAsset[]>) {
+  const entries = await Promise.all(Object.entries(sourceMap).map(async ([page, assets]) => [
+    Number(page),
+    await Promise.all((assets ?? []).map(hydrateImageSource))
+  ] as const));
+  return Object.fromEntries(entries) as Record<number, ImageSourceAsset[]>;
 }
 
 function expandCopyCandidates(items: typeof copyCandidates, baseTitle: string) {
@@ -440,7 +537,7 @@ export default function ContentPage() {
   const [draftTitle, setDraftTitle] = useState(titleCandidates[0].title);
   const [draftCopy, setDraftCopy] = useState(copyOptions[0].body);
   const [batchCandidates, setBatchCandidates] = useState<BatchDraft[]>(() => buildBatchDrafts(titleCandidates, expandCopyCandidates(copyCandidates, titleCandidates[0].title), 10));
-  const [selectedBatchDrafts, setSelectedBatchDrafts] = useState<BatchDraft[]>(() => buildBatchDrafts(titleCandidates, expandCopyCandidates(copyCandidates, titleCandidates[0].title), 1));
+  const [selectedBatchDrafts, setSelectedBatchDrafts] = useState<BatchDraft[]>(() => buildBatchDrafts(titleCandidates, expandCopyCandidates(copyCandidates, titleCandidates[0].title), 1).map(withoutSelectedKeywords));
   const [activeBatchIndex, setActiveBatchIndex] = useState(0);
   const [targetAccount, setTargetAccount] = useState(accounts[0].id);
   const [contentType, setContentType] = useState(accounts[0].contentTypes[0]);
@@ -448,21 +545,32 @@ export default function ContentPage() {
   const [imageProvider, setImageProvider] = useState<ImageProvider>("Image 2.0");
   const [imagePlanItems, setImagePlanItems] = useState([defaultImagePlan]);
   const [activeImagePage, setActiveImagePage] = useState(1);
-  const [productImage, setProductImage] = useState<{ name: string; url: string } | null>(null);
-  const [imagePromptText, setImagePromptText] = useState("延续参考作品结构，但画面更干净真实；突出通勤、防晒补涂、清爽肤感。");
+  const [productImage, setProductImage] = useState<{ name: string; url: string; storageUrl?: string } | null>(null);
+  const [imagePromptText, setImagePromptText] = useState("");
   const [imageSize, setImageSize] = useState("1080x1440");
   const [generateCount, setGenerateCount] = useState("1");
   const [generatedImages, setGeneratedImages] = useState<GeneratedImagePreview[]>([]);
+  const [generatedImagesHydrated, setGeneratedImagesHydrated] = useState(false);
 
   useEffect(() => {
-    void loadGeneratedImages(GENERATED_IMAGES_STORAGE_KEY).then((images) => {
-      if (images.length) setGeneratedImages(images);
-    });
+    void loadGeneratedImages(GENERATED_IMAGES_STORAGE_KEY)
+      .then(async (images) => {
+        const hydratedImages = await Promise.all(images.map(async (image) => {
+          const storedImage = image as GeneratedImagePreview;
+          const stableUrl = storedImage.storageUrl ?? storedImage.url;
+          if (!isStoredImageRef(stableUrl)) return storedImage;
+          const resolvedUrl = await resolveImageRef(stableUrl);
+          return { ...storedImage, url: resolvedUrl || stableUrl, storageUrl: stableUrl };
+        }));
+        if (hydratedImages.length) setGeneratedImages(hydratedImages);
+      })
+      .finally(() => setGeneratedImagesHydrated(true));
   }, []);
 
   useEffect(() => {
-    void saveGeneratedImages(GENERATED_IMAGES_STORAGE_KEY, generatedImages);
-  }, [generatedImages]);
+    if (!generatedImagesHydrated) return;
+    void saveGeneratedImages(GENERATED_IMAGES_STORAGE_KEY, generatedImages.map(generatedImageForStorage));
+  }, [generatedImages, generatedImagesHydrated]);
 
   const [customKeywordDraft, setCustomKeywordDraft] = useState("");
   const [customKeywords, setCustomKeywords] = useState<string[]>([]);
@@ -480,6 +588,7 @@ export default function ContentPage() {
   const [planSizeMap, setPlanSizeMap] = useState<Record<number, string>>({});
   const [planCountMap, setPlanCountMap] = useState<Record<number, string>>({});
   const [planProviderMap, setPlanProviderMap] = useState<Record<number, ImageProvider>>({});
+  const [imageDraftHydrated, setImageDraftHydrated] = useState(false);
   const [previewImage, setPreviewImage] = useState<GeneratedImagePreview | null>(null);
   const [generatingImagePages, setGeneratingImagePages] = useState<Record<number, ImageProvider>>({});
   const [draggingImagePage, setDraggingImagePage] = useState<number | null>(null);
@@ -487,11 +596,125 @@ export default function ContentPage() {
   const [finishedPreviewOpen, setFinishedPreviewOpen] = useState(false);
   const [finishedSaving, setFinishedSaving] = useState(false);
   const [finishedImageAssignments, setFinishedImageAssignments] = useState<Record<number, string[]>>({});
+  const [draggingFinishedImageUrl, setDraggingFinishedImageUrl] = useState<string | null>(null);
   const [expandedPreviewWork, setExpandedPreviewWork] = useState(0);
   const [previewImagePageFilter, setPreviewImagePageFilter] = useState("全部");
   const [videoFinishedPreviewOpen, setVideoFinishedPreviewOpen] = useState(false);
-  const [savePath, setSavePath] = useState("E:\\content-production-studio\\outputs");
-  const saveFolderInputRef = useRef<HTMLInputElement | null>(null);
+  const [savePath, setSavePath] = useState("尚未选择文件夹");
+  const [localSaveSelectedUrls, setLocalSaveSelectedUrls] = useState<string[]>([]);
+  const [localSaveDirectory, setLocalSaveDirectory] = useState<WritableDirectoryLike | null>(null);
+  const [localSaveSaving, setLocalSaveSaving] = useState(false);
+  const [directoryPickerSupported, setDirectoryPickerSupported] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setDirectoryPickerSupported("showDirectoryPicker" in window);
+    const keywordState = loadVersionedState(window.localStorage, KEYWORD_LIBRARY_STORAGE_KEY, LOCAL_STATE_VERSION, {
+      customKeywords: [] as string[],
+      hiddenKeywords: [] as string[]
+    });
+    setCustomKeywords(keywordState.customKeywords);
+    setHiddenKeywords(keywordState.hiddenKeywords);
+
+    const draft = loadVersionedState<Partial<ImageProductionDraft> | null>(
+      window.localStorage,
+      IMAGE_DRAFT_STORAGE_KEY,
+      LOCAL_STATE_VERSION,
+      null
+    );
+
+    const restoreDraft = async () => {
+      if (!draft) return;
+      if (draft.imageStep && imageSteps.includes(draft.imageStep)) setImageStep(draft.imageStep);
+      if (Array.isArray(draft.selectedBatchDrafts) && draft.selectedBatchDrafts.length) setSelectedBatchDrafts(draft.selectedBatchDrafts);
+      if (draft.activeBatchIndex !== undefined) setActiveBatchIndex(draft.activeBatchIndex);
+      if (draft.draftTitle !== undefined) setDraftTitle(draft.draftTitle);
+      if (draft.draftCopy !== undefined) setDraftCopy(draft.draftCopy);
+      if (draft.targetAccount !== undefined) setTargetAccount(draft.targetAccount);
+      if (draft.contentType !== undefined) setContentType(draft.contentType);
+      if (draft.imageCount !== undefined) setImageCount(draft.imageCount);
+      if (draft.imageProvider !== undefined) setImageProvider(draft.imageProvider);
+      if (Array.isArray(draft.imagePlanItems) && draft.imagePlanItems.length) setImagePlanItems(draft.imagePlanItems);
+      if (draft.activeImagePage !== undefined) setActiveImagePage(draft.activeImagePage);
+      if (draft.imagePromptText !== undefined) setImagePromptText(draft.imagePromptText);
+      if (draft.imageSize !== undefined) setImageSize(draft.imageSize);
+      if (draft.generateCount !== undefined) setGenerateCount(draft.generateCount);
+      if (draft.selectedProductId !== undefined) setSelectedProductId(draft.selectedProductId);
+      if (draft.planPromptMap) setPlanPromptMap(draft.planPromptMap);
+      if (draft.planSizeMap) setPlanSizeMap(draft.planSizeMap);
+      if (draft.planCountMap) setPlanCountMap(draft.planCountMap);
+      if (draft.planProviderMap) setPlanProviderMap(draft.planProviderMap);
+      if (draft.parsedReference !== undefined) setParsedReference(draft.parsedReference);
+
+      const [localSources, librarySources, productSources, restoredPlanSources] = await Promise.all([
+        Promise.all((draft.localImageSources ?? []).map(hydrateImageSource)),
+        Promise.all((draft.libraryImageSources ?? []).map(hydrateImageSource)),
+        Promise.all((draft.productImageSources ?? []).map(hydrateImageSource)),
+        hydrateImageSourceMap(draft.planSourceMap ?? {})
+      ]);
+      if (cancelled) return;
+      setLocalImageSources(localSources);
+      setLibraryImageSources(librarySources);
+      setProductImageSources(productSources);
+      setPlanSourceMap(restoredPlanSources);
+
+      if (draft.productImage) {
+        const stableUrl = draft.productImage.storageUrl ?? draft.productImage.url;
+        const resolvedUrl = isStoredImageRef(stableUrl) ? await resolveImageRef(stableUrl) : stableUrl;
+        if (!cancelled) setProductImage({ ...draft.productImage, url: resolvedUrl || stableUrl, storageUrl: stableUrl });
+      }
+    };
+
+    void restoreDraft().finally(() => {
+      if (!cancelled) setImageDraftHydrated(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!imageDraftHydrated) return;
+    if (!saveVersionedState(window.localStorage, KEYWORD_LIBRARY_STORAGE_KEY, LOCAL_STATE_VERSION, {
+      customKeywords,
+      hiddenKeywords
+    })) setFeedback("关键词库无法写入浏览器本地存储，请检查浏览器存储空间或隐私设置。");
+  }, [customKeywords, hiddenKeywords, imageDraftHydrated]);
+
+  useEffect(() => {
+    if (!imageDraftHydrated) return;
+    const storedProductImage = productImage
+      ? { ...productImage, url: productImage.storageUrl ?? productImage.url, storageUrl: productImage.storageUrl ?? productImage.url }
+      : null;
+    const storedPlanSourceMap = Object.fromEntries(Object.entries(planSourceMap).map(([page, assets]) => [page, assets.map(imageSourceForStorage)]));
+    if (!saveVersionedState<ImageProductionDraft>(window.localStorage, IMAGE_DRAFT_STORAGE_KEY, LOCAL_STATE_VERSION, {
+      imageStep,
+      selectedBatchDrafts,
+      activeBatchIndex,
+      draftTitle,
+      draftCopy,
+      targetAccount,
+      contentType,
+      imageCount,
+      imageProvider,
+      imagePlanItems,
+      activeImagePage,
+      imagePromptText,
+      imageSize,
+      generateCount,
+      productImage: storedProductImage,
+      localImageSources: localImageSources.map(imageSourceForStorage),
+      libraryImageSources: libraryImageSources.map(imageSourceForStorage),
+      productImageSources: productImageSources.map(imageSourceForStorage),
+      selectedProductId,
+      planSourceMap: storedPlanSourceMap,
+      planPromptMap,
+      planSizeMap,
+      planCountMap,
+      planProviderMap,
+      parsedReference
+    })) setFeedback("图片生成草稿无法写入浏览器本地存储，请检查浏览器存储空间或隐私设置。");
+  }, [activeBatchIndex, activeImagePage, contentType, draftCopy, draftTitle, generateCount, imageCount, imageDraftHydrated, imagePlanItems, imagePromptText, imageProvider, imageSize, imageStep, libraryImageSources, localImageSources, parsedReference, planCountMap, planPromptMap, planProviderMap, planSizeMap, planSourceMap, productImage, productImageSources, selectedBatchDrafts, selectedProductId, targetAccount]);
 
   const [selectedVideoTitle, setSelectedVideoTitle] = useState("夏天通勤补防晒，喷雾到底怎么用才不花妆");
   const [videoCoverCopy, setVideoCoverCopy] = useState(videoExtraction.coverCopy);
@@ -549,7 +772,7 @@ export default function ContentPage() {
       name: `图文素材 P${plan.page} · ${plan.type}`,
       type: "file",
       source: "内容生产 / 图文生产",
-      note: `${draftTitle}\n${plan.prompt}`
+      note: `${draftTitle}\n${planPromptMap[plan.page] ?? ""}`
     })));
     setFeedback("已自动保存图文生产素材到素材库。");
   };
@@ -679,7 +902,7 @@ export default function ContentPage() {
   };
 
   const selectBatchCandidate = (candidate: BatchDraft) => {
-    setSelectedBatchDrafts((items) => items.map((item, index) => index === activeBatchIndex ? { ...candidate, id: item.id } : item));
+    setSelectedBatchDrafts((items) => items.map((item, index) => index === activeBatchIndex ? withoutSelectedKeywords({ ...candidate, id: item.id }) : item));
     if (activeBatchIndex === 0) {
       setDraftTitle(candidate.title);
       setDraftCopy(candidate.copy);
@@ -702,12 +925,12 @@ export default function ContentPage() {
         id: "new_work",
         title: "新图文作品",
         copy: "",
-        tags: visibleKeywordLibrary.slice(0, 4),
+        tags: [],
         style: "自定义"
       }),
       id: `selected_${Date.now()}_${selectedBatchDrafts.length + 1}`
     };
-    setSelectedBatchDrafts((items) => [...items, nextDraft]);
+    setSelectedBatchDrafts((items) => [...items, withoutSelectedKeywords(nextDraft)]);
     setActiveBatchIndex(selectedBatchDrafts.length);
     setFeedback(`已新增作品 ${selectedBatchDrafts.length + 1}。`);
   };
@@ -734,15 +957,17 @@ export default function ContentPage() {
   const addCustomKeyword = () => {
     const incoming = customKeywordDraft.split(/[\n,，、\s]+/).map((item) => item.trim()).filter(Boolean);
     if (!incoming.length) return;
-    setCustomKeywords((items) => Array.from(new Set([...incoming, ...items])));
-    setHiddenKeywords((items) => items.filter((item) => !incoming.includes(item)));
+    const next = addKeywordValues({ customKeywords, hiddenKeywords }, incoming);
+    setCustomKeywords(next.customKeywords);
+    setHiddenKeywords(next.hiddenKeywords);
     setCustomKeywordDraft("");
     setFeedback(`已添加关键词：${incoming.join("、")}`);
   };
 
   const deleteKeywordFromLibrary = (tag: string) => {
-    setCustomKeywords((items) => items.filter((item) => item !== tag));
-    setHiddenKeywords((items) => Array.from(new Set([...items, tag])));
+    const next = removeKeywordValue({ customKeywords, hiddenKeywords }, tag);
+    setCustomKeywords(next.customKeywords);
+    setHiddenKeywords(next.hiddenKeywords);
     setSelectedBatchDrafts((items) => items.map((item) => ({ ...item, tags: item.tags.filter((value) => value !== tag) })));
     setFeedback(`已从关键词库删除：${tag}`);
   };
@@ -786,7 +1011,7 @@ export default function ContentPage() {
       setCopyOptions(nextCopies);
       const nextBatchCandidates = buildBatchDrafts(nextTitles, nextCopies, 10);
       setBatchCandidates(nextBatchCandidates);
-      setSelectedBatchDrafts(nextBatchCandidates.slice(0, Math.max(selectedBatchDrafts.length, 1)).map((item, index) => ({ ...item, id: `selected_${index + 1}` })));
+      setSelectedBatchDrafts(nextBatchCandidates.slice(0, Math.max(selectedBatchDrafts.length, 1)).map((item, index) => withoutSelectedKeywords({ ...item, id: `selected_${index + 1}` })));
       setActiveBatchIndex(0);
       setSelectedTitle(nextTitles[0]?.title ?? parsedReference.title);
       setDraftTitle(nextTitles[0]?.title ?? parsedReference.title);
@@ -806,7 +1031,7 @@ export default function ContentPage() {
       setCopyOptions(nextCopies);
       const nextBatchCandidates = buildBatchDrafts(nextTitles, nextCopies, 10);
       setBatchCandidates(nextBatchCandidates);
-      setSelectedBatchDrafts(nextBatchCandidates.slice(0, Math.max(selectedBatchDrafts.length, 1)).map((item, index) => ({ ...item, id: `selected_${index + 1}` })));
+      setSelectedBatchDrafts(nextBatchCandidates.slice(0, Math.max(selectedBatchDrafts.length, 1)).map((item, index) => withoutSelectedKeywords({ ...item, id: `selected_${index + 1}` })));
       setFeedback(error instanceof Error ? `仿写接口异常，已使用 mock 候选：${error.message}` : "仿写接口异常，已使用 mock 候选。");
     } finally {
       setImitationLoading(false);
@@ -1082,29 +1307,37 @@ export default function ContentPage() {
     }
   };
 
-  const uploadProductImage = (files: FileList | null) => {
+  const uploadProductImage = async (files: FileList | null) => {
     const file = files?.[0];
     if (!file) return;
-    setProductImage({ name: file.name, url: URL.createObjectURL(file) });
+    const storageUrl = await persistImageFile(file, `product_${Date.now()}`);
+    const url = await resolveImageRef(storageUrl);
+    setProductImage({ name: file.name, url: url || URL.createObjectURL(file), storageUrl });
     setFeedback(`已上传产品图：${file.name}`);
   };
 
-  const uploadLocalReferenceImages = (files: FileList | null) => {
-    const assets = Array.from(files ?? []).filter((file) => file.type.startsWith("image/")).map((file) => ({
-      type: "image" as const,
-      name: file.name,
-      url: URL.createObjectURL(file),
-      source: "本地上传" as const
+  const uploadLocalReferenceImages = async (files: FileList | null) => {
+    const assets = await Promise.all(Array.from(files ?? []).filter((file) => file.type.startsWith("image/")).map(async (file, index) => {
+      const storageUrl = await persistImageFile(file, `local_source_${Date.now()}_${index}`);
+      const url = await resolveImageRef(storageUrl);
+      return {
+        type: "image" as const,
+        name: file.name,
+        url: url || URL.createObjectURL(file),
+        storageUrl,
+        source: "本地上传" as const
+      };
     }));
     setLocalImageSources((items) => [...items, ...assets]);
     if (assets.length) setFeedback(`已上传 ${assets.length} 张本地素材，可拖入右侧生成页面。`);
   };
 
-  const chooseSourceForPlan = (page: number, asset: ImageSourceAsset) => {
+  const chooseSourceForPlan = async (page: number, asset: ImageSourceAsset) => {
+    const stableAsset = await stabilizeImageSource(asset, `plan_source_${page}_${Date.now()}`);
     setPlanSourceMap((items) => {
       const existing = items[page] ?? [];
-      if (existing.some((item) => item.url === asset.url)) return items;
-      return { ...items, [page]: [...existing, asset] };
+      if (existing.some((item) => (item.storageUrl ?? item.url) === (stableAsset.storageUrl ?? stableAsset.url))) return items;
+      return { ...items, [page]: [...existing, stableAsset] };
     });
   };
 
@@ -1159,8 +1392,10 @@ export default function ContentPage() {
     setFeedback(images.length ? `已打开素材库选择器，共 ${images.length} 张图片素材。` : "素材库里暂时没有可选择的图片素材。");
   };
 
-  const confirmMaterialPicker = () => {
-    const selected = materialPickerAssets.filter((asset) => selectedMaterialUrls.includes(asset.url));
+  const confirmMaterialPicker = async () => {
+    const selected = await Promise.all(materialPickerAssets
+      .filter((asset) => selectedMaterialUrls.includes(asset.url))
+      .map((asset, index) => stabilizeImageSource(asset, `material_source_${Date.now()}_${index}`)));
     setLibraryImageSources(selected);
     setMaterialPickerOpen(false);
     setFeedback(selected.length ? `已选择 ${selected.length} 张素材库图片，可拖入右侧生成页面。` : "未选择素材库图片。");
@@ -1186,7 +1421,7 @@ export default function ContentPage() {
       setFeedback("请选择产品资料库里的产品。");
       return;
     }
-    const assets = productAssetsForPool(product);
+    const assets = await Promise.all(productAssetsForPool(product).map((asset, index) => stabilizeImageSource(asset, `product_source_${Date.now()}_${index}`)));
     setProductImageSources(assets);
     const imageCount = assets.filter((asset) => asset.type === "image").length;
     const videoCount = assets.filter((asset) => asset.type === "video").length;
@@ -1205,7 +1440,7 @@ export default function ContentPage() {
     try {
       const asset = JSON.parse(rawAsset) as ImageSourceAsset;
       if (asset?.type === "image" && asset.url) {
-        chooseSourceForPlan(page, asset);
+        void chooseSourceForPlan(page, asset);
         setFeedback(`已把 ${asset.name} 拖入 P${page}。`);
       }
     } catch {
@@ -1230,7 +1465,7 @@ export default function ContentPage() {
     if (!plan) return;
     const count = Math.max(1, Math.min(10, Number(planCountMap[page] || "1")));
     const provider = planProviderMap[page] ?? imageProvider;
-    const previousPageImageUrls = generatedImages.filter((image) => image.planPage === page).map((image) => image.url);
+    const previousPageImageUrls = generatedImages.filter((image) => image.planPage === page).map(generatedImageKey);
     setGeneratingImagePages((items) => ({ ...items, [page]: provider }));
     setImagePlanItems((items) => items.map((item) => item.page === page ? { ...item, status: "generating" as const } : item));
     setFeedback(`P${page} 正在调用 ${provider} 生成图片，真实模型通常需要 30-90 秒；其他页面可以继续生成。`);
@@ -1244,9 +1479,7 @@ export default function ContentPage() {
           provider,
           sourceImages: selectedSources.map((item) => item.name),
           sourceImageUrls: sourceImageUrls.filter(Boolean),
-          prompt: provider === "Image 2.0"
-            ? `真实摄影质感，像真实手机/相机拍摄，不要假海报、不要3D渲染、不要卡通插画、不要AI塑料感。${planPromptMap[page] || plan.prompt}`
-            : planPromptMap[page] || plan.prompt,
+          prompt: planPromptMap[page] ?? "",
           size: planSizeMap[page] || "3:4",
           count,
           plan
@@ -1265,11 +1498,18 @@ export default function ContentPage() {
       }
       const imageUrls = extractGeneratedImageUrls((result as { images?: unknown } | undefined)?.images ?? result);
       if (!imageUrls.length && !provider.includes("仅生成提示词")) throw new Error("模型接口已返回，但未解析到图片 URL / base64。请查看服务日志中的 raw 返回格式。");
-      const nextImages = (imageUrls.length ? imageUrls : Array.from({ length: count }, (_, index) => mockSvg(`P${page}-${index + 1}`, index % 2 ? "#ecfeff" : "#fff7ed"))).slice(0, count).map((url, index) => ({
-        id: `generated_${page}_${Date.now()}_${index}`,
-        planPage: page,
-        url,
-        provider
+      const generatedAt = Date.now();
+      const nextImages = await Promise.all((imageUrls.length ? imageUrls : Array.from({ length: count }, (_, index) => mockSvg(`P${page}-${index + 1}`, index % 2 ? "#ecfeff" : "#fff7ed"))).slice(0, count).map(async (url, index) => {
+        const blob = await imageUrlToBlob(url);
+        const storageUrl = await persistImageFile(blob, `generated_${page}_${generatedAt}_${index}`);
+        const resolvedUrl = await resolveImageRef(storageUrl);
+        return {
+          id: `generated_${page}_${generatedAt}_${index}`,
+          planPage: page,
+          url: resolvedUrl || storageUrl,
+          storageUrl,
+          provider
+        };
       }));
       if (previousPageImageUrls.length) {
         setFinishedImageAssignments((items) => {
@@ -1385,27 +1625,57 @@ export default function ContentPage() {
     });
   };
 
-  const saveImageProjectLocally = () => {
-    setSaveDialogOpen(false);
-    setFeedback(`已保存本地图文项目到：${savePath}`);
+  const toggleLocalSaveSelection = (imageUrl: string) => {
+    setLocalSaveSelectedUrls((items) => items.includes(imageUrl) ? items.filter((url) => url !== imageUrl) : [...items, imageUrl]);
   };
 
-  const buildDefaultImageAssignments = () => {
-    const sortedImages = [...generatedImages].sort((a, b) => a.planPage - b.planPage || a.id.localeCompare(b.id));
-    const next: Record<number, string[]> = {};
-    selectedBatchDrafts.forEach((_, workIndex) => {
-      next[workIndex] = sortedImages
-        .filter((_, imageIndex) => imageIndex % selectedBatchDrafts.length === workIndex)
-        .map((image) => image.url);
-    });
-    if (sortedImages.length && selectedBatchDrafts.length && Object.values(next).every((items) => !items.length)) {
-      next[0] = sortedImages.map((image) => image.url);
+  const saveImageProjectLocally = async () => {
+    if (!localSaveSelectedUrls.length) {
+      setFeedback("请先勾选要保存的图片。");
+      return;
     }
-    return next;
+    setLocalSaveSaving(true);
+    try {
+      const selectedImages = localSaveSelectedUrls.flatMap((imageUrl) => {
+        const image = generatedImages.find((item) => generatedImageKey(item) === imageUrl);
+        return image ? [image] : [];
+      });
+      const pageCounts = new Map<number, number>();
+      const files = [];
+      let readFailures = 0;
+      for (const image of selectedImages) {
+        try {
+          const blob = await imageUrlToBlob(generatedImageKey(image));
+          const nextIndex = (pageCounts.get(image.planPage) ?? 0) + 1;
+          pageCounts.set(image.planPage, nextIndex);
+          const prefix = image.planPage > 0 ? `P${image.planPage}` : "本地";
+          files.push({ name: `${prefix}_${nextIndex}.${imageExtension(blob)}`, blob });
+        } catch {
+          readFailures += 1;
+        }
+      }
+
+      if (!files.length) throw new Error("勾选的图片均无法读取，请重新生成或上传。");
+      if (localSaveDirectory) {
+        const result = await writeBlobFiles(localSaveDirectory, files);
+        const failed = result.failed + readFailures;
+        setFeedback(`已保存 ${result.saved} 张图片到 ${localSaveDirectory.name}${failed ? `，${failed} 张失败` : ""}。`);
+        if (result.saved) setSaveDialogOpen(false);
+        return;
+      }
+
+      files.forEach((file) => downloadBlob(file.blob, file.name));
+      setFeedback(`当前浏览器不支持直接写入文件夹，已下载 ${files.length} 张所选图片${readFailures ? `，${readFailures} 张读取失败` : ""}。`);
+      setSaveDialogOpen(false);
+    } catch (error) {
+      setFeedback(error instanceof Error ? `保存失败：${error.message}` : "保存失败，请重试。");
+    } finally {
+      setLocalSaveSaving(false);
+    }
   };
 
   const openFinishedPreview = () => {
-    setFinishedImageAssignments(buildDefaultImageAssignments());
+    setFinishedImageAssignments({});
     setExpandedPreviewWork(0);
     setPreviewImagePageFilter("全部");
     setFinishedPreviewOpen(true);
@@ -1421,28 +1691,57 @@ export default function ContentPage() {
     });
   };
 
+  const reorderFinishedImageAssignment = (workIndex: number, sourceUrl: string, targetUrl: string, placement: "before" | "after") => {
+    setFinishedImageAssignments((items) => reorderAssignedImages(items, workIndex, sourceUrl, targetUrl, placement));
+  };
+
+  const uploadFinishedImages = async (workIndex: number, files: FileList | null) => {
+    const imageFiles = Array.from(files ?? []).filter((file) => file.type.startsWith("image/"));
+    if (!imageFiles.length) return;
+    const uploaded = await Promise.all(imageFiles.map(async (file, index) => {
+      const storageUrl = await persistImageFile(file, `finished_upload_${Date.now()}_${workIndex}_${index}`);
+      const url = await resolveImageRef(storageUrl);
+      return {
+        id: `finished_upload_${Date.now()}_${workIndex}_${index}`,
+        planPage: 0,
+        url: url || URL.createObjectURL(file),
+        storageUrl,
+        provider: "本地上传"
+      } satisfies GeneratedImagePreview;
+    }));
+    setGeneratedImages((items) => [...uploaded, ...items]);
+    setFinishedImageAssignments((items) => ({
+      ...items,
+      [workIndex]: [...(items[workIndex] ?? []), ...uploaded.map(generatedImageKey)]
+    }));
+    setFeedback(`已为作品 ${workIndex + 1} 上传并选择 ${uploaded.length} 张本地图片。`);
+  };
+
   const chooseLocalSaveFolder = async () => {
-    const pickerWindow = window as Window & { showDirectoryPicker?: () => Promise<{ name: string }> };
+    const pickerWindow = window as Window & { showDirectoryPicker?: () => Promise<WritableDirectoryLike> };
     if (pickerWindow.showDirectoryPicker) {
       try {
         const handle = await pickerWindow.showDirectoryPicker();
+        setLocalSaveDirectory(handle);
         setSavePath(handle.name);
         setFeedback(`已选择本地保存文件夹：${handle.name}`);
         return;
-      } catch {
+      } catch (error) {
+        const failure = directoryPickerFailure(error);
+        if (failure === "cancelled") {
+          setFeedback("已取消选择本地文件夹。");
+          return;
+        }
+        setDirectoryPickerSupported(false);
+        setLocalSaveDirectory(null);
+        setSavePath("浏览器默认下载目录");
+        setFeedback(failure === "denied" ? "未获得文件夹写入权限，已切换为浏览器下载；点击确认保存即可。" : "无法打开所选文件夹，已切换为浏览器下载；点击确认保存即可。");
         return;
       }
     }
-    saveFolderInputRef.current?.click();
-  };
-
-  const handleFallbackSaveFolder = (files: FileList | null) => {
-    const firstFile = files?.[0] as (File & { webkitRelativePath?: string }) | undefined;
-    const folder = firstFile?.webkitRelativePath?.split("/")[0] || firstFile?.name;
-    if (folder) {
-      setSavePath(folder);
-      setFeedback(`已选择本地保存文件夹：${folder}`);
-    }
+    setLocalSaveDirectory(null);
+    setSavePath("浏览器默认下载目录");
+    setFeedback("当前浏览器不支持直接写入文件夹，确认保存后会下载所选图片。");
   };
 
   const compactFinishedItems = async (items: unknown[]) => Promise.all(items.map(async (item) => {
@@ -1461,14 +1760,14 @@ export default function ContentPage() {
       page: plan.page,
       title: planPromptMap[plan.page] ? `P${plan.page}` : plan.title,
       copy: plan.copy,
-      prompt: planPromptMap[plan.page] ?? plan.prompt,
+      prompt: planPromptMap[plan.page] ?? "",
       provider: planProviderMap[plan.page] ?? imageProvider,
       images: [],
       sourceImages: (planSourceMap[plan.page] ?? []).map((source) => source.url)
     }));
     const current = await compactFinishedItems(JSON.parse(window.localStorage.getItem(FINISHED_CONTENT_STORAGE_KEY) || "[]") as unknown[]);
     if (kind === "image") {
-      const assignments = Object.keys(finishedImageAssignments).length ? finishedImageAssignments : buildDefaultImageAssignments();
+      const assignments = finishedImageAssignments;
       const imageItems = await Promise.all(selectedBatchDrafts.map(async (draft, workIndex) => {
         const mediaUrls = await persistImageRefs((assignments[workIndex] ?? []).filter(Boolean), `finished_${Date.now()}_${workIndex + 1}`);
         return {
@@ -1480,7 +1779,7 @@ export default function ContentPage() {
           platformBadge: "RED",
           account: accounts.find((account) => account.id === targetAccount)?.name ?? "本地账号",
           type: contentType,
-          mediaCount: `${mediaUrls.length || imagePlanItems.length} 张图`,
+          mediaCount: `${mediaUrls.length} 张图`,
           mediaKind: kind,
           mediaUrls,
           pages: imagePages.map((page) => ({
@@ -1498,7 +1797,7 @@ export default function ContentPage() {
           localPath: `outputs/content/${Date.now()}_${workIndex + 1}_${draft.title}`,
           createdAt: now,
           updatedAt: now,
-          prompts: imagePlanItems.map((item) => planPromptMap[item.page] ?? item.prompt),
+          prompts: imagePlanItems.map((item) => planPromptMap[item.page] ?? ""),
           negativePrompts: imagePlanItems.map((item) => item.negativePrompt),
           checkAdvice: ["已从批量图文生产流程保存"],
           reviewNotes: [`${now} 批量保存到成品内容库`]
@@ -1636,7 +1935,7 @@ export default function ContentPage() {
   return (
     <>
       <PageHeader
-        title="小红书图文生产状态"
+        title="图文生产状态"
         description="从公开参考链接解析、发布文案生成到图片生成，全流程仅在本地模拟与保存。"
       />
 
@@ -1825,7 +2124,7 @@ export default function ContentPage() {
               <Card className="flex min-h-0 flex-col overflow-hidden">
                 <CardHeader title="参考素材池" subtitle="链接解析素材、本地上传素材和素材库素材都可以拖到右侧生成页。" />
                 <CardBody className="min-h-0 flex-1 space-y-4 overflow-hidden">
-                  <input id="local-reference-images" type="file" accept="image/*" multiple className="hidden" onChange={(event) => uploadLocalReferenceImages(event.target.files)} />
+                  <input id="local-reference-images" type="file" accept="image/*" multiple className="hidden" onChange={(event) => void uploadLocalReferenceImages(event.target.files)} />
                   <div className="h-full space-y-4 overflow-y-auto pr-1">
                     <AssetSection title="链接解析素材" assets={(parsedReference?.media ?? []).filter((item) => item.type === "image").map((item) => ({ ...item, source: "链接解析" as const }))} emptyText="还没有链接解析图片。" onDrag={dragSourceAsset} onPreview={(asset) => setPreviewImage({ id: asset.url, planPage: 0, url: asset.url, provider: asset.name })} />
                     <AssetSection
@@ -1955,7 +2254,7 @@ export default function ContentPage() {
                             )}
                           </div>
                           <div className="space-y-3">
-                            <label className="block text-sm font-medium text-ink">提示词<textarea value={planPromptMap[item.page] ?? item.prompt} onChange={(event) => setPlanPromptMap((items) => ({ ...items, [item.page]: event.target.value }))} className="mt-2 min-h-24 w-full rounded-md border border-line px-3 py-2 text-sm leading-6 outline-none focus:border-orange-300" /></label>
+                            <label className="block text-sm font-medium text-ink">提示词<textarea value={planPromptMap[item.page] ?? ""} onChange={(event) => setPlanPromptMap((items) => ({ ...items, [item.page]: event.target.value }))} className="mt-2 min-h-24 w-full rounded-md border border-line px-3 py-2 text-sm leading-6 outline-none focus:border-orange-300" /></label>
                             <div className="grid gap-3 md:grid-cols-3">
                               <label className="block text-sm font-medium text-ink">生成张数<select value={planCountMap[item.page] ?? "1"} onChange={(event) => setPlanCountMap((items) => ({ ...items, [item.page]: event.target.value }))} className="mt-2 h-10 w-full rounded-md border border-line px-3 text-sm text-muted outline-none">{Array.from({ length: 10 }, (_, countIndex) => <option key={countIndex + 1}>{countIndex + 1}</option>)}</select></label>
                               <label className="block text-sm font-medium text-ink">图片比例<select value={planSizeMap[item.page] ?? "3:4"} onChange={(event) => setPlanSizeMap((items) => ({ ...items, [item.page]: event.target.value }))} className="mt-2 h-10 w-full rounded-md border border-line px-3 text-sm text-muted outline-none"><option>3:4</option><option>9:16</option><option>1:1</option><option>4:3</option><option>16:9</option></select></label>
@@ -1991,7 +2290,12 @@ export default function ContentPage() {
                 })}
                 <div className="flex flex-wrap justify-end gap-2">
                   <Button onClick={addImagePlanPage}>新增页面</Button>
-                  <Button variant="primary" onClick={() => setSaveDialogOpen(true)}>保存本地</Button>
+                  <Button variant="primary" onClick={() => {
+                    setLocalSaveSelectedUrls([]);
+                    setLocalSaveDirectory(null);
+                    setSavePath("尚未选择文件夹");
+                    setSaveDialogOpen(true);
+                  }}>保存本地</Button>
                   <Button variant="success" onClick={openFinishedPreview}>预览并打包成品内容</Button>
                 </div>
                 </div>
@@ -2257,17 +2561,17 @@ export default function ContentPage() {
       )}
 
       {previewImage ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4" onClick={() => setPreviewImage(null)}>
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/70 p-4" onClick={() => setPreviewImage(null)}>
           <div className="max-h-[92vh] max-w-4xl overflow-hidden rounded-lg bg-white shadow-xl" onClick={(event) => event.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-line px-4 py-3">
               <div>
-                <p className="text-sm font-semibold text-ink">P{previewImage.planPage} 生成结果预览</p>
+                <p className="text-sm font-semibold text-ink">{generatedImagePageLabel(previewImage)} 图片预览</p>
                 <p className="text-xs text-muted">{previewImage.provider}</p>
               </div>
               <button onClick={() => setPreviewImage(null)} className="rounded-md px-3 py-1 text-sm text-muted hover:bg-slate-100">关闭</button>
             </div>
             <div className="max-h-[82vh] overflow-auto bg-slate-50 p-4">
-              <img src={previewImage.url} alt={`P${previewImage.planPage} 生成结果预览`} className="mx-auto max-h-[76vh] max-w-full rounded-md object-contain" />
+              <img src={previewImage.url} alt={`${generatedImagePageLabel(previewImage)} 图片预览`} className="mx-auto max-h-[76vh] max-w-full rounded-md object-contain" />
             </div>
           </div>
         </div>
@@ -2326,7 +2630,7 @@ export default function ContentPage() {
               <p className="text-sm text-muted">已选择 {selectedMaterialUrls.length} 张</p>
               <div className="flex gap-2">
                 <Button onClick={() => setMaterialPickerOpen(false)}>取消</Button>
-                <Button variant="primary" onClick={confirmMaterialPicker}>确认选择</Button>
+                <Button variant="primary" onClick={() => void confirmMaterialPicker()}>确认选择</Button>
               </div>
             </div>
           </div>
@@ -2347,13 +2651,14 @@ export default function ContentPage() {
               <div className="grid gap-4 md:grid-cols-2">
                 {selectedBatchDrafts.map((work, workIndex) => {
                   const selectedUrls = finishedImageAssignments[workIndex] ?? [];
-                  const workImages = generatedImages
-                    .filter((image) => selectedUrls.includes(image.url))
-                    .sort((a, b) => a.planPage - b.planPage);
-                  const pageOptions = ["全部", ...Array.from(new Set(generatedImages.map((image) => `P${image.planPage}`)))];
+                  const workImages = selectedUrls.flatMap((imageUrl) => {
+                    const image = generatedImages.find((item) => generatedImageKey(item) === imageUrl);
+                    return image ? [image] : [];
+                  });
+                  const pageOptions = ["全部", ...Array.from(new Set(generatedImages.filter((image) => image.planPage > 0).map((image) => `P${image.planPage}`)))];
                   const visibleImages = [...generatedImages]
                     .sort((a, b) => a.planPage - b.planPage || a.id.localeCompare(b.id))
-                    .filter((image) => previewImagePageFilter === "全部" || `P${image.planPage}` === previewImagePageFilter);
+                    .filter((image) => previewImagePageFilter === "全部" || generatedImagePageLabel(image) === previewImagePageFilter);
                   const expanded = expandedPreviewWork === workIndex;
                   return (
                     <div key={work.id} className="overflow-hidden rounded-lg border border-line bg-white">
@@ -2378,40 +2683,61 @@ export default function ContentPage() {
                             <p className="text-xs font-medium text-muted">已选 {workImages.length} 张图片</p>
                             {!generatedImages.length ? <span className="text-xs text-orange-600">请先返回生成图片</span> : null}
                           </div>
-                          {workImages.length ? (
-                            <div className="flex gap-2 overflow-x-auto pb-1">
-                              {workImages.map((image) => (
-                                <button key={`selected-${work.id}-${image.id}`} onClick={() => setPreviewImage(image)} className="w-20 shrink-0 overflow-hidden rounded-lg border border-emerald-200 bg-emerald-50 text-left">
-                                  <img src={image.url} alt={`已选 P${image.planPage}`} className="aspect-[3/4] w-full object-cover" />
-                                  <p className="truncate px-1 py-0.5 text-[10px] text-emerald-700">P{image.planPage}</p>
-                                </button>
-                              ))}
-                            </div>
+                           {workImages.length ? (
+                             <div className="flex gap-2 overflow-x-auto pb-1">
+                              {workImages.map((image) => {
+                                const imageKey = generatedImageKey(image);
+                                return (
+                                  <div
+                                    key={`selected-${work.id}-${image.id}`}
+                                    draggable
+                                    onDragStart={() => setDraggingFinishedImageUrl(imageKey)}
+                                    onDragOver={(event) => event.preventDefault()}
+                                     onDrop={(event) => {
+                                       event.preventDefault();
+                                       const bounds = event.currentTarget.getBoundingClientRect();
+                                       const placement = event.clientX < bounds.left + bounds.width / 2 ? "before" : "after";
+                                       if (draggingFinishedImageUrl) reorderFinishedImageAssignment(workIndex, draggingFinishedImageUrl, imageKey, placement);
+                                      setDraggingFinishedImageUrl(null);
+                                    }}
+                                    onDragEnd={() => setDraggingFinishedImageUrl(null)}
+                                    className={cn("w-20 shrink-0 cursor-grab overflow-hidden rounded-lg border border-emerald-200 bg-emerald-50 text-left active:cursor-grabbing", draggingFinishedImageUrl === imageKey ? "opacity-60" : "")}
+                                  >
+                                    <button type="button" onClick={() => setPreviewImage(image)} className="block w-full text-left">
+                                      <img src={image.url} alt={`已选 ${generatedImagePageLabel(image)}`} className="aspect-[3/4] w-full object-cover" />
+                                      <p className="truncate px-1 py-0.5 text-[10px] text-emerald-700">{generatedImagePageLabel(image)}</p>
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                             </div>
                           ) : (
                             <div className="flex h-16 items-center justify-center rounded-lg border border-dashed border-line bg-slate-50 text-xs text-muted">暂未选择图片</div>
                           )}
-                          {expanded && generatedImages.length ? (
+                          {expanded ? (
                             <div className="mt-3 rounded-lg border border-line bg-slate-50 p-3">
-                              <div className="mb-3 flex flex-wrap gap-2">
-                                {pageOptions.map((page) => (
-                                  <button key={`${work.id}-${page}`} onClick={() => setPreviewImagePageFilter(page)} className={cn("h-7 rounded-full border px-3 text-xs transition", previewImagePageFilter === page ? "border-orange-300 bg-orange-500 text-white" : "border-line bg-white text-muted hover:bg-orange-50")}>{page}</button>
-                                ))}
+                              <div className="mb-3 flex flex-wrap items-center gap-2">
+                                {pageOptions.map((page) => <button key={`${work.id}-${page}`} onClick={() => setPreviewImagePageFilter(page)} className={cn("h-7 rounded-full border px-3 text-xs transition", previewImagePageFilter === page ? "border-orange-300 bg-orange-500 text-white" : "border-line bg-white text-muted hover:bg-orange-50")}>{page}</button>)}
+                                <input id={`finished-image-upload-${workIndex}`} type="file" accept="image/*" multiple className="hidden" onChange={(event) => void uploadFinishedImages(workIndex, event.target.files)} />
+                                <Button className="h-7 px-3 text-xs" onClick={() => document.getElementById(`finished-image-upload-${workIndex}`)?.click()}>上传图片</Button>
                               </div>
                               <div className="grid max-h-72 grid-cols-4 gap-2 overflow-y-auto pr-1">
                               {visibleImages.map((image) => {
-                                const checked = selectedUrls.includes(image.url);
+                                const imageKey = generatedImageKey(image);
+                                const checked = selectedUrls.includes(imageKey);
                                 return (
                                   <div key={`${work.id}-${image.id}`} className={cn("overflow-hidden rounded-lg border bg-slate-50 text-left transition", checked ? "border-emerald-300 ring-2 ring-emerald-100" : "border-line")}>
                                     <button onClick={() => setPreviewImage(image)} className="block w-full">
                                       <img src={image.url} alt={`P${image.planPage} 生成结果`} className="aspect-[3/4] w-full object-cover" />
                                     </button>
-                                    <button onClick={() => toggleFinishedImageAssignment(workIndex, image.url)} className={cn("flex w-full items-center justify-between px-2 py-1 text-xs", checked ? "bg-emerald-50 text-emerald-700" : "bg-white text-muted hover:bg-orange-50 hover:text-orange-700")}>
-                                      <span className="truncate">P{image.planPage} · {image.provider}</span>
+                                    <button onClick={() => toggleFinishedImageAssignment(workIndex, imageKey)} className={cn("flex w-full items-center justify-between px-2 py-1 text-xs", checked ? "bg-emerald-50 text-emerald-700" : "bg-white text-muted hover:bg-orange-50 hover:text-orange-700")}>
+                                      <span className="truncate">{generatedImagePageLabel(image)} · {image.provider}</span>
                                       <span className={cn("ml-1 grid h-4 w-4 shrink-0 place-items-center rounded-full border text-[10px]", checked ? "border-emerald-500 bg-emerald-500 text-white" : "border-slate-300")}>{checked ? "✓" : ""}</span>
                                     </button>
                                   </div>
                                 );
                               })}
+                              {!visibleImages.length ? <div className="col-span-4 py-8 text-center text-xs text-muted">暂无图片，可点击上方“上传图片”从本地添加。</div> : null}
                               </div>
                             </div>
                           ) : null}
@@ -2490,28 +2816,38 @@ export default function ContentPage() {
 
       {saveDialogOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6">
-          <div className="w-full max-w-lg rounded-lg bg-white shadow-soft">
+          <div className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-lg bg-white shadow-soft">
             <div className="border-b border-line px-5 py-4">
-              <h2 className="text-base font-semibold text-ink">选择本地保存位置</h2>
-              <p className="mt-1 text-sm text-muted">请选择本地文件夹作为保存位置。</p>
+              <h2 className="text-base font-semibold text-ink">选择图片并保存到本地</h2>
+              <p className="mt-1 text-sm text-muted">只会保存你勾选的图片，然后写入你选择的文件夹。</p>
             </div>
-            <div className="space-y-4 p-5">
-              <input
-                ref={saveFolderInputRef}
-                type="file"
-                className="hidden"
-                onChange={(event) => handleFallbackSaveFolder(event.target.files)}
-                {...{ webkitdirectory: "true", directory: "true" }}
-              />
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+              {generatedImages.length ? (
+                <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 lg:grid-cols-6">
+                  {generatedImages.map((image) => {
+                    const imageKey = generatedImageKey(image);
+                    const checked = localSaveSelectedUrls.includes(imageKey);
+                    return (
+                      <button key={`local-save-${image.id}`} type="button" onClick={() => toggleLocalSaveSelection(imageKey)} className={cn("relative overflow-hidden rounded-lg border bg-slate-50 text-left transition", checked ? "border-emerald-400 ring-2 ring-emerald-100" : "border-line hover:border-orange-200")}>
+                        <img src={image.url} alt={`${generatedImagePageLabel(image)} 保存预览`} className="aspect-[3/4] w-full object-cover" />
+                        <span className={cn("absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-full text-xs font-bold", checked ? "bg-emerald-500 text-white" : "bg-white/90 text-muted")}>{checked ? "✓" : ""}</span>
+                        <p className="truncate px-2 py-1 text-xs text-muted">{generatedImagePageLabel(image)} · {image.provider}</p>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="flex h-32 items-center justify-center rounded-lg border border-dashed border-line bg-slate-50 text-sm text-muted">还没有可保存的生成图片。</div>
+              )}
               <div className="rounded-lg border border-line bg-slate-50 p-4">
-                <p className="text-xs font-medium text-muted">当前保存位置</p>
+                <p className="text-xs font-medium text-muted">已选 {localSaveSelectedUrls.length} 张 · 当前保存位置</p>
                 <p className="mt-2 break-all text-sm font-medium text-ink">{savePath}</p>
-                <Button className="mt-3" icon={<FolderOpen className="h-4 w-4" />} onClick={() => void chooseLocalSaveFolder()}>选择文件夹</Button>
+                <Button className="mt-3" icon={<FolderOpen className="h-4 w-4" />} onClick={() => void chooseLocalSaveFolder()}>{directoryPickerSupported ? "选择文件夹" : "使用浏览器下载"}</Button>
               </div>
-              <div className="flex justify-end gap-2">
-                <Button onClick={() => setSaveDialogOpen(false)}>取消</Button>
-                <Button variant="primary" onClick={saveImageProjectLocally}>确认保存</Button>
-              </div>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-line px-5 py-4">
+              <Button disabled={localSaveSaving} onClick={() => setSaveDialogOpen(false)}>取消</Button>
+              <Button variant="primary" disabled={localSaveSaving || !localSaveSelectedUrls.length || (directoryPickerSupported && !localSaveDirectory)} onClick={() => void saveImageProjectLocally()}>{localSaveSaving ? "保存中..." : "确认保存"}</Button>
             </div>
           </div>
         </div>

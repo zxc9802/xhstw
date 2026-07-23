@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { X } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
@@ -11,10 +11,15 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 import { Tabs } from "@/components/ui/Tabs";
 import { platformBadges } from "@/lib/constants/platforms";
 import { accountPlatformOverview, accounts as initialAccounts } from "@/lib/mock/data";
+import { isStoredImageRef, persistImageFile, resolveImageRef } from "@/lib/utils/image-store";
+import { loadVersionedState, saveVersionedState } from "@/lib/utils/local-state";
 import type { ProductionAccount } from "@/types/account";
 
 const platformTabs = ["小红书"] as const;
 type AccountWithOwner = ProductionAccount & { owner?: string };
+const ACCOUNT_STORAGE_KEY = "content-production-studio.accounts";
+const ACCOUNT_STORAGE_VERSION = 1;
+const seededAccounts: AccountWithOwner[] = initialAccounts.map((item, index) => ({ ...item, owner: ["王欣", "张三", "李四", "陈然"][index % 4] }));
 
 function accountStatusLabel(status: string) {
   if (status === "pending") return "待完善";
@@ -29,12 +34,41 @@ function defaultAvatar(name: string) {
 }
 
 export default function AccountsPage() {
-  const [accountRows, setAccountRows] = useState<AccountWithOwner[]>(initialAccounts.map((item, index) => ({ ...item, owner: ["王欣", "张三", "李四", "陈然"][index % 4] })));
+  const [accountRows, setAccountRows] = useState<AccountWithOwner[]>(seededAccounts);
+  const [accountsHydrated, setAccountsHydrated] = useState(false);
+  const [resolvedAvatarMap, setResolvedAvatarMap] = useState<Record<string, string>>({});
   const [platform, setPlatform] = useState<(typeof platformTabs)[number]>("小红书");
   const [keyword, setKeyword] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<AccountWithOwner | null>(null);
+  const [editingAvatarPreview, setEditingAvatarPreview] = useState("");
   const [feedback, setFeedback] = useState("小红书账号资料仅做本地管理，不登录平台，不抓取后台。");
+
+  useEffect(() => {
+    const stored = loadVersionedState<AccountWithOwner[]>(window.localStorage, ACCOUNT_STORAGE_KEY, ACCOUNT_STORAGE_VERSION, seededAccounts);
+    setAccountRows(stored);
+    setAccountsHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!accountsHydrated) return;
+    if (!saveVersionedState(window.localStorage, ACCOUNT_STORAGE_KEY, ACCOUNT_STORAGE_VERSION, accountRows)) {
+      setFeedback("账号资料无法写入浏览器本地存储，请检查浏览器存储空间或隐私设置。");
+    }
+  }, [accountRows, accountsHydrated]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all(accountRows.map(async (account) => {
+      const resolved = account.avatar ? await resolveImageRef(account.avatar) : "";
+      return [account.id, resolved || (!isStoredImageRef(account.avatar) ? account.avatar : "")] as const;
+    })).then((entries) => {
+      if (!cancelled) setResolvedAvatarMap(Object.fromEntries(entries));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [accountRows]);
 
   const filteredAccounts = useMemo(() => accountRows.filter((item) => item.platform === platform && (item.name.includes(keyword) || item.platformAccountId.includes(keyword) || (item.owner ?? "").includes(keyword))), [accountRows, platform, keyword]);
 
@@ -66,8 +100,48 @@ export default function AccountsPage() {
   const saveEditing = () => {
     if (!editing) return;
     setAccountRows((items) => items.map((item) => item.id === editing.id ? editing : item));
+    if (editingAvatarPreview) setResolvedAvatarMap((items) => ({ ...items, [editing.id]: editingAvatarPreview }));
     setEditing(null);
+    setEditingAvatarPreview("");
     setFeedback(`已保存账号内容方向：${editing.name}`);
+  };
+
+  const deleteAccount = (account: AccountWithOwner) => {
+    if (!window.confirm(`确认删除账号“${account.name}”吗？删除后该账号资料不会再次出现。`)) return;
+    setAccountRows((items) => items.filter((item) => item.id !== account.id));
+    if (editing?.id === account.id) {
+      setEditing(null);
+      setEditingAvatarPreview("");
+    }
+    setFeedback(`已删除账号：${account.name}`);
+  };
+
+  const uploadEditingAvatar = async (files: FileList | null) => {
+    const file = files?.[0];
+    if (!editing || !file) return;
+    if (!file.type.startsWith("image/")) {
+      setFeedback("头像上传失败：请选择图片文件。");
+      return;
+    }
+    try {
+      const avatar = await persistImageFile(file, `account_avatar_${editing.id}_${Date.now()}`);
+      const previewUrl = await resolveImageRef(avatar);
+      setEditing({ ...editing, avatar });
+      setEditingAvatarPreview(previewUrl || URL.createObjectURL(file));
+      setFeedback(`已选择新头像：${file.name}，点击保存后长期生效。`);
+    } catch (error) {
+      setFeedback(error instanceof Error ? `头像上传失败：${error.message}` : "头像上传失败，请重试。");
+    }
+  };
+
+  const avatarUrlFor = (account: AccountWithOwner) => resolvedAvatarMap[account.id] || (!isStoredImageRef(account.avatar) ? account.avatar : "") || defaultAvatar(account.name);
+  const openAccountEditor = (account: AccountWithOwner) => {
+    setEditing(account);
+    setEditingAvatarPreview(avatarUrlFor(account));
+  };
+  const closeAccountEditor = () => {
+    setEditing(null);
+    setEditingAvatarPreview("");
   };
 
   return (
@@ -104,7 +178,7 @@ export default function AccountsPage() {
             {filteredAccounts.map((item) => (
               <tr key={item.id} className="hover:bg-slate-50">
                 <td className="whitespace-nowrap px-4 py-3 font-medium text-ink">{item.platform}</td>
-                <td className="px-4 py-3"><img src={item.avatar || defaultAvatar(item.name)} alt={item.name} className="h-10 w-10 rounded-full object-cover" /></td>
+                <td className="px-4 py-3"><img src={avatarUrlFor(item)} alt={item.name} className="h-10 w-10 rounded-full object-cover" /></td>
                 <td className="whitespace-nowrap px-4 py-3 font-medium text-ink">{item.name}</td>
                 <td className="px-4 py-3 text-muted">{item.platformAccountId || "-"}</td>
                 <td className="px-4 py-3 text-muted">{item.owner || "未设置"}</td>
@@ -112,7 +186,7 @@ export default function AccountsPage() {
                 <td className="px-4 py-3"><StatusBadge status={item.status === "pending" ? "pending" : item.status} label={accountStatusLabel(item.status)} /></td>
                 <td className="whitespace-nowrap px-4 py-3 text-muted">{item.autoTopicEnabled ? "开启" : "关闭"}</td>
                 <td className="min-w-56 px-4 py-3 text-muted">{item.remark}</td>
-                <td className="px-4 py-3"><Button onClick={() => setEditing(item)}>编辑</Button></td>
+                <td className="px-4 py-3"><div className="flex gap-2"><Button onClick={() => openAccountEditor(item)}>编辑</Button><Button variant="danger" onClick={() => deleteAccount(item)}>删除</Button></div></td>
               </tr>
             ))}
           </DataTable>
@@ -120,7 +194,7 @@ export default function AccountsPage() {
       </Card>
 
       {addOpen ? <AddAccountModal onClose={() => setAddOpen(false)} onSubmit={addAccount} /> : null}
-      {editing ? <EditAccountModal account={editing} onChange={setEditing} onClose={() => setEditing(null)} onSave={saveEditing} /> : null}
+      {editing ? <EditAccountModal account={editing} avatarUrl={editingAvatarPreview || avatarUrlFor(editing)} onAvatarUpload={uploadEditingAvatar} onChange={setEditing} onClose={closeAccountEditor} onSave={saveEditing} /> : null}
     </>
   );
 }
@@ -145,12 +219,19 @@ function AddAccountModal({ onClose, onSubmit }: { onClose: () => void; onSubmit:
   );
 }
 
-function EditAccountModal({ account, onChange, onClose, onSave }: { account: AccountWithOwner; onChange: (account: AccountWithOwner) => void; onClose: () => void; onSave: () => void }) {
+function EditAccountModal({ account, avatarUrl, onAvatarUpload, onChange, onClose, onSave }: { account: AccountWithOwner; avatarUrl: string; onAvatarUpload: (files: FileList | null) => void; onChange: (account: AccountWithOwner) => void; onClose: () => void; onSave: () => void }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 p-4">
       <div className="w-full max-w-2xl rounded-lg border border-line bg-white shadow-xl">
         <div className="flex items-start justify-between gap-4 border-b border-line px-5 py-4"><div><h2 className="text-lg font-semibold text-ink">编辑账号</h2><p className="mt-1 text-sm text-muted">{account.platform} · {account.name}</p></div><button onClick={onClose} className="rounded-md p-2 text-muted hover:bg-slate-100"><X className="h-5 w-5" /></button></div>
         <div className="grid gap-4 p-5 md:grid-cols-2">
+          <div className="flex items-center gap-4 md:col-span-2">
+            <img src={avatarUrl || defaultAvatar(account.name)} alt={`${account.name} 头像预览`} className="h-20 w-20 rounded-full object-cover ring-1 ring-line" />
+            <label className="inline-flex h-10 cursor-pointer items-center rounded-md border border-line bg-white px-4 text-sm font-medium text-ink transition hover:border-orange-200 hover:bg-orange-50">
+              上传头像
+              <input type="file" accept="image/*" className="hidden" onChange={(event) => void onAvatarUpload(event.target.files)} />
+            </label>
+          </div>
           <label className="block text-sm font-medium text-ink">账号名称<input value={account.name} onChange={(event) => onChange({ ...account, name: event.target.value })} className="mt-2 h-10 w-full rounded-md border border-line px-3 text-sm outline-none focus:border-orange-300" /></label>
           <label className="block text-sm font-medium text-ink">账号持有人<input value={account.owner ?? ""} onChange={(event) => onChange({ ...account, owner: event.target.value })} className="mt-2 h-10 w-full rounded-md border border-line px-3 text-sm outline-none focus:border-orange-300" /></label>
           <label className="block text-sm font-medium text-ink md:col-span-2">内容方向<textarea value={account.positioning} onChange={(event) => onChange({ ...account, positioning: event.target.value })} className="mt-2 min-h-32 w-full rounded-md border border-line px-3 py-2 text-sm leading-6 outline-none focus:border-orange-300" /></label>
