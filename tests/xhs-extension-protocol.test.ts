@@ -18,6 +18,7 @@ const protocol = require("../browser-extension/shared/protocol.js") as {
 
 const REQUEST_ID = "11111111-1111-4111-8111-111111111111";
 const OTHER_REQUEST_ID = "22222222-2222-4222-8222-222222222222";
+const ASSET_KEY = "sha256-0123456789abcdef0123456789abcdef";
 
 function task(overrides: Record<string, unknown> = {}) {
   return {
@@ -183,10 +184,83 @@ test("page envelopes require exact allowed types and payloads", () => {
   assert.equal(protocol.isEnvelope(envelope("unknown", {}), "page-to-extension"), false);
 });
 
+test("protocol v2 accepts exact media transfer envelopes and rejects malformed chunks", () => {
+  assert.equal(protocol.PROTOCOL_VERSION, 2);
+  const start = extensionEnvelope("media:start", {
+    assetKey: ASSET_KEY,
+    topicKey: "xhs:64f0a1b2c3d4e5f60718293a",
+    mediaRole: "image",
+    sourceUrl: "https://sns-webpic-qc.xhscdn.com/example.jpg"
+  });
+  const chunk = extensionEnvelope("media:chunk", {
+    assetKey: ASSET_KEY,
+    chunkIndex: 0,
+    data: "AQID",
+    byteLength: 3
+  });
+  const complete = extensionEnvelope("media:complete", {
+    assetKey: ASSET_KEY,
+    mimeType: "image/jpeg",
+    byteLength: 3,
+    chunkCount: 1
+  });
+  const mediaError = extensionEnvelope("media:error", {
+    assetKey: ASSET_KEY,
+    code: "MEDIA_FETCH_FAILED",
+    message: "图片下载失败"
+  });
+
+  assert.equal(protocol.isEnvelope(start, "extension-to-page"), true);
+  assert.equal(protocol.isEnvelope(chunk, "extension-to-page"), true);
+  assert.equal(protocol.isEnvelope(complete, "extension-to-page"), true);
+  assert.equal(protocol.isEnvelope(mediaError, "extension-to-page"), true);
+  assert.equal(protocol.isEnvelope(envelope("media:ready", { assetKey: ASSET_KEY }), "page-to-extension"), true);
+  assert.equal(protocol.isEnvelope(envelope("media:skip", { assetKey: ASSET_KEY }), "page-to-extension"), true);
+  assert.equal(protocol.isEnvelope(envelope("media:ack", { assetKey: ASSET_KEY, chunkIndex: 0 }), "page-to-extension"), true);
+  assert.equal(protocol.isEnvelope(envelope("media:abort", {
+    assetKey: ASSET_KEY,
+    code: "QUOTA_EXCEEDED",
+    message: "本机存储空间不足"
+  }), "page-to-extension"), true);
+
+  assert.equal(protocol.isEnvelope(extensionEnvelope("media:chunk", {
+    assetKey: ASSET_KEY,
+    chunkIndex: 1,
+    data: "***",
+    byteLength: 3
+  }), "extension-to-page"), false);
+  assert.equal(protocol.isEnvelope(extensionEnvelope("media:complete", {
+    assetKey: ASSET_KEY,
+    mimeType: "text/html",
+    byteLength: 3,
+    chunkCount: 1
+  }), "extension-to-page"), false);
+});
+
+test("protocol v2 result carries local media metadata and media counters", () => {
+  const localTopic = topic({
+    media: [{
+      type: "video",
+      url: "https://sns-video-qc.xhscdn.com/example.mp4",
+      posterUrl: "https://sns-webpic-qc.xhscdn.com/poster.jpg",
+      localAssetKey: ASSET_KEY,
+      posterLocalAssetKey: "sha256-fedcba9876543210fedcba9876543210",
+      mimeType: "video/mp4",
+      size: 1024
+    }]
+  });
+  assert.equal(protocol.isEnvelope(extensionEnvelope("result", {
+    topics: [localTopic],
+    message: "完成",
+    mediaCompleted: 2,
+    mediaFailed: 0
+  }), "extension-to-page"), true);
+});
+
 test("extension envelopes require exact allowed types and payloads", () => {
   assert.equal(protocol.isEnvelope(extensionEnvelope("pong", { version: "0.1.0" }), "extension-to-page"), true);
   assert.equal(protocol.isEnvelope(extensionEnvelope("progress", { stage: "searching", completed: 1, total: 2, message: "正在搜索" }), "extension-to-page"), true);
-  assert.equal(protocol.isEnvelope(extensionEnvelope("result", { topics: [topic()], message: "完成" }), "extension-to-page"), true);
+  assert.equal(protocol.isEnvelope(extensionEnvelope("result", { topics: [topic()], message: "完成", mediaCompleted: 0, mediaFailed: 0 }), "extension-to-page"), true);
   assert.equal(protocol.isEnvelope(extensionEnvelope("error", { code: "LOGIN_REQUIRED", message: "请先登录" }), "extension-to-page"), true);
   const invalid = [
     extensionEnvelope("ping", {}),
@@ -195,8 +269,8 @@ test("extension envelopes require exact allowed types and payloads", () => {
     extensionEnvelope("progress", { stage: "searching", completed: 3, total: 2, message: "ok" }),
     extensionEnvelope("progress", { stage: "searching", completed: Number.MAX_SAFE_INTEGER + 1, total: Number.MAX_SAFE_INTEGER + 1, message: "ok" }),
     extensionEnvelope("progress", { stage: "searching", completed: 1, total: 11, message: "ok" }),
-    extensionEnvelope("result", { topics: [topic({ platform: "抖音" })], message: "完成" }),
-    extensionEnvelope("result", { topics: [null], message: "完成" }),
+    extensionEnvelope("result", { topics: [topic({ platform: "抖音" })], message: "完成", mediaCompleted: 0, mediaFailed: 0 }),
+    extensionEnvelope("result", { topics: [null], message: "完成", mediaCompleted: 0, mediaFailed: 0 }),
     extensionEnvelope("error", { code: "", message: "请先登录" }),
     extensionEnvelope("error", { code: "LOGIN_REQUIRED", message: "" })
   ];
@@ -218,16 +292,16 @@ test("envelope validation rejects malformed records and never throws", () => {
     withoutPayload,
     { ...valid, direction: "extension-to-page" },
     { ...valid, channel: "other" },
-    { ...valid, protocolVersion: 2 },
+    { ...valid, protocolVersion: 999 },
     { ...valid, requestId: "bad" },
-    extensionEnvelope("result", { topics: [topic({ sourceAccount: "" })], message: "完成" })
+    extensionEnvelope("result", { topics: [topic({ sourceAccount: "" })], message: "完成", mediaCompleted: 0, mediaFailed: 0 })
   ];
   for (const message of invalidMessages) {
     assert.doesNotThrow(() => protocol.isEnvelope(message, "page-to-extension"));
     assert.equal(protocol.isEnvelope(message, "page-to-extension"), false);
   }
-  assert.doesNotThrow(() => protocol.isEnvelope(extensionEnvelope("result", { topics: sparseTopics, message: "完成" }), "extension-to-page"));
-  assert.equal(protocol.isEnvelope(extensionEnvelope("result", { topics: sparseTopics, message: "完成" }), "extension-to-page"), false);
+  assert.doesNotThrow(() => protocol.isEnvelope(extensionEnvelope("result", { topics: sparseTopics, message: "完成", mediaCompleted: 0, mediaFailed: 0 }), "extension-to-page"));
+  assert.equal(protocol.isEnvelope(extensionEnvelope("result", { topics: sparseTopics, message: "完成", mediaCompleted: 0, mediaFailed: 0 }), "extension-to-page"), false);
 });
 
 test("envelope validation rejects hidden, symbol, and accessor fields without invoking getters", () => {
@@ -253,7 +327,7 @@ test("envelope validation rejects hidden, symbol, and accessor fields without in
 
 test("result topics and media require exact safe object shapes", () => {
   const validMedia = { type: "image", url: "https://ci.xiaohongshu.com/image.jpg", name: "封面", posterUrl: "https://ci.xiaohongshu.com/poster.jpg" };
-  assert.equal(protocol.isEnvelope(extensionEnvelope("result", { topics: [topic({ media: [validMedia] })], message: "完成" }), "extension-to-page"), true);
+  assert.equal(protocol.isEnvelope(extensionEnvelope("result", { topics: [topic({ media: [validMedia] })], message: "完成", mediaCompleted: 0, mediaFailed: 0 }), "extension-to-page"), true);
 
   const hiddenTopic = defineHidden(topic(), "hidden", true);
   const symbolTopic = topic();
@@ -285,8 +359,8 @@ test("result topics and media require exact safe object shapes", () => {
     accessorTopic
   ];
   for (const invalidTopic of invalidTopics) {
-    assert.doesNotThrow(() => protocol.isEnvelope(extensionEnvelope("result", { topics: [invalidTopic], message: "完成" }), "extension-to-page"));
-    assert.equal(protocol.isEnvelope(extensionEnvelope("result", { topics: [invalidTopic], message: "完成" }), "extension-to-page"), false);
+    assert.doesNotThrow(() => protocol.isEnvelope(extensionEnvelope("result", { topics: [invalidTopic], message: "完成", mediaCompleted: 0, mediaFailed: 0 }), "extension-to-page"));
+    assert.equal(protocol.isEnvelope(extensionEnvelope("result", { topics: [invalidTopic], message: "完成", mediaCompleted: 0, mediaFailed: 0 }), "extension-to-page"), false);
   }
   assert.equal(getterCalls, 0);
 });
@@ -302,8 +376,8 @@ test("result topics use JSON wire omission for optional fields", () => {
   assert.equal(Object.hasOwn(wireTopic, "authorUrl"), false);
   assert.equal(Object.hasOwn(wireTopic, "coverUrl"), false);
   assert.equal(Object.hasOwn(wireTopic.media[0], "posterUrl"), false);
-  assert.equal(protocol.isEnvelope(extensionEnvelope("result", { topics: [wireTopic], message: "完成" }), "extension-to-page"), true);
-  assert.equal(protocol.isEnvelope(extensionEnvelope("result", { topics: [topic({ authorUrl: undefined })], message: "完成" }), "extension-to-page"), false);
+  assert.equal(protocol.isEnvelope(extensionEnvelope("result", { topics: [wireTopic], message: "完成", mediaCompleted: 0, mediaFailed: 0 }), "extension-to-page"), true);
+  assert.equal(protocol.isEnvelope(extensionEnvelope("result", { topics: [topic({ authorUrl: undefined })], message: "完成", mediaCompleted: 0, mediaFailed: 0 }), "extension-to-page"), false);
 });
 
 test("manifest is an exact least-privilege template", () => {
@@ -312,10 +386,15 @@ test("manifest is an exact least-privilege template", () => {
   assert.deepEqual(Object.keys(manifest), ["manifest_version", "name", "version", "description", "permissions", "host_permissions", "background", "content_scripts", "action"]);
   assert.equal(manifest.manifest_version, 3);
   assert.equal(manifest.name, "小红书本机抓取助手");
-  assert.equal(manifest.version, "0.1.0");
+  assert.equal(manifest.version, "0.1.11");
   assert.equal(manifest.description, "在用户自己的浏览器中执行内容生产中台下达的小红书公开页面抓取任务。");
   assert.deepEqual(manifest.permissions, ["storage"]);
-  assert.deepEqual(manifest.host_permissions, ["https://www.xiaohongshu.com/*", "__APP_MATCH_PATTERN__"]);
+  assert.deepEqual(manifest.host_permissions, [
+    "https://www.xiaohongshu.com/*",
+    "https://*.xiaohongshu.com/*",
+    "https://*.xhscdn.com/*",
+    "__APP_MATCH_PATTERN__"
+  ]);
   assert.deepEqual(manifest.background, { service_worker: "background.js" });
   assert.deepEqual(manifest.content_scripts, [
     { matches: ["__APP_MATCH_PATTERN__"], js: ["shared/protocol.js", "app-bridge.js"], run_at: "document_start" },
@@ -432,7 +511,12 @@ test("packages a scoped extension for one exact app origin", { skip: process.pla
     const manifest = JSON.parse(manifestText);
     assert.equal(manifestText.includes("__APP_MATCH_PATTERN__"), false);
     assert.equal(manifest.version, version);
-    assert.deepEqual(manifest.host_permissions, ["https://www.xiaohongshu.com/*", "https://studio.example.test/*"]);
+    assert.deepEqual(manifest.host_permissions, [
+      "https://www.xiaohongshu.com/*",
+      "https://*.xiaohongshu.com/*",
+      "https://*.xhscdn.com/*",
+      "https://studio.example.test/*"
+    ]);
     assert.deepEqual(manifest.content_scripts[0].matches, ["https://studio.example.test/*"]);
     for (const relativePath of ["background.js", "app-bridge.js", "xhs-content.js", "shared/protocol.js", "shared/collector.js", "shared/task-state.js", "安装说明.md"]) {
       assert.equal(existsSync(join(expanded, relativePath)), true, `${relativePath} should be packaged`);
