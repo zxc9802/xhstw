@@ -37,6 +37,8 @@ test("callback and middleware keep ticket exchange server-side", async () => {
   ]);
 
   assert.match(callback, /exchangeMainAppSsoTicket/);
+  assert.match(callback, /getPublicXhstwAppUrl/);
+  assert.match(helper, /https:\/\/xhstw\.qycm\.top/);
   assert.match(helper, /x-qycm-sso-client-secret/);
   assert.match(helper, /httpOnly:\s*true/);
   assert.match(helper, /secure:\s*true/);

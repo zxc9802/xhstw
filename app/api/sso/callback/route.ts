@@ -3,7 +3,8 @@ import {
   createMainAppSessionCookie,
   exchangeMainAppSsoTicket,
   getMainAppSessionCookieName,
-  getMainAppSessionCookieOptions
+  getMainAppSessionCookieOptions,
+  getPublicXhstwAppUrl
 } from "../../../../lib/main-app-sso";
 
 export async function GET(request: NextRequest) {
@@ -14,7 +15,7 @@ export async function GET(request: NextRequest) {
 
   try {
     const { redirectPath, session } = await exchangeMainAppSsoTicket(ticket);
-    const response = NextResponse.redirect(new URL(redirectPath, request.url));
+    const response = NextResponse.redirect(new URL(redirectPath, getPublicXhstwAppUrl()));
     response.cookies.set(
       getMainAppSessionCookieName(),
       await createMainAppSessionCookie(session),

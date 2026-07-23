@@ -2,6 +2,7 @@ const PRODUCT = "xhstw";
 const COOKIE_NAME = "qycm_xhstw_sso";
 const SESSION_MAX_AGE_SECONDS = 5 * 60;
 const MAIN_APP_URL_FALLBACK = "https://www.qycm.top";
+const PUBLIC_XHSTW_APP_URL = "https://xhstw.qycm.top";
 
 export type MainAppUser = {
   id: string;
@@ -78,6 +79,10 @@ function isMainAppSession(value: unknown): value is MainAppSession {
 
 export function getMainAppUrl(): string {
   return (process.env.MAIN_APP_URL?.trim() || MAIN_APP_URL_FALLBACK).replace(/\/+$/, "");
+}
+
+export function getPublicXhstwAppUrl(): string {
+  return PUBLIC_XHSTW_APP_URL;
 }
 
 export function getMainAppSsoLaunchUrl(): string {
