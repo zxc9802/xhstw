@@ -53,3 +53,10 @@ test("mounts the installer before the notification button in the top bar", () =>
   assert.notEqual(notificationIndex, -1, "AppShell notification button must remain");
   assert.equal(installerIndex < notificationIndex, true, "installer must appear left of notification");
 });
+
+test("portals the dialog outside the sticky header containing block", () => {
+  const installerSource = readFileSync(path.join(repoRoot, "components", "extension", "ExtensionInstaller.tsx"), "utf8");
+
+  assert.match(installerSource, /createPortal\(/);
+  assert.match(installerSource, /document\.body/);
+});

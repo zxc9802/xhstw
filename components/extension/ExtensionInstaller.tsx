@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import { createPortal } from "react-dom";
 import { CircleHelp, Download, X } from "lucide-react";
 
 export const XHS_EXTENSION_DOWNLOAD_PATH = "/downloads/xhs-browser-extension-0.1.10.zip";
@@ -29,7 +30,9 @@ export function ExtensionInstaller() {
         </button>
       </div>
 
-      {guideOpen ? <ExtensionInstallDialog onClose={() => setGuideOpen(false)} /> : null}
+      {guideOpen && typeof document !== "undefined"
+        ? createPortal(<ExtensionInstallDialog onClose={() => setGuideOpen(false)} />, document.body)
+        : null}
     </>
   );
 }
