@@ -13,6 +13,7 @@ import {
   PackageSearch,
   UsersRound
 } from "lucide-react";
+import { ExtensionInstaller } from "@/components/extension/ExtensionInstaller";
 import { cn } from "@/lib/utils/cn";
 
 const productionNavItems = [
@@ -94,6 +95,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <p className="text-xs text-muted">本地图文 workflow</p>
           </div>
           <div className="flex items-center gap-3">
+            <ExtensionInstaller />
             <button className="relative flex h-9 w-9 items-center justify-center rounded-md border border-line bg-white text-muted transition hover:bg-orange-50 hover:text-orange-700" title="通知">
               <Bell className="h-4 w-4" />
               <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-orange-500" />
