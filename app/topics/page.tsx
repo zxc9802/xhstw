@@ -345,23 +345,15 @@ export default function TopicsPage() {
       setFeedback("请先在弹窗里选择至少一个关键词，再开始抓取。");
       return;
     }
-    if (activeKeywords.length > 2) {
-      setFeedback("每次最多选择 2 个关键词，请减少关键词后再抓取。");
-      return;
-    }
     if (activeKeywords.some((item) => item.length > 40)) {
       setFeedback("每个关键词最多 40 个字符，请缩短后再抓取。");
       return;
     }
-    if (!Number.isInteger(requestedLimit) || requestedLimit <= 0) {
+    if (!Number.isSafeInteger(requestedLimit) || requestedLimit <= 0) {
       setFeedback("请先填写每个关键词要抓取的数量。");
       return;
     }
-    if (requestedLimit > 5) {
-      setFeedback("每个关键词最多抓取 5 条，请把数量调整为 1 到 5。");
-      return;
-    }
-    const activeLimit = Math.max(1, Math.min(5, requestedLimit));
+    const activeLimit = requestedLimit;
     if (navigator.storage) {
       await navigator.storage.persist().catch(() => false);
       const estimate = await navigator.storage.estimate().catch(() => null);
@@ -376,7 +368,7 @@ export default function TopicsPage() {
     try {
       const task: XhsCollectTask = {
         requestId: crypto.randomUUID(),
-        queries: activeKeywords.slice(0, 2),
+        queries: activeKeywords,
         limitPerQuery: activeLimit,
         mediaType: collectMediaType,
         dateRange: collectDateRange,
@@ -398,7 +390,7 @@ export default function TopicsPage() {
       setCollectOpen(false);
       setSelectedKeywords([]);
       setFeedback(result.topics.length
-        ? `本机抓取完成：返回 ${result.topics.length} 条，本地媒体成功 ${result.mediaCompleted} 个、失败 ${result.mediaFailed} 个。`
+        ? `${result.message}，本地媒体成功 ${result.mediaCompleted} 个、失败 ${result.mediaFailed} 个。`
         : (result.message || "这次没有新增内容：可能已经重复，或当前筛选条件下没有新笔记。"));
     } catch (error) {
       const code = error instanceof Error ? (error as Error & { code?: string }).code : undefined;
@@ -720,9 +712,7 @@ function CollectModal({
   onClose: () => void;
 }) {
   const requestedLimit = Number(collectLimit);
-  const tooManyKeywords = selectedKeywords.length > 2;
-  const tooManyResults = Number.isFinite(requestedLimit) && requestedLimit > 5;
-  const canCollect = extensionStatus === "ready" && selectedKeywords.length > 0 && !tooManyKeywords && Number.isInteger(requestedLimit) && requestedLimit > 0 && requestedLimit <= 5;
+  const canCollect = extensionStatus === "ready" && selectedKeywords.length > 0 && Number.isSafeInteger(requestedLimit) && requestedLimit > 0;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 p-4">
@@ -738,7 +728,6 @@ function CollectModal({
               <input
                 type="number"
                 min={1}
-                max={5}
                 value={collectLimit}
                 placeholder="自己填写数量"
                 onChange={(event) => onCollectLimitChange(event.target.value)}
@@ -803,9 +792,7 @@ function CollectModal({
           <div className="rounded-lg bg-orange-50 px-4 py-3 text-sm text-orange-700">
             本次抓取：{selectedKeywords.length ? selectedKeywords.join(" / ") : "请选择关键词"}；每个关键词 {collectLimit ? `${collectLimit} 篇` : "请填写数量"}；时间：{collectDateRange}；方式：{collectMethod}；类型：{collectMediaType}
           </div>
-          {selectedKeywords.length === 0 || !Number.isInteger(requestedLimit) || requestedLimit <= 0 ? <div className="text-sm text-orange-700">请选择至少一个关键词，并填写每个关键词的抓取数量。</div> : null}
-          {tooManyKeywords ? <div className="text-sm text-red-600">每次最多选择 2 个关键词。</div> : null}
-          {tooManyResults ? <div className="text-sm text-red-600">每个关键词最多抓取 5 条。</div> : null}
+          {selectedKeywords.length === 0 || !Number.isSafeInteger(requestedLimit) || requestedLimit <= 0 ? <div className="text-sm text-orange-700">请选择至少一个关键词，并填写每个关键词的抓取数量。</div> : null}
           {extensionStatus !== "ready" ? <div className="text-sm text-red-600">本机抓取扩展未连接，暂时不能开始抓取。</div> : null}
         </div>
         <div className="flex justify-end gap-2 border-t border-line px-5 py-4">

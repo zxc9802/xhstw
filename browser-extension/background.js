@@ -9,7 +9,7 @@ const ACTIVE_STORAGE_KEY = "xhsActiveTask";
 const COOLDOWN_STORAGE_KEY = "xhsCooldownUntil";
 const BLOCK_CODES = new Set(["LOGIN_REQUIRED", "CAPTCHA", "RATE_LIMITED"]);
 const SKIPPABLE_DETAIL_CODES = new Set(["NOTE_UNAVAILABLE", "DETAIL_INCOMPLETE"]);
-const SEARCH_CANDIDATE_LIMIT = 5;
+const SEARCH_CANDIDATE_BATCH_SIZE = 5;
 const MEDIA_REPLY_TIMEOUT_MS = 30_000;
 const protocol = globalThis.XhsExtensionProtocol;
 const collector = globalThis.XhsPageCollector;
@@ -310,10 +310,11 @@ async function transferTopicMedia(context, topic, topicKey, completed, total) {
 }
 
 async function runCollection(context, task) {
-  const total = Math.min(10, task.queries.length * task.limitPerQuery);
+  const total = task.queries.length * task.limitPerQuery;
   const topics = [];
   const seen = new Set(task.existingUrls.map(noteKey));
   let skippedUnavailable = 0;
+  const shortfalls = [];
   try {
     post(context, "progress", { stage: "opening", completed: 0, total, message: "正在打开小红书" });
     const tab = await chrome.tabs.create({ url: searchUrl(task.queries[0]), active: true });
@@ -333,47 +334,72 @@ async function runCollection(context, task) {
       context.state = taskState.advanceTask(context.state, context.requestId, "searching");
       await persist(context);
       post(context, "progress", { stage: "searching", completed: topics.length, total, message: `正在搜索“${query}”` });
-      const searchResponse = pageResult(await sendToTaskTab(context, {
-        action: "xhs:search",
-        query,
-        limit: SEARCH_CANDIDATE_LIMIT,
-        mediaType: task.mediaType,
-        dateRange: task.dateRange,
-        sortBy: task.sortBy
-      }), "search");
-
       let capturedForQuery = 0;
-      for (const row of searchResponse.rows) {
-        ensureRunning(context);
-        if (capturedForQuery >= task.limitPerQuery || topics.length >= total) break;
-        if (!row || typeof row !== "object") continue;
-        const key = noteKey(row.url);
-        if (!isXhsUrl(row.url) || !key || seen.has(key)) continue;
-        await wait(context, DETAIL_DELAY_MS);
-        context.state = taskState.advanceTask(context.state, context.requestId, "enriching");
-        await persist(context);
-        const rawDetailResponse = await sendToTaskTab(context, {
-          action: "xhs:detail",
-          expectedTitle: typeof row.title === "string" ? row.title.slice(0, 2_048) : "",
-          targetUrl: row.url
-        });
-        if (rawDetailResponse && rawDetailResponse.ok === false && SKIPPABLE_DETAIL_CODES.has(rawDetailResponse.code)) {
-          skippedUnavailable += 1;
-          continue;
+      let candidateLimit = Math.max(SEARCH_CANDIDATE_BATCH_SIZE, task.limitPerQuery);
+      const attemptedForQuery = new Set();
+      while (capturedForQuery < task.limitPerQuery) {
+        const searchResponse = pageResult(await sendToTaskTab(context, {
+          action: "xhs:search",
+          query,
+          limit: candidateLimit,
+          mediaType: task.mediaType,
+          dateRange: task.dateRange,
+          sortBy: task.sortBy
+        }), "search");
+        let attemptedThisPass = 0;
+
+        for (const row of searchResponse.rows) {
+          ensureRunning(context);
+          if (capturedForQuery >= task.limitPerQuery || topics.length >= total) break;
+          if (!row || typeof row !== "object") continue;
+          const key = noteKey(row.url);
+          if (!isXhsUrl(row.url) || !key || attemptedForQuery.has(key)) continue;
+          attemptedForQuery.add(key);
+          attemptedThisPass += 1;
+          if (seen.has(key)) continue;
+          await wait(context, DETAIL_DELAY_MS);
+          context.state = taskState.advanceTask(context.state, context.requestId, "enriching");
+          await persist(context);
+          const rawDetailResponse = await sendToTaskTab(context, {
+            action: "xhs:detail",
+            expectedTitle: typeof row.title === "string" ? row.title.slice(0, 2_048) : "",
+            targetUrl: row.url
+          });
+          if (rawDetailResponse && rawDetailResponse.ok === false && SKIPPABLE_DETAIL_CODES.has(rawDetailResponse.code)) {
+            skippedUnavailable += 1;
+            post(context, "progress", {
+              stage: "enriching",
+              completed: topics.length,
+              total,
+              message: `“${query}”跳过不可用内容，继续补抓`
+            });
+            continue;
+          }
+          const detailResponse = pageResult(rawDetailResponse, "detail");
+          const topic = collector.buildTopic(row, detailResponse, new Date());
+          await transferTopicMedia(context, topic, key, topics.length, total);
+          topics.push(topic);
+          capturedForQuery += 1;
+          seen.add(key);
+          post(context, "progress", {
+            stage: "enriching",
+            completed: topics.length,
+            total,
+            message: `已抓取 ${topics.length}/${total} 条`
+          });
         }
-        const detailResponse = pageResult(rawDetailResponse, "detail");
-        const topic = collector.buildTopic(row, detailResponse, new Date());
-        await transferTopicMedia(context, topic, key, topics.length, total);
-        topics.push(topic);
-        capturedForQuery += 1;
-        seen.add(key);
+
+        if (capturedForQuery >= task.limitPerQuery) break;
+        if (searchResponse.rows.length < candidateLimit || attemptedThisPass === 0) break;
+        candidateLimit += Math.max(SEARCH_CANDIDATE_BATCH_SIZE, task.limitPerQuery - capturedForQuery);
         post(context, "progress", {
-          stage: "enriching",
+          stage: "searching",
           completed: topics.length,
           total,
-          message: `已抓取 ${topics.length}/${total} 条`
+          message: `“${query}”数量不足，继续加载候选`
         });
       }
+      if (capturedForQuery < task.limitPerQuery) shortfalls.push(`${query} ${capturedForQuery}/${task.limitPerQuery}`);
     }
 
     context.state = taskState.completeTask(context.state, context.requestId);
@@ -381,9 +407,10 @@ async function runCollection(context, task) {
     await restoreOrigin(context);
     await clearPersisted();
     const skippedMessage = skippedUnavailable ? `，跳过 ${skippedUnavailable} 条不可浏览或不完整内容` : "";
+    const shortfallMessage = shortfalls.length ? `；未达到目标：${shortfalls.join("、")}` : "";
     post(context, "result", {
       topics,
-      message: `本机浏览器已抓取 ${topics.length} 条${skippedMessage}`,
+      message: `本机浏览器已抓取 ${topics.length}/${total} 条${skippedMessage}${shortfallMessage}`.slice(0, 300),
       mediaCompleted: context.mediaCompleted,
       mediaFailed: context.mediaFailed
     });

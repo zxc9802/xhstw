@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-$version = "0.1.11"
+$version = "0.1.12"
 $canonicalPackager = Join-Path $PSScriptRoot "package-xhs-browser-extension.ps1"
 $exportPath = Join-Path $repositoryRoot "exports\xhs-browser-extension-$version.zip"
 $outputDirectory = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot "public\downloads"))

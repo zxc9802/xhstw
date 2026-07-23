@@ -90,7 +90,7 @@ test("detects a compatible local extension", async () => {
   assert.equal(request.type, "ping");
   target.receive(extensionMessage("pong", request.requestId, { version: "0.1.0" }));
 
-  assert.deepEqual(await detection, { version: "0.1.0", protocolVersion: 2 });
+  assert.deepEqual(await detection, { version: "0.1.0", protocolVersion: 3 });
   client.dispose();
 });
 
@@ -361,14 +361,14 @@ test("store failures abort one media without rejecting the collection", async ()
   client.dispose();
 });
 
-test("detection sends a delayed protocol-1 ping so an installed old extension is reported as outdated", async () => {
+test("detection probes protocol 2 and 1 so installed old extensions are reported as outdated", async () => {
   const target = new FakeMessageTarget();
   const client = createXhsExtensionClient(target, 500);
   const detection = client.detect();
-  await new Promise((resolve) => setTimeout(resolve, 175));
+  await new Promise((resolve) => setTimeout(resolve, 325));
   const pings = target.messages.map((item) => item.message as { protocolVersion: number; requestId: string });
-  assert.deepEqual(pings.map((item) => item.protocolVersion), [2, 1]);
-  target.receive(extensionMessage("pong", pings[1].requestId, { version: "0.1.10" }, 1));
+  assert.deepEqual(pings.map((item) => item.protocolVersion), [3, 2, 1]);
+  target.receive(extensionMessage("pong", pings[1].requestId, { version: "0.1.11" }, 2));
   await assert.rejects(detection, /incompatible|upgrade/i);
   client.dispose();
 });

@@ -214,7 +214,7 @@
 
   function parseSearchCards(document, queryText, limit) {
     try {
-      const maximum = Math.min(5, Math.max(0, Number.isInteger(limit) ? limit : 0));
+      const maximum = Number.isSafeInteger(limit) && limit > 0 ? limit : 0;
       const rows = [];
       for (const card of queryAll(document, "section.note-item, .note-item, [data-note-id]")) {
         if (rows.length >= maximum) break;

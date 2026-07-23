@@ -72,19 +72,21 @@ function defineHidden(object: object, key: PropertyKey, value: unknown) {
   return object;
 }
 
-test("approved limits accepts a valid collection task", () => {
-  assert.deepEqual(protocol.validateTask(task()), { ok: true });
+test("collection tasks accept every user-selected keyword and result count", () => {
+  assert.deepEqual(protocol.validateTask(task({
+    queries: ["夏日穿搭", "通勤防晒", "油皮护肤"],
+    limitPerQuery: 12
+  })), { ok: true });
 });
 
-test("approved limits rejects invalid task ranges and values", () => {
+test("collection tasks reject invalid ranges and values", () => {
   const invalidTasks = [
     task({ queries: [] }),
-    task({ queries: ["a", "b", "c"] }),
     task({ queries: ["   "] }),
     task({ queries: ["x".repeat(41)] }),
     task({ limitPerQuery: 0 }),
-    task({ limitPerQuery: 6 }),
     task({ limitPerQuery: 1.5 }),
+    task({ limitPerQuery: Number.MAX_SAFE_INTEGER + 1 }),
     task({ requestId: "bad" }),
     task({ mediaType: "直播" }),
     task({ dateRange: "一个月内" }),
@@ -184,8 +186,8 @@ test("page envelopes require exact allowed types and payloads", () => {
   assert.equal(protocol.isEnvelope(envelope("unknown", {}), "page-to-extension"), false);
 });
 
-test("protocol v2 accepts exact media transfer envelopes and rejects malformed chunks", () => {
-  assert.equal(protocol.PROTOCOL_VERSION, 2);
+test("protocol v3 accepts exact media transfer envelopes and rejects malformed chunks", () => {
+  assert.equal(protocol.PROTOCOL_VERSION, 3);
   const start = extensionEnvelope("media:start", {
     assetKey: ASSET_KEY,
     topicKey: "xhs:64f0a1b2c3d4e5f60718293a",
@@ -237,7 +239,7 @@ test("protocol v2 accepts exact media transfer envelopes and rejects malformed c
   }), "extension-to-page"), false);
 });
 
-test("protocol v2 result carries local media metadata and media counters", () => {
+test("protocol v3 result carries local media metadata and media counters", () => {
   const localTopic = topic({
     media: [{
       type: "video",
@@ -259,8 +261,13 @@ test("protocol v2 result carries local media metadata and media counters", () =>
 
 test("extension envelopes require exact allowed types and payloads", () => {
   assert.equal(protocol.isEnvelope(extensionEnvelope("pong", { version: "0.1.0" }), "extension-to-page"), true);
-  assert.equal(protocol.isEnvelope(extensionEnvelope("progress", { stage: "searching", completed: 1, total: 2, message: "正在搜索" }), "extension-to-page"), true);
-  assert.equal(protocol.isEnvelope(extensionEnvelope("result", { topics: [topic()], message: "完成", mediaCompleted: 0, mediaFailed: 0 }), "extension-to-page"), true);
+  assert.equal(protocol.isEnvelope(extensionEnvelope("progress", { stage: "searching", completed: 11, total: 36, message: "正在搜索" }), "extension-to-page"), true);
+  assert.equal(protocol.isEnvelope(extensionEnvelope("result", {
+    topics: Array.from({ length: 12 }, (_, index) => topic({ id: `topic-${index}` })),
+    message: "完成",
+    mediaCompleted: 600,
+    mediaFailed: 0
+  }), "extension-to-page"), true);
   assert.equal(protocol.isEnvelope(extensionEnvelope("error", { code: "LOGIN_REQUIRED", message: "请先登录" }), "extension-to-page"), true);
   const invalid = [
     extensionEnvelope("ping", {}),
@@ -268,7 +275,7 @@ test("extension envelopes require exact allowed types and payloads", () => {
     extensionEnvelope("progress", { stage: "bad", completed: 1, total: 2, message: "ok" }),
     extensionEnvelope("progress", { stage: "searching", completed: 3, total: 2, message: "ok" }),
     extensionEnvelope("progress", { stage: "searching", completed: Number.MAX_SAFE_INTEGER + 1, total: Number.MAX_SAFE_INTEGER + 1, message: "ok" }),
-    extensionEnvelope("progress", { stage: "searching", completed: 1, total: 11, message: "ok" }),
+    extensionEnvelope("progress", { stage: "searching", completed: 1, total: Number.MAX_SAFE_INTEGER + 1, message: "ok" }),
     extensionEnvelope("result", { topics: [topic({ platform: "抖音" })], message: "完成", mediaCompleted: 0, mediaFailed: 0 }),
     extensionEnvelope("result", { topics: [null], message: "完成", mediaCompleted: 0, mediaFailed: 0 }),
     extensionEnvelope("error", { code: "", message: "请先登录" }),
@@ -386,7 +393,7 @@ test("manifest is an exact least-privilege template", () => {
   assert.deepEqual(Object.keys(manifest), ["manifest_version", "name", "version", "description", "permissions", "host_permissions", "background", "content_scripts", "action"]);
   assert.equal(manifest.manifest_version, 3);
   assert.equal(manifest.name, "小红书本机抓取助手");
-  assert.equal(manifest.version, "0.1.11");
+  assert.equal(manifest.version, "0.1.12");
   assert.equal(manifest.description, "在用户自己的浏览器中执行内容生产中台下达的小红书公开页面抓取任务。");
   assert.deepEqual(manifest.permissions, ["storage"]);
   assert.deepEqual(manifest.host_permissions, [
@@ -428,8 +435,10 @@ test("bridge and background use validated messages and visible fixed-tab orchest
   assert.doesNotMatch(background, /navigate\(context,\s*detailUrl\)/);
   assert.match(background, /action:\s*["']xhs:detail["'][\s\S]*targetUrl:\s*row\.url/);
   assert.match(background, /SKIPPABLE_DETAIL_CODES\s*=\s*new Set\(\[["']NOTE_UNAVAILABLE["'],\s*["']DETAIL_INCOMPLETE["']\]\)/);
-  assert.match(background, /SEARCH_CANDIDATE_LIMIT\s*=\s*5/);
-  assert.match(background, /limit:\s*SEARCH_CANDIDATE_LIMIT/);
+  assert.match(background, /SEARCH_CANDIDATE_BATCH_SIZE\s*=\s*5/);
+  assert.doesNotMatch(background, /Math\.min\(10,\s*task\.queries\.length\s*\*\s*task\.limitPerQuery\)/);
+  assert.match(background, /candidateLimit\s*\+=\s*Math\.max\(SEARCH_CANDIDATE_BATCH_SIZE,\s*task\.limitPerQuery\s*-\s*capturedForQuery\)/);
+  assert.match(background, /attemptedForQuery/);
   assert.match(background, /capturedForQuery/);
   assert.match(background, /skippedUnavailable/);
   assert.match(background, /importScripts\([\s\S]*shared\/media-transfer\.js/);

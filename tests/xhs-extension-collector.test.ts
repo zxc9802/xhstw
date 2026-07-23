@@ -343,15 +343,15 @@ test("detail media supplies the cover before a search-card cover", () => {
   assert.equal(topic.mediaType, "视频");
 });
 
-test("search collection never returns more than five rows", () => {
+test("search collection honors a user-selected limit above five", () => {
   const idPrefix = "64f0a1b2c3d4e5f607182";
-  const searchDocument = parseHTML(Array.from({ length: 6 }, (_, index) => `
+  const searchDocument = parseHTML(Array.from({ length: 12 }, (_, index) => `
     <section class="note-item">
       <a href="/explore/${idPrefix}${index.toString(16).padStart(2, "0")}"><span class="title">第 ${index + 1} 条</span></a>
     </section>
   `).join("")).document;
 
-  assert.equal(collector.parseSearchCards(searchDocument, "防晒", 99).length, 5);
+  assert.equal(collector.parseSearchCards(searchDocument, "防晒", 9).length, 9);
 });
 
 test("oversized topic inputs serialize within the extension protocol bounds", () => {
@@ -720,7 +720,8 @@ test("xhs content actions accept only the two fixed commands", () => {
     expectedTitle: "通勤防晒实测",
     targetUrl: "https://example.test/search_result/64f0a1b2c3d4e5f60718293a"
   }).ok, false);
-  assert.equal(actions.validateMessage({ action: "xhs:search", query: "防晒", limit: 6, mediaType: "全部", dateRange: "全部", sortBy: "浏览量" }).ok, false);
+  assert.equal(actions.validateMessage({ action: "xhs:search", query: "防晒", limit: 12, mediaType: "全部", dateRange: "全部", sortBy: "浏览量" }).ok, true);
+  assert.equal(actions.validateMessage({ action: "xhs:search", query: "防晒", limit: Number.MAX_SAFE_INTEGER + 1, mediaType: "全部", dateRange: "全部", sortBy: "浏览量" }).ok, false);
   assert.equal(actions.validateMessage({ action: "xhs:detail", expectedTitle: "标题", script: "alert(1)" }).ok, false);
   assert.equal(actions.validateMessage({ action: "xhs:execute", code: "alert(1)" }).ok, false);
 
@@ -728,7 +729,7 @@ test("xhs content actions accept only the two fixed commands", () => {
     assert.equal(forbidden.test(source), false);
   }
   assert.match(source, /chrome\.runtime\.onMessage\.addListener/);
-  assert.match(source, /SCROLL_LIMIT\s*=\s*6/);
+  assert.match(source, /MAX_STALLED_SCROLLS\s*=\s*3/);
   assert.match(source, /FILTER_WAIT_MS\s*=\s*1_600/);
   assert.match(source, /SCROLL_WAIT_MS\s*=\s*900/);
 });

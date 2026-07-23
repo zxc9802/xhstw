@@ -4,7 +4,7 @@
   else root.XhsExtensionProtocol = protocol;
 })(globalThis, function () {
   const CHANNEL = "content-production-studio.xhs-extension";
-  const PROTOCOL_VERSION = 2;
+  const PROTOCOL_VERSION = 3;
   const REQUEST_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   const ASSET_KEY_PATTERN = /^sha256-[0-9a-f]{32}$/;
   const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
@@ -101,8 +101,8 @@
 
   function validateTaskValues(values) {
     if (!isRequestId(values.requestId)) return invalid("请求 ID 格式不正确");
-    if (!isDenseArray(values.queries, 2, (query) => isNonblankString(query, 40)) || values.queries.length < 1) return invalid("关键词格式不正确");
-    if (!Number.isInteger(values.limitPerQuery) || values.limitPerQuery < 1 || values.limitPerQuery > 5) return invalid("每个关键词的抓取数量必须为 1 到 5");
+    if (!isDenseArray(values.queries, Number.MAX_SAFE_INTEGER, (query) => isNonblankString(query, 40)) || values.queries.length < 1) return invalid("关键词格式不正确");
+    if (!Number.isSafeInteger(values.limitPerQuery) || values.limitPerQuery < 1 || values.limitPerQuery > Math.floor(Number.MAX_SAFE_INTEGER / values.queries.length)) return invalid("每个关键词的抓取数量必须是正整数");
     if (!["全部", "图文", "视频"].includes(values.mediaType)) return invalid("内容类型不正确");
     if (!["全部", "一天内", "一周内", "半年内"].includes(values.dateRange)) return invalid("发布时间范围不正确");
     if (!["浏览量", "点赞量", "评论量", "收藏量"].includes(values.sortBy)) return invalid("排序方式不正确");
@@ -166,13 +166,13 @@
     if (type === "progress") {
       const values = inspectExactRecord(payload, ["stage", "completed", "total", "message"]);
       return values && ["opening", "searching", "enriching", "downloading"].includes(values.stage) &&
-        isSafeCount(values.completed, 10) && isSafeCount(values.total, 10) &&
+        isSafeCount(values.completed, Number.MAX_SAFE_INTEGER) && isSafeCount(values.total, Number.MAX_SAFE_INTEGER) &&
         values.completed <= values.total && isBoundedString(values.message, 300) ? { ok: true } : { ok: false };
     }
     if (type === "result") {
       const values = inspectExactRecord(payload, ["topics", "message", "mediaCompleted", "mediaFailed"]);
-      return values && isDenseArray(values.topics, 10, isTopic) && isBoundedString(values.message, 300) &&
-        isSafeCount(values.mediaCompleted, 500) && isSafeCount(values.mediaFailed, 500) ? { ok: true } : { ok: false };
+      return values && isDenseArray(values.topics, Number.MAX_SAFE_INTEGER, isTopic) && isBoundedString(values.message, 300) &&
+        isSafeCount(values.mediaCompleted, Number.MAX_SAFE_INTEGER) && isSafeCount(values.mediaFailed, Number.MAX_SAFE_INTEGER) ? { ok: true } : { ok: false };
     }
     if (type === "media:start") {
       const values = inspectExactRecord(payload, ["assetKey", "topicKey", "mediaRole", "sourceUrl"]);

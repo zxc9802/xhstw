@@ -13,7 +13,7 @@
   const FILTER_WAIT_MS = 1_600;
   const SEARCH_SETTLE_MS = 1_200;
   const SCROLL_WAIT_MS = 900;
-  const SCROLL_LIMIT = 6;
+  const MAX_STALLED_SCROLLS = 3;
   const POLL_MS = 250;
   const SEARCH_KEYS = ["action", "query", "limit", "mediaType", "dateRange", "sortBy"];
   const DETAIL_KEYS = ["action", "expectedTitle", "targetUrl"];
@@ -35,7 +35,7 @@
     try {
       if (isExactRecord(message, SEARCH_KEYS) && message.action === "xhs:search") {
         if (typeof message.query !== "string" || !message.query.trim() || message.query.length > 40) return { ok: false };
-        if (!Number.isSafeInteger(message.limit) || message.limit < 1 || message.limit > 5) return { ok: false };
+        if (!Number.isSafeInteger(message.limit) || message.limit < 1) return { ok: false };
         if (!MEDIA_TYPES.has(message.mediaType) || !DATE_RANGES.has(message.dateRange) || !SORTS.has(message.sortBy)) return { ok: false };
         return { ok: true, action: message.action, value: message };
       }
@@ -191,12 +191,21 @@
     await applyFilter(MEDIA_LABELS[message.mediaType]);
     await delay(FILTER_WAIT_MS);
 
-    let rows = [];
-    for (let scrollCount = 0; scrollCount <= SCROLL_LIMIT; scrollCount += 1) {
+    const rows = [];
+    const seenUrls = new Set();
+    let stalledScrolls = 0;
+    while (rows.length < message.limit && stalledScrolls < MAX_STALLED_SCROLLS) {
       state = documentState();
       if (!state.ok) return state;
-      rows = collector().parseSearchCards(root.document, message.query.trim(), message.limit);
-      if (rows.length >= message.limit || scrollCount === SCROLL_LIMIT) break;
+      const before = rows.length;
+      for (const row of collector().parseSearchCards(root.document, message.query.trim(), message.limit)) {
+        if (!row || typeof row.url !== "string" || seenUrls.has(row.url)) continue;
+        seenUrls.add(row.url);
+        rows.push(row);
+        if (rows.length >= message.limit) break;
+      }
+      if (rows.length >= message.limit) break;
+      stalledScrolls = rows.length === before ? stalledScrolls + 1 : 0;
       root.scrollBy({ top: Math.round(root.innerHeight * 0.9), behavior: "smooth" });
       await delay(SCROLL_WAIT_MS);
     }

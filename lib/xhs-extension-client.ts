@@ -2,11 +2,12 @@ import type { Topic } from "@/types/topic";
 import type { MediaChunk, MediaComplete, MediaStart, XhsTopicMediaStore } from "@/lib/xhs-topic-media-store";
 
 export const XHS_EXTENSION_CHANNEL = "content-production-studio.xhs-extension";
-export const XHS_EXTENSION_PROTOCOL_VERSION = 2;
+export const XHS_EXTENSION_PROTOCOL_VERSION = 3;
 
 const DEFAULT_PING_TIMEOUT_MS = 2_000;
 const DEFAULT_COLLECT_TIMEOUT_MS = 10 * 60 * 1_000;
 const LEGACY_PING_DELAY_MS = 150;
+const LEGACY_PROTOCOL_VERSIONS = [2, 1] as const;
 
 type PageMessageType = "ping" | "collect" | "cancel" | "media:ready" | "media:skip" | "media:ack" | "media:abort";
 type ExtensionMessageType = "pong" | "progress" | "media:start" | "media:chunk" | "media:complete" | "media:error" | "result" | "error";
@@ -291,9 +292,11 @@ export function createXhsExtensionClient(
       if (disposed) return Promise.reject(new Error("The XHS extension client was disposed."));
       const requestId = crypto.randomUUID();
       const detection = startRequest<{ version: string }>(requestId, "ping", {}, timeoutMs ?? DEFAULT_PING_TIMEOUT_MS, "pong");
-      setTimeout(() => {
-        if (pending.has(requestId)) sendEnvelope("ping", requestId, {}, 1);
-      }, LEGACY_PING_DELAY_MS);
+      for (const [index, protocolVersion] of LEGACY_PROTOCOL_VERSIONS.entries()) {
+        setTimeout(() => {
+          if (pending.has(requestId)) sendEnvelope("ping", requestId, {}, protocolVersion);
+        }, LEGACY_PING_DELAY_MS * (index + 1));
+      }
       return detection.then((payload) => ({ version: payload.version, protocolVersion: XHS_EXTENSION_PROTOCOL_VERSION }));
     },
     collect(task, onProgress) {

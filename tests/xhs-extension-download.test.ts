@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const scriptPath = path.join(repoRoot, "scripts", "package-xhs-extension.ps1");
-const archivePath = path.join(repoRoot, "public", "downloads", "xhs-browser-extension-0.1.11.zip");
+const archivePath = path.join(repoRoot, "public", "downloads", "xhs-browser-extension-0.1.12.zip");
 
 test("packages the complete scoped extension into the public download path", {
   skip: process.platform !== "win32"
@@ -58,10 +58,10 @@ test("packages the complete scoped extension into the public download path", {
       version: string;
       host_permissions: string[];
     };
-    assert.equal(manifest.version, "0.1.11");
+    assert.equal(manifest.version, "0.1.12");
     assert.equal(manifest.host_permissions.includes("https://xhstw.qycm.top/*"), true);
     const protocolSource = readFileSync(path.join(extractionRoot, "shared", "protocol.js"), "utf8");
-    assert.match(protocolSource, /const PROTOCOL_VERSION = 2;/);
+    assert.match(protocolSource, /const PROTOCOL_VERSION = 3;/);
   } finally {
     const resolvedTemp = path.resolve(tmpdir());
     const resolvedExtraction = path.resolve(extractionRoot);

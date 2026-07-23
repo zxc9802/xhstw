@@ -115,11 +115,12 @@ test("topic page uses one local extension task and direct browser media URLs", (
   assert.match(source, /createXhsTopicMediaStore\(\)/);
   assert.match(source, /createXhsExtensionClient\(window, undefined, mediaStore\)/);
   assert.match(source, /extensionClientRef\.current\.collect\(task/);
-  assert.match(source, /queries:\s*activeKeywords\.slice\(0,\s*2\)/);
+  assert.match(source, /queries:\s*activeKeywords,/);
   assert.match(source, /\.slice\(0,\s*2_000\)/);
   assert.match(source, /本机抓取已连接/);
-  assert.match(source, /每次最多选择 2 个关键词/);
-  assert.match(source, /每个关键词最多抓取 5 条/);
+  assert.doesNotMatch(source, /每次最多选择 2 个关键词/);
+  assert.doesNotMatch(source, /每个关键词最多抓取 5 条/);
+  assert.doesNotMatch(source, /max=\{5\}/);
   assert.doesNotMatch(source, /fetch\(["']\/api\/topics\/opencli-xhs/);
   assert.doesNotMatch(source, /\/api\/topics\/media-proxy/);
   assert.equal(source.match(/referrerPolicy="no-referrer"/g)?.length, 2);
