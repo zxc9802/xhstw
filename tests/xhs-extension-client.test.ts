@@ -15,6 +15,7 @@ const protocol = require("../browser-extension/shared/protocol.js") as {
 
 type MessageListener = (event: MessageEvent) => void;
 const REQUEST_ID = "11111111-1111-4111-8111-111111111111";
+const ASSET_KEY = "sha256-0123456789abcdef0123456789abcdef";
 
 class FakeMessageTarget {
   readonly origin = "https://studio.example.test";
@@ -55,6 +56,20 @@ function collectTask(requestId = REQUEST_ID): XhsCollectTask {
   };
 }
 
+function fakeMediaStore() {
+  const calls: string[] = [];
+  return {
+    calls,
+    async prepare() { calls.push("prepare"); return "ready" as const; },
+    async writeChunk() { calls.push("chunk"); },
+    async complete() { calls.push("complete"); return {} as never; },
+    async abort() { calls.push("abort"); },
+    async getBlob() { return null; },
+    async deleteAssets() {},
+    async cleanupIncomplete() { calls.push("cleanup"); return 0; }
+  };
+}
+
 function extensionMessage(type: string, requestId: string, payload: unknown, protocolVersion = XHS_EXTENSION_PROTOCOL_VERSION) {
   return {
     channel: XHS_EXTENSION_CHANNEL,
@@ -75,7 +90,7 @@ test("detects a compatible local extension", async () => {
   assert.equal(request.type, "ping");
   target.receive(extensionMessage("pong", request.requestId, { version: "0.1.0" }));
 
-  assert.deepEqual(await detection, { version: "0.1.0", protocolVersion: 1 });
+  assert.deepEqual(await detection, { version: "0.1.0", protocolVersion: 2 });
   client.dispose();
 });
 
@@ -88,10 +103,10 @@ test("streams progress before the final collection result", async () => {
   target.receive(extensionMessage("progress", REQUEST_ID, {
     stage: "searching", completed: 1, total: 2, message: "正在搜索"
   }));
-  target.receive(extensionMessage("result", REQUEST_ID, { topics: [], message: "完成" }));
+  target.receive(extensionMessage("result", REQUEST_ID, { topics: [], message: "完成", mediaCompleted: 0, mediaFailed: 0 }));
 
   assert.deepEqual(progress, ["searching"]);
-  assert.deepEqual(await collected, { topics: [], message: "完成" });
+  assert.deepEqual(await collected, { topics: [], message: "完成", mediaCompleted: 0, mediaFailed: 0 });
   client.dispose();
 });
 
@@ -103,7 +118,7 @@ test("does not resolve detection from a collection result", async () => {
   let settled = false;
   void detection.then(() => { settled = true; }, () => { settled = true; });
 
-  target.receive(extensionMessage("result", request.requestId, { topics: [], message: "完成" }));
+  target.receive(extensionMessage("result", request.requestId, { topics: [], message: "完成", mediaCompleted: 0, mediaFailed: 0 }));
   await Promise.resolve();
 
   assert.equal(settled, false);
@@ -123,7 +138,7 @@ test("does not resolve collection from a pong", async () => {
   await Promise.resolve();
 
   assert.equal(settled, false);
-  target.receive(extensionMessage("result", REQUEST_ID, { topics: [], message: "完成" }));
+  target.receive(extensionMessage("result", REQUEST_ID, { topics: [], message: "完成", mediaCompleted: 0, mediaFailed: 0 }));
   await collected;
   client.dispose();
 });
@@ -212,7 +227,7 @@ test("cancels the local collection and ignores late extension messages", async (
     assert.doesNotThrow(() => target.receive(extensionMessage("progress", REQUEST_ID, {
       stage: "searching", completed: 1, total: 1, message: "late"
     })));
-    assert.doesNotThrow(() => target.receive(extensionMessage("result", REQUEST_ID, { topics: [], message: "late" })));
+    assert.doesNotThrow(() => target.receive(extensionMessage("result", REQUEST_ID, { topics: [], message: "late", mediaCompleted: 0, mediaFailed: 0 })));
     assert.doesNotThrow(() => target.receive(extensionMessage("error", REQUEST_ID, { message: "late" })));
     assert.deepEqual(progress, []);
   } finally {
@@ -264,10 +279,10 @@ test("rejects malformed progress and result payloads and clears the collection",
   await Promise.resolve();
   try {
     assert.match(progressError?.message ?? "", /扩展响应格式异常/);
-    assert.doesNotThrow(() => target.receive(extensionMessage("result", REQUEST_ID, { topics: [], message: "late" })));
+    assert.doesNotThrow(() => target.receive(extensionMessage("result", REQUEST_ID, { topics: [], message: "late", mediaCompleted: 0, mediaFailed: 0 })));
 
     const malformedResult = client.collect(collectTask());
-    assert.doesNotThrow(() => target.receive(extensionMessage("result", REQUEST_ID, { topics: null, message: "bad" })));
+    assert.doesNotThrow(() => target.receive(extensionMessage("result", REQUEST_ID, { topics: null, message: "bad", mediaCompleted: 0, mediaFailed: 0 })));
     await assert.rejects(malformedResult, /扩展响应格式异常/);
   } finally {
     client.dispose();
@@ -284,4 +299,76 @@ test("rejects every public operation after disposal without posting messages", a
   await assert.rejects(client.collect(collectTask()), /disposed/i);
   await assert.rejects(client.cancel(REQUEST_ID), /disposed/i);
   assert.deepEqual(target.messages, []);
+});
+
+test("persists media messages in order and acknowledges only durable writes", async () => {
+  const target = new FakeMessageTarget();
+  const store = fakeMediaStore();
+  const client = createXhsExtensionClient(target, 100, store);
+  const collected = client.collect(collectTask());
+
+  target.receive(extensionMessage("media:start", REQUEST_ID, {
+    assetKey: ASSET_KEY,
+    topicKey: "xhs:note",
+    mediaRole: "image",
+    sourceUrl: "https://ci.xiaohongshu.com/a.jpg"
+  }));
+  await Promise.resolve();
+  await Promise.resolve();
+  target.receive(extensionMessage("media:chunk", REQUEST_ID, {
+    assetKey: ASSET_KEY,
+    chunkIndex: 0,
+    data: "AQ==",
+    byteLength: 1
+  }));
+  await Promise.resolve();
+  await Promise.resolve();
+  target.receive(extensionMessage("media:complete", REQUEST_ID, {
+    assetKey: ASSET_KEY,
+    mimeType: "image/jpeg",
+    byteLength: 1,
+    chunkCount: 1
+  }));
+  await Promise.resolve();
+  await Promise.resolve();
+  target.receive(extensionMessage("result", REQUEST_ID, {
+    topics: [], message: "完成", mediaCompleted: 1, mediaFailed: 0
+  }));
+
+  const result = await collected;
+  assert.deepEqual(store.calls, ["prepare", "chunk", "complete"]);
+  assert.deepEqual(target.messages.slice(1).map((item) => (item.message as any).type), ["media:ready", "media:ack", "media:ack"]);
+  assert.deepEqual(result, { topics: [], message: "完成", mediaCompleted: 1, mediaFailed: 0 });
+  client.dispose();
+});
+
+test("store failures abort one media without rejecting the collection", async () => {
+  const target = new FakeMessageTarget();
+  const store = fakeMediaStore();
+  store.writeChunk = async () => { throw new DOMException("Quota", "QuotaExceededError"); };
+  const client = createXhsExtensionClient(target, 100, store);
+  const collected = client.collect(collectTask());
+  target.receive(extensionMessage("media:chunk", REQUEST_ID, {
+    assetKey: ASSET_KEY, chunkIndex: 0, data: "AQ==", byteLength: 1
+  }));
+  target.receive(extensionMessage("result", REQUEST_ID, {
+    topics: [], message: "部分媒体失败", mediaCompleted: 0, mediaFailed: 1
+  }));
+  assert.equal((await collected).mediaFailed, 1);
+  const abort = target.messages.at(-1)?.message as any;
+  assert.equal(abort.type, "media:abort");
+  assert.equal(abort.payload.code, "QUOTA_EXCEEDED");
+  client.dispose();
+});
+
+test("detection sends a delayed protocol-1 ping so an installed old extension is reported as outdated", async () => {
+  const target = new FakeMessageTarget();
+  const client = createXhsExtensionClient(target, 500);
+  const detection = client.detect();
+  await new Promise((resolve) => setTimeout(resolve, 175));
+  const pings = target.messages.map((item) => item.message as { protocolVersion: number; requestId: string });
+  assert.deepEqual(pings.map((item) => item.protocolVersion), [2, 1]);
+  target.receive(extensionMessage("pong", pings[1].requestId, { version: "0.1.10" }, 1));
+  await assert.rejects(detection, /incompatible|upgrade/i);
+  client.dispose();
 });
