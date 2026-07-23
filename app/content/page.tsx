@@ -17,6 +17,8 @@ import { readProductLibrary, type ProductLibraryItem } from "@/lib/utils/product
 import { loadGeneratedImages, saveGeneratedImages } from "@/lib/utils/image-generation-history";
 import { pollImageGenerationJob } from "@/lib/utils/image-generation-job-client";
 import { addKeywordValues, removeKeywordValue, reorderAssignedImages, withoutSelectedKeywords } from "@/lib/utils/production-workflow";
+import { loadXhsReferenceMediaObjectUrls, normalizeXhsReferenceMedia, resolveXhsReferenceMedia, type XhsReferenceMedia } from "@/lib/xhs-reference-media";
+import { createXhsTopicMediaStore } from "@/lib/xhs-topic-media-store";
 import type { ImagePlanItem, ImageProvider } from "@/types/image";
 import type { VideoProvider, VideoScriptRow, VideoShotPlan } from "@/types/video";
 
@@ -71,11 +73,7 @@ type ReferenceRow = {
   media?: ParsedReferenceMedia[];
 };
 
-type ParsedReferenceMedia = {
-  type: "image" | "video";
-  url: string;
-  name: string;
-};
+type ParsedReferenceMedia = XhsReferenceMedia;
 
 type ParsedReference = {
   platform: string;
@@ -195,19 +193,6 @@ function buildMockReferenceMedia(platform: string, title: string): ParsedReferen
   }));
 }
 
-function normalizeOpenCliMedia(media: unknown): ParsedReferenceMedia[] {
-  if (!Array.isArray(media)) return [];
-  return media.flatMap((item, index) => {
-    const record = item && typeof item === "object" ? item as Partial<ParsedReferenceMedia> : null;
-    if (!record?.url || typeof record.url !== "string") return [];
-    return [{
-      type: record.type === "video" ? "video" as const : "image" as const,
-      url: record.url,
-      name: record.name || `OpenCLI 采集素材 ${index + 1}`
-    }];
-  });
-}
-
 function mediaTypeFromUrl(url: string): "image" | "video" {
   return /\.(?:mp4|mov|webm|m4v)(?:[?#]|$)/i.test(url) ? "video" : "image";
 }
@@ -217,7 +202,7 @@ function incomingReferenceMedia(params: URLSearchParams): ParsedReferenceMedia[]
   let media: ParsedReferenceMedia[] = [];
   if (mediaParam) {
     try {
-      media = normalizeOpenCliMedia(JSON.parse(mediaParam));
+      media = normalizeXhsReferenceMedia(JSON.parse(mediaParam));
     } catch {
       media = [];
     }
@@ -525,6 +510,7 @@ export default function ContentPage() {
   const [referenceUrl, setReferenceUrl] = useState("");
   const [referenceRows, setReferenceRows] = useState<ReferenceRow[]>(referenceSources.map((item) => ({ ...item })));
   const [parsedReference, setParsedReference] = useState<ParsedReference | null>(null);
+  const [referenceMediaObjectUrls, setReferenceMediaObjectUrls] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [referenceParsing, setReferenceParsing] = useState(false);
   const [imitationLoading, setImitationLoading] = useState(false);
   const [imitationProduct, setImitationProduct] = useState("");
@@ -750,6 +736,37 @@ export default function ContentPage() {
     const parsed = (JSON.parse(stored) as ReferenceRow[]).filter((row) => row.platform.includes("小红书"));
     if (parsed.length) setReferenceRows(parsed.slice(0, 3));
   }, []);
+
+  useEffect(() => {
+    const media = parsedReference?.media ?? [];
+    if (!media.some((item) => item.localAssetKey)) {
+      setReferenceMediaObjectUrls(new Map());
+      return;
+    }
+
+    let cancelled = false;
+    let activeUrls = new Map<string, string>();
+    const mediaStore = createXhsTopicMediaStore();
+    void loadXhsReferenceMediaObjectUrls(media, mediaStore, (blob) => URL.createObjectURL(blob))
+      .then((objectUrls) => {
+        if (cancelled) {
+          objectUrls.forEach((url) => URL.revokeObjectURL(url));
+          return;
+        }
+        activeUrls = objectUrls;
+        setReferenceMediaObjectUrls(objectUrls);
+      });
+
+    return () => {
+      cancelled = true;
+      activeUrls.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [parsedReference?.media]);
+
+  const resolvedReferenceMedia = useMemo(
+    () => resolveXhsReferenceMedia(parsedReference?.media ?? [], referenceMediaObjectUrls),
+    [parsedReference?.media, referenceMediaObjectUrls]
+  );
 
   useEffect(() => {
     if (imageStep !== "图片生成") return;
@@ -1071,7 +1088,7 @@ export default function ContentPage() {
       const parsedTitle = reference.title ?? selectedVideoTitle;
       const parsedCopy = reference.copy || reference.content || draftVoiceover;
       const parsedPlatform = "小红书";
-      const media = normalizeOpenCliMedia(reference.media);
+      const media = normalizeXhsReferenceMedia(reference.media);
       setSelectedVideoTitle(parsedTitle);
       setVideoCoverCopy(parsedTitle);
       setDraftVoiceover(parsedCopy);
@@ -1275,7 +1292,7 @@ export default function ContentPage() {
       const parsedTitle = reference.title ?? title;
       const parsedPlatform = "小红书";
       const mediaType = reference.mediaType ?? (/视频/.test(reference.contentType ?? parsedTitle) ? "视频" : "图文");
-      const parsedMedia = normalizeOpenCliMedia(reference.media);
+      const parsedMedia = normalizeXhsReferenceMedia(reference.media);
       const parsedCopy = reference.copy || reference.content || reference.description || `暂未从公开链接解析到正文，请点击“上传标题文本”手动粘贴正文后继续仿写。当前已识别标题「${parsedTitle}」。`;
       const nextParsed: ParsedReference = {
         platform: parsedPlatform,
@@ -1971,9 +1988,9 @@ export default function ContentPage() {
                         <StatusBadge status="approved" label="已解析" />
                       </div>
                       <div className="mt-3 max-h-44 overflow-y-auto rounded-md bg-white/80 px-3 py-2 text-sm leading-6 text-ink">{parsedReference.copy}</div>
-                      {parsedReference.media.length ? (
+                      {resolvedReferenceMedia.length ? (
                       <div className="mt-3 grid grid-cols-3 gap-2">
-                        {parsedReference.media.map((media) => (
+                        {resolvedReferenceMedia.map((media) => (
                           <div key={media.name} className="relative overflow-hidden rounded-md border border-white bg-white">
                             {media.type === "video" ? (
                               <video src={media.url} className="h-24 w-full object-cover" muted playsInline />
@@ -2126,7 +2143,7 @@ export default function ContentPage() {
                 <CardBody className="min-h-0 flex-1 space-y-4 overflow-hidden">
                   <input id="local-reference-images" type="file" accept="image/*" multiple className="hidden" onChange={(event) => void uploadLocalReferenceImages(event.target.files)} />
                   <div className="h-full space-y-4 overflow-y-auto pr-1">
-                    <AssetSection title="链接解析素材" assets={(parsedReference?.media ?? []).filter((item) => item.type === "image").map((item) => ({ ...item, source: "链接解析" as const }))} emptyText="还没有链接解析图片。" onDrag={dragSourceAsset} onPreview={(asset) => setPreviewImage({ id: asset.url, planPage: 0, url: asset.url, provider: asset.name })} />
+                    <AssetSection title="链接解析素材" assets={resolvedReferenceMedia.filter((item) => item.type === "image").map((item) => ({ ...item, source: "链接解析" as const }))} emptyText="还没有链接解析图片。" onDrag={dragSourceAsset} onPreview={(asset) => setPreviewImage({ id: asset.url, planPage: 0, url: asset.url, provider: asset.name })} />
                     <AssetSection
                       title="产品素材库"
                       assets={productImageSources}
