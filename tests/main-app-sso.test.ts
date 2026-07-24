@@ -4,6 +4,8 @@ import path from "node:path";
 import test from "node:test";
 import {
   createMainAppSessionCookie,
+  exchangeMainAppSsoTicket,
+  getMainAppSessionCookieOptions,
   readMainAppSessionCookie,
   safeRedirectPath
 } from "../lib/main-app-sso";
@@ -45,4 +47,26 @@ test("callback and middleware keep ticket exchange server-side", async () => {
   assert.match(helper, /sameSite:\s*["']lax["']/);
   assert.match(middleware, /validateMainAppSession/);
   assert.match(middleware, /api\/sso\/callback/);
+});
+
+test("keeps the child session until the main-issued token expires", async (t) => {
+  process.env.APP_SESSION_SECRET = "xhstw-test-session-secret";
+  process.env.MAIN_APP_SSO_CLIENT_SECRET = "xhstw-client-secret";
+  const expiresAt = Date.now() + (7 * 24 * 60 * 60 * 1000);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    success: true,
+    data: {
+      token: "main-token",
+      redirectPath: "/topics",
+      expiresAt,
+      user: { id: "user-1", account: "member@example.com", nickname: "成员", role: "member" }
+    }
+  }), { status: 200 });
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const { session } = await exchangeMainAppSsoTicket("ticket-1");
+
+  assert.equal(session.expiresAt, expiresAt);
+  assert.ok(getMainAppSessionCookieOptions(session.expiresAt).maxAge > 6 * 24 * 60 * 60);
 });
