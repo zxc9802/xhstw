@@ -104,6 +104,16 @@ type ImageSourceAsset = ParsedReferenceMedia & {
   storageUrl?: string;
 };
 
+function createReferenceImagePlans(title: string, copy: string, imageCount: number): ImagePlanItem[] {
+  return Array.from({ length: Math.max(1, imageCount) }, (_, index) => ({
+    ...imagePlans[index % imagePlans.length],
+    page: index + 1,
+    title,
+    copy: copy.slice(0, 40),
+    status: "pending" as const
+  }));
+}
+
 function productLibraryKey(product: ProductLibraryItem, index: number) {
   return product.id || `${product.name || "product"}_${index}`;
 }
@@ -868,7 +878,10 @@ export default function ContentPage() {
       setReferenceUrl(incomingUrl);
       setParsedReference(nextParsed);
       setDraftCopy(parsedCopy);
-      setImagePlanItems([{ ...defaultImagePlan, title: parsedTitle, copy: parsedCopy.slice(0, 40) }]);
+      const nextImagePlans = createReferenceImagePlans(parsedTitle, parsedCopy, media.filter((item) => item.type === "image").length);
+      setPlanSourceMap({});
+      setImagePlanItems(nextImagePlans);
+      void autoAssignReferenceImagesToPlans(media, nextImagePlans);
       setActiveImagePage(1);
       setImageCount(`${Math.max(media.filter((item) => item.type === "image").length, 1)} 张`);
       setReferenceRows((rows) => {
@@ -1304,7 +1317,10 @@ export default function ContentPage() {
       };
       const imageMediaCount = parsedMedia.filter((item) => item.type === "image").length || (mediaType === "视频" ? 3 : 5);
       setParsedReference(nextParsed);
-      setImagePlanItems([{ ...defaultImagePlan, title: parsedTitle, copy: parsedCopy.slice(0, 40) }]);
+      const nextImagePlans = createReferenceImagePlans(parsedTitle, parsedCopy, parsedMedia.filter((item) => item.type === "image").length);
+      setPlanSourceMap({});
+      setImagePlanItems(nextImagePlans);
+      void autoAssignReferenceImagesToPlans(parsedMedia, nextImagePlans);
       setActiveImagePage(1);
       setImageCount(`${imageMediaCount} 张`);
       setReferenceRows((rows) => {
@@ -1358,6 +1374,20 @@ export default function ContentPage() {
     });
   };
 
+  const autoAssignReferenceImagesToPlans = async (media: ParsedReferenceMedia[], plans: ImagePlanItem[]) => {
+    const images = media.filter((item) => item.type === "image");
+    const sources = await Promise.all(images.map((item, index) => stabilizeImageSource({ ...item, source: "链接解析" }, `parsed_reference_${Date.now()}_${index}`)));
+    setPlanSourceMap((items) => {
+      const next = { ...items };
+      plans.forEach((plan) => {
+        const source = sources[plan.page - 1];
+        if ((items[plan.page] ?? []).length || !source) return;
+        next[plan.page] = [source];
+      });
+      return next;
+    });
+  };
+
   const removeSourceFromPlan = (page: number, assetUrl: string) => {
     setPlanSourceMap((items) => ({ ...items, [page]: (items[page] ?? []).filter((item) => item.url !== assetUrl) }));
   };
@@ -1383,6 +1413,7 @@ export default function ContentPage() {
       media: row.media ?? []
     };
     setParsedReference(nextParsed);
+    void autoAssignReferenceImagesToPlans(nextParsed.media, imagePlanItems);
     setReferenceUrl(row.url ?? referenceUrl);
     setDraftTitle(row.title);
     setSelectedTitle(row.title);
@@ -1557,7 +1588,7 @@ export default function ContentPage() {
 
   const addImagePlanPage = () => {
     const nextPage = Math.max(0, ...imagePlanItems.map((item) => item.page)) + 1;
-    setImagePlanItems((items) => [...items, {
+    const nextPlan = {
       ...imagePlans[(nextPage - 1) % imagePlans.length],
       page: nextPage,
       type: `自定义图 ${nextPage}`,
@@ -1565,7 +1596,9 @@ export default function ContentPage() {
       title: draftTitle,
       copy: draftCopy.slice(0, 40),
       status: "pending" as const
-    }]);
+    };
+    setImagePlanItems((items) => [...items, nextPlan]);
+    void autoAssignReferenceImagesToPlans(parsedReference?.media ?? [], [nextPlan]);
     setActiveImagePage(nextPage);
     setFeedback(`已新增 P${nextPage} 页面。`);
   };

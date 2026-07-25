@@ -51,6 +51,35 @@ function useImage2Provider(t: TestContext) {
   });
 }
 
+function useYunwuProvider(t: TestContext) {
+  const keys = [
+    "IMAGE_MODEL_PROVIDER",
+    "YUNWU_API_KEY",
+    "YUNWU_IMAGE_URL",
+    "YUNWU_IMAGE_EDIT_URL",
+    "GPT_IMAGE2_PROJECT_CODE",
+    "GPT_IMAGE2_ACCESS_KEY",
+    "GPT_IMAGE2_SECRET_KEY"
+  ];
+  const previous: Record<string, string | undefined> = Object.fromEntries(
+    keys.map((key) => [key, process.env[key]])
+  );
+  process.env.IMAGE_MODEL_PROVIDER = "yunwu";
+  process.env.YUNWU_API_KEY = "test-yunwu-key";
+  process.env.YUNWU_IMAGE_URL = "https://yunwu.test/v1/images/generations";
+  process.env.YUNWU_IMAGE_EDIT_URL = "https://yunwu.test/v1/images/edits";
+  delete process.env.GPT_IMAGE2_PROJECT_CODE;
+  delete process.env.GPT_IMAGE2_ACCESS_KEY;
+  delete process.env.GPT_IMAGE2_SECRET_KEY;
+  t.after(() => {
+    for (const key of keys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+}
+
 async function waitForJob(jobId: string) {
   for (let attempt = 0; attempt < 30; attempt += 1) {
     const response = await GET(new Request("https://app.test"), {
@@ -155,6 +184,90 @@ test("publishes local Image 2.0 references and preserves public URLs in resource
     params: Promise.resolve({ token: temporaryToken })
   });
   assert.equal(cleaned.status, 404);
+});
+
+test("keeps local reference data available to direct Yunwu edits", async (t) => {
+  useYunwuProvider(t);
+  const previousFetch = globalThis.fetch;
+  let editForm: FormData | undefined;
+  globalThis.fetch = async (url, init) => {
+    assert.equal(String(url), "https://yunwu.test/v1/images/edits");
+    editForm = init?.body as FormData;
+    return Response.json({ data: [{ url: "https://img.test/yunwu-edit.jpg" }] });
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+  });
+
+  const response = await POST(new Request("http://localhost/api/image/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      provider: "Image 2.0",
+      prompt: "只换背景",
+      sourceImageUrls: ["data:image/png;base64,iVBORw0KGgo="]
+    })
+  }));
+  const created = await response.json();
+  assert.equal(response.status, 202);
+  const job = await waitForJob(created.data.jobId);
+
+  assert.equal(job.status, "completed");
+  assert.equal(editForm?.getAll("image").length, 1);
+});
+
+test("rejects private remote reference URLs before direct Yunwu edits", async (t) => {
+  useYunwuProvider(t);
+  const previousFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return Response.json({ data: [{ url: "https://img.test/yunwu-edit.jpg" }] });
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+  });
+
+  const response = await POST(new Request("http://localhost/api/image/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      provider: "Image 2.0",
+      prompt: "只换背景",
+      sourceImageUrls: ["http://127.0.0.1/internal-image.png"]
+    })
+  }));
+  const payload = await response.json();
+  if (response.status === 202) await waitForJob(payload.data.jobId);
+
+  assert.equal(response.status, 400);
+  assert.equal(fetchCalls, 0);
+});
+
+test("rejects IPv6-mapped loopback reference URLs before direct Yunwu edits", async (t) => {
+  useYunwuProvider(t);
+  const previousFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return Response.json({ data: [{ url: "https://img.test/yunwu-edit.jpg" }] });
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+  });
+
+  const response = await POST(new Request("http://localhost/api/image/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      provider: "Image 2.0",
+      prompt: "只换背景",
+      sourceImageUrls: ["https://[::ffff:127.0.0.1]/internal-image.png"]
+    })
+  }));
+
+  assert.equal(response.status, 400);
+  assert.equal(fetchCalls, 0);
 });
 
 test("cleans temporary references when Image 2.0 generation fails", async (t) => {

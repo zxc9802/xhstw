@@ -24,7 +24,8 @@ function usesImage2References(provider: string) {
   return !provider.includes("Nano")
     && !provider.includes("仅生成提示词")
     && process.env.IMAGE_MODEL_PROVIDER !== "nano-banana"
-    && process.env.IMAGE_MODEL_PROVIDER !== "mock";
+    && process.env.IMAGE_MODEL_PROVIDER !== "mock"
+    && process.env.IMAGE_MODEL_PROVIDER !== "yunwu";
 }
 
 function imageSourceUrls(body: unknown) {
@@ -37,6 +38,30 @@ function imageSourceUrls(body: unknown) {
   return value as string[];
 }
 
+function isPrivateReferenceHost(hostname: string) {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (host.includes(":") || host === "localhost") return true;
+  const match = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!match) return false;
+  const [first, second] = match.slice(1).map(Number);
+  return first === 10 || first === 127 || first === 0 || (first === 169 && second === 254) || (first === 172 && second >= 16 && second <= 31) || (first === 192 && second === 168);
+}
+
+function validateYunwuReferenceUrls(urls: string[]) {
+  urls.forEach((source) => {
+    if (source.startsWith("data:image/")) return;
+    try {
+      const url = new URL(source);
+      if (url.protocol !== "https:" || isPrivateReferenceHost(url.hostname)) {
+        throw new ImageReferenceInputError("Yunwu 参考图仅支持公开 HTTPS 图片地址或本地图片数据。", 400);
+      }
+    } catch (error) {
+      if (error instanceof ImageReferenceInputError) throw error;
+      throw new ImageReferenceInputError("Yunwu 参考图地址无效。", 400);
+    }
+  });
+}
+
 export async function POST(request: Request) {
   const body = await readJson(request);
   const provider = body && typeof body === "object" && "provider" in body ? String((body as { provider?: unknown }).provider) : "";
@@ -44,9 +69,11 @@ export async function POST(request: Request) {
   let referenceTokens: string[] = [];
 
   try {
-    if (usesImage2References(provider)) {
+    const directYunwu = process.env.IMAGE_MODEL_PROVIDER === "yunwu";
+    if (usesImage2References(provider) || directYunwu) {
       const sourceImageUrls = imageSourceUrls(body);
-      if (sourceImageUrls.length) {
+      if (directYunwu) validateYunwuReferenceUrls(sourceImageUrls);
+      if (usesImage2References(provider) && sourceImageUrls.length) {
         const published = publishImageReferences(sourceImageUrls, publicRequestOrigin(request));
         referenceTokens = published.tokens;
         jobBody = {

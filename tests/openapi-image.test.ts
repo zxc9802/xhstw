@@ -127,6 +127,57 @@ test("sends reference images to the project OpenAPI resources field", async () =
   });
 });
 
+test("uses Yunwu edits directly for reference images when configured for Yunwu", async () => {
+  let receivedUrl = "";
+  let editForm: FormData | undefined;
+  await withProvider(async (url, init) => {
+    receivedUrl = String(url);
+    editForm = init?.body as FormData;
+    return Response.json({ data: [{ url: "https://img.test/yunwu-direct-edit.jpg" }] });
+  }, async () => {
+    delete process.env.GPT_IMAGE2_PROJECT_CODE;
+    delete process.env.GPT_IMAGE2_ACCESS_KEY;
+    delete process.env.GPT_IMAGE2_SECRET_KEY;
+    process.env.IMAGE_MODEL_PROVIDER = "yunwu";
+    process.env.YUNWU_API_KEY = "test-yunwu-key";
+    process.env.YUNWU_IMAGE_EDIT_URL = "https://yunwu.test/v1/images/edits";
+
+    const result = await generateImage({
+      prompt: "只换背景",
+      sourceImageUrls: ["data:image/png;base64,aGVsbG8="],
+      count: 1
+    });
+
+    assert.equal(receivedUrl, "https://yunwu.test/v1/images/edits");
+    assert.equal(editForm?.get("model"), "gpt-image-2");
+    assert.equal(editForm?.getAll("image").length, 1);
+    assert.equal(result.images?.[0]?.provider, "Image 2.0 (Yunwu)");
+  });
+});
+
+test("uses Yunwu generations directly without reference images when configured for Yunwu", async () => {
+  let receivedUrl = "";
+  let receivedBody: Record<string, unknown> | undefined;
+  await withProvider(async (url, init) => {
+    receivedUrl = String(url);
+    receivedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return Response.json({ data: [{ url: "https://img.test/yunwu-direct-generation.jpg" }] });
+  }, async () => {
+    delete process.env.GPT_IMAGE2_PROJECT_CODE;
+    delete process.env.GPT_IMAGE2_ACCESS_KEY;
+    delete process.env.GPT_IMAGE2_SECRET_KEY;
+    process.env.IMAGE_MODEL_PROVIDER = "yunwu";
+    process.env.YUNWU_API_KEY = "test-yunwu-key";
+    process.env.YUNWU_IMAGE_URL = "https://yunwu.test/v1/images/generations";
+
+    const result = await generateImage({ prompt: "橘猫", count: 1 });
+
+    assert.equal(receivedUrl, "https://yunwu.test/v1/images/generations");
+    assert.equal(receivedBody?.model, "gpt-image-2");
+    assert.equal(result.images?.[0]?.provider, "Image 2.0 (Yunwu)");
+  });
+});
+
 test("retries the project OpenAPI three times after the first failure", async () => {
   let calls = 0;
   await withProvider(async () => {
