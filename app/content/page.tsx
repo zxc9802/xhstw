@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils/cn";
 import { imageRefToUploadUrl, isStoredImageRef, persistImageFile, persistImageRefs, resolveImageRef } from "@/lib/utils/image-store";
 import { appendMaterialLibrary, createLibraryAsset, getAssetBlob, readMaterialLibrary, type LibraryAsset } from "@/lib/utils/material-library";
 import { loadVersionedState, saveVersionedState } from "@/lib/utils/local-state";
-import { readProductLibrary, type ProductLibraryItem } from "@/lib/utils/product-library";
+import { formatProductCopyContext, readProductLibrary, type ProductLibraryItem } from "@/lib/utils/product-library";
 import { loadGeneratedImages, saveGeneratedImages } from "@/lib/utils/image-generation-history";
 import { pollImageGenerationJob } from "@/lib/utils/image-generation-job-client";
 import { addKeywordValues, removeKeywordValue, reorderAssignedImages, withoutSelectedKeywords } from "@/lib/utils/production-workflow";
@@ -523,7 +523,6 @@ export default function ContentPage() {
   const [referenceMediaObjectUrls, setReferenceMediaObjectUrls] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [referenceParsing, setReferenceParsing] = useState(false);
   const [imitationLoading, setImitationLoading] = useState(false);
-  const [imitationProduct, setImitationProduct] = useState("");
   const [imitationPrompt, setImitationPrompt] = useState("");
   const [titleOptions, setTitleOptions] = useState(titleCandidates);
   const [copyOptions, setCopyOptions] = useState(expandCopyCandidates(copyCandidates, titleCandidates[0].title));
@@ -789,6 +788,10 @@ export default function ContentPage() {
     });
   }, [imageStep, selectedProductId]);
 
+  useEffect(() => {
+    void readProductLibraryProducts().then(setProductLibraryProducts);
+  }, []);
+
   const persistReferenceRows = (rows: ReferenceRow[]) => {
     const recent = rows.filter((row) => row.platform.includes("小红书") && (row.status === "已解析" || row.status === "已导入文本")).slice(0, 3);
     window.localStorage.setItem(REFERENCE_HISTORY_STORAGE_KEY, JSON.stringify(recent));
@@ -1007,13 +1010,19 @@ export default function ContentPage() {
       setFeedback("请先点击开始解析，解析出参考作品后再生成发布文案。");
       return;
     }
+    const selectedCopyProduct = productLibraryProducts.find((product, index) => productLibraryKey(product, index) === selectedProductId);
+    if (!selectedCopyProduct) {
+      setFeedback("请选择产品资料库里的产品后再生成发布文案。");
+      return;
+    }
+    const copyProductContext = formatProductCopyContext(selectedCopyProduct);
     setImitationLoading(true);
     setFeedback("正在调用 DeepSeek 文案 adapter 仿写标题和文案候选。");
     try {
       const payload = {
         provider: "deepseek",
         reference: parsedReference,
-        product: imitationProduct.trim(),
+        product: copyProductContext,
         prompt: imitationPrompt.trim(),
         targetAccount,
         contentType
@@ -1037,6 +1046,11 @@ export default function ContentPage() {
       const titleProvider = titleData?.data?.provider ?? "unknown";
       const copyProvider = copyData?.data?.provider ?? "unknown";
       const model = titleData?.data?.model || copyData?.data?.model || "";
+      const titleError = titleData?.data?.error;
+      const copyError = copyData?.data?.error;
+      if (!titleResponse.ok || !copyResponse.ok || titleError || copyError || titleProvider !== "deepseek" || copyProvider !== "deepseek") {
+        throw new Error(titleError || copyError || `${titleProvider}/${copyProvider}`);
+      }
       setTitleOptions(nextTitles);
       setCopyOptions(nextCopies);
       const nextBatchCandidates = buildBatchDrafts(nextTitles, nextCopies, 10);
@@ -1047,22 +1061,9 @@ export default function ContentPage() {
       setDraftTitle(nextTitles[0]?.title ?? parsedReference.title);
       setSelectedCopyId(nextCopies[0].id);
       setDraftCopy(nextCopies[0].body);
-      const titleError = titleData?.data?.error;
-      const copyError = copyData?.data?.error;
-      setFeedback(
-        titleProvider === "deepseek" || copyProvider === "deepseek"
-          ? `仿写完成：已通过 DeepSeek ${model} 生成 ${nextTitles.length} 条标题和 ${nextCopies.length} 条文案候选。`
-          : `DeepSeek 未完成真实仿写，已 fallback：${titleError || copyError || `${titleProvider}/${copyProvider}`}。`
-      );
+      setFeedback(`仿写完成：已通过 DeepSeek ${model} 生成 ${nextTitles.length} 条标题和 ${nextCopies.length} 条文案候选。`);
     } catch (error) {
-      const nextCopies = expandCopyCandidates(copyCandidates, parsedReference.title);
-      const nextTitles = fallbackTitleCandidates(parsedReference.title);
-      setTitleOptions(nextTitles);
-      setCopyOptions(nextCopies);
-      const nextBatchCandidates = buildBatchDrafts(nextTitles, nextCopies, 10);
-      setBatchCandidates(nextBatchCandidates);
-      setSelectedBatchDrafts(nextBatchCandidates.slice(0, Math.max(selectedBatchDrafts.length, 1)).map((item, index) => withoutSelectedKeywords({ ...item, id: `selected_${index + 1}` })));
-      setFeedback(error instanceof Error ? `仿写接口异常，已使用 mock 候选：${error.message}` : "仿写接口异常，已使用 mock 候选。");
+      setFeedback(error instanceof Error ? `仿写失败，未替换当前文案：${error.message}` : "仿写失败，未替换当前文案。");
     } finally {
       setImitationLoading(false);
     }
@@ -2041,12 +2042,19 @@ export default function ContentPage() {
                       <div className="mt-3 rounded-md bg-white/80 p-3">
                         <p className="text-xs font-medium text-muted">仿写指令</p>
                         <div className="mt-2 grid gap-2">
-                          <input
-                            value={imitationProduct}
-                            onChange={(event) => setImitationProduct(event.target.value)}
+                          <select
+                            value={selectedProductId}
+                            onFocus={() => void refreshProductLibraryProducts()}
+                            onChange={(event) => setSelectedProductId(event.target.value)}
                             className="h-9 rounded-md border border-line bg-white px-3 text-sm outline-none focus:border-orange-300"
-                            placeholder="产品名"
-                          />
+                          >
+                            <option value="">选择产品资料库产品</option>
+                            {productLibraryProducts.map((product, index) => (
+                              <option key={productLibraryKey(product, index)} value={productLibraryKey(product, index)}>
+                                {product.name}{product.category ? ` · ${product.category}` : ""}
+                              </option>
+                            ))}
+                          </select>
                           <textarea
                             value={imitationPrompt}
                             onChange={(event) => setImitationPrompt(event.target.value)}

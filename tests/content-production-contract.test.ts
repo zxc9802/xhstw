@@ -66,3 +66,11 @@ test("finished preview starts empty and supports manual upload and ordering", ()
 test("finished content reports the number of images actually selected", () => {
   assert.equal(source.includes("mediaUrls.length || imagePlanItems.length"), false);
 });
+
+test("copy generation requires a product-library selection and sends its full context", () => {
+  assert.equal(source.includes("const selectedCopyProduct ="), true);
+  assert.equal(source.includes("formatProductCopyContext(selectedCopyProduct)"), true);
+  assert.equal(source.includes("product: copyProductContext"), true);
+  assert.equal(source.includes("请选择产品资料库里的产品后再生成发布文案"), true);
+  assert.equal(source.includes("const nextCopies = expandCopyCandidates(copyCandidates, parsedReference.title);"), false);
+});

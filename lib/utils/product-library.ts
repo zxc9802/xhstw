@@ -25,6 +25,16 @@ export type ProductLibraryItem = {
   status: "active" | "pending";
 };
 
+export function formatProductCopyContext(product: ProductLibraryItem) {
+  return [
+    `产品名称：${product.name.trim() || "未填写"}`,
+    `产品分类：${product.category.trim() || "未填写"}`,
+    `核心卖点：${product.sellingPoint.trim() || "未填写"}`,
+    `核心痛点：${product.painPoint.trim() || "未填写"}`,
+    `补充要求：${product.other.trim() || "未填写"}`
+  ].join("\n");
+}
+
 export const PRODUCT_STORAGE_KEY = "content-production-studio-xhs.product-library";
 
 function productAssetKey(fileName: string) {
