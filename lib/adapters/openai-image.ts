@@ -33,7 +33,7 @@ type YunwuImageConfig = {
 
 type ImageRequestResult = {
   data: unknown;
-  provider: "Image 2.0" | "Image 2.0 (Yunwu fallback)";
+  provider: "Image 2.0" | "Image 2.0 (Yunwu)" | "Image 2.0 (Yunwu fallback)";
   model: string;
 };
 
@@ -514,11 +514,11 @@ export async function generateImage(input: unknown) {
   if (body.provider?.includes("仅生成提示词")) return mockImages(body);
 
   const config = image2Config();
+  const yunwuConfig = yunwuImageConfig();
+  const directYunwu = process.env.IMAGE_MODEL_PROVIDER === "yunwu";
   if (
     process.env.IMAGE_MODEL_PROVIDER === "mock"
-    || !config.projectCode
-    || !config.accessKey
-    || !config.secretKey
+    || (!directYunwu && (!config.projectCode || !config.accessKey || !config.secretKey))
   ) {
     return mockImages(body);
   }
@@ -533,10 +533,14 @@ export async function generateImage(input: unknown) {
   ].filter(Boolean).join("\n");
   const requestedCount = Math.max(1, Math.min(MAX_IMAGES_PER_RUN, Number(body.count) || 1));
   const scale = imageScaleFromSize(body.size);
-  const yunwuConfig = yunwuImageConfig();
   const tasks = Array.from(
     { length: requestedCount },
-    () => () => requestImageWithFallback(config, yunwuConfig, body, prompt, scale)
+    () => () => directYunwu
+      ? (body.sourceImageUrls?.length
+        ? requestYunwuEdit(yunwuConfig, prompt, imageSizeFromRatio(body.size), body.sourceImageUrls)
+        : requestYunwuGeneration(yunwuConfig, prompt, imageSizeFromRatio(body.size))
+      ).then((data) => ({ data, provider: "Image 2.0 (Yunwu)" as const, model: yunwuConfig.model }))
+      : requestImageWithFallback(config, yunwuConfig, body, prompt, scale)
   );
   const results = await runWithConcurrency(tasks, MAX_PARALLEL_IMAGE_REQUESTS);
   const images = results.flatMap((result) => extractImageUrls(result.data).map((url) => ({
@@ -549,7 +553,7 @@ export async function generateImage(input: unknown) {
 
   return {
     provider: "Image 2.0",
-    model: config.modelId,
+    model: directYunwu ? yunwuConfig.model : config.modelId,
     input: body,
     images,
     raw: images.length ? undefined : results.map((result) => result.data)

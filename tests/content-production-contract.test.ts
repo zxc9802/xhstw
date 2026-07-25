@@ -31,6 +31,14 @@ test("local source images use a stable IndexedDB reference", () => {
   assert.equal(imageStoreSource.includes("export async function persistImageFile"), true);
 });
 
+test("parsed reference images automatically fill empty image-plan reference slots", () => {
+  assert.equal(source.includes("autoAssignReferenceImagesToPlans"), true);
+  assert.equal(source.includes("void autoAssignReferenceImagesToPlans(parsedMedia, nextImagePlans)"), true);
+  assert.equal(source.includes("(items[plan.page] ?? []).length"), true);
+  assert.equal(source.includes("sources[plan.page - 1]"), true);
+  assert.equal(source.includes("createReferenceImagePlans"), true);
+});
+
 test("local saving is selection-based and writes through the browser file helper", () => {
   assert.equal(source.includes("localSaveSelectedUrls"), true);
   assert.equal(source.includes("writeBlobFiles"), true);
