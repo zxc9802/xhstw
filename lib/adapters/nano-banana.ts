@@ -1,5 +1,6 @@
 import { imagePlans } from "@/lib/mock/data";
 import { logImageProviderResponse } from "@/lib/adapters/image-response-diagnostics";
+import { MainAppBillingError, reserveMainAppCredits } from "@/lib/main-app-billing";
 
 type NanoBananaInput = {
   provider?: string;
@@ -108,20 +109,33 @@ export async function generateWithNanoBanana(input: unknown) {
 
   const count = Math.max(1, Math.min(10, Number(body.count) || 1));
   const results = await Promise.all(Array.from({ length: count }, async (_, index) => {
-    const response = await requestOne(index);
-    const data = await response.json().catch(() => ({}));
-    logImageProviderResponse({
-      provider: "Nano Banana 2",
-      operation: "generate",
-      endpoint: YUNWU_CHAT_URL,
-      status: response.status,
-      response: data
+    const billing = await reserveMainAppCredits({
+      operation: "image-generate",
+      providerId: "yunwu",
+      model: NANO_BANANA_MODEL,
+      media: true,
     });
-    if (!response.ok) {
-      const error = data && typeof data === "object" && "error" in data ? JSON.stringify((data as { error: unknown }).error) : `HTTP ${response.status}`;
-      throw new Error(`Nano Banana 2 生成失败：${error}`);
+    try {
+      const response = await requestOne(index);
+      const data = await response.json().catch(() => ({}));
+      logImageProviderResponse({
+        provider: "Nano Banana 2",
+        operation: "generate",
+        endpoint: YUNWU_CHAT_URL,
+        status: response.status,
+        response: data
+      });
+      if (!response.ok) {
+        const error = data && typeof data === "object" && "error" in data ? JSON.stringify((data as { error: unknown }).error) : `HTTP ${response.status}`;
+        throw new Error(`Nano Banana 2 生成失败：${error}`);
+      }
+      await billing.settleMedia();
+      return data;
+    } catch (error) {
+      if (error instanceof MainAppBillingError) throw error;
+      await billing.release();
+      throw error;
     }
-    return data;
   }));
 
   const images = results.flatMap(flattenImageUrls).slice(0, count).map((url, index) => ({

@@ -1,5 +1,6 @@
 import { imagePlans } from "@/lib/mock/data";
 import { logImageProviderResponse } from "@/lib/adapters/image-response-diagnostics";
+import { MainAppBillingError, reserveMainAppCredits } from "@/lib/main-app-billing";
 
 type ImageInput = {
   provider?: string;
@@ -535,12 +536,28 @@ export async function generateImage(input: unknown) {
   const scale = imageScaleFromSize(body.size);
   const tasks = Array.from(
     { length: requestedCount },
-    () => () => directYunwu
-      ? (body.sourceImageUrls?.length
-        ? requestYunwuEdit(yunwuConfig, prompt, imageSizeFromRatio(body.size), body.sourceImageUrls)
-        : requestYunwuGeneration(yunwuConfig, prompt, imageSizeFromRatio(body.size))
-      ).then((data) => ({ data, provider: "Image 2.0 (Yunwu)" as const, model: yunwuConfig.model }))
-      : requestImageWithFallback(config, yunwuConfig, body, prompt, scale)
+    () => async () => {
+      const billing = await reserveMainAppCredits({
+        operation: "image-generate",
+        providerId: directYunwu ? "yunwu" : "image2",
+        model: directYunwu ? yunwuConfig.model : config.modelId,
+        media: true,
+      });
+      try {
+        const result = directYunwu
+          ? await (body.sourceImageUrls?.length
+              ? requestYunwuEdit(yunwuConfig, prompt, imageSizeFromRatio(body.size), body.sourceImageUrls)
+              : requestYunwuGeneration(yunwuConfig, prompt, imageSizeFromRatio(body.size))
+            ).then((data) => ({ data, provider: "Image 2.0 (Yunwu)" as const, model: yunwuConfig.model }))
+          : await requestImageWithFallback(config, yunwuConfig, body, prompt, scale);
+        await billing.settleMedia();
+        return result;
+      } catch (error) {
+        if (error instanceof MainAppBillingError) throw error;
+        await billing.release();
+        throw error;
+      }
+    }
   );
   const results = await runWithConcurrency(tasks, MAX_PARALLEL_IMAGE_REQUESTS);
   const images = results.flatMap((result) => extractImageUrls(result.data).map((url) => ({

@@ -1,5 +1,10 @@
 import { copyCandidates } from "@/lib/mock/data";
 import { providerOrMock } from "@/lib/utils/env";
+import {
+  MainAppBillingError,
+  parseOpenAiUsage,
+  reserveMainAppCredits,
+} from "@/lib/main-app-billing";
 
 type DeepSeekMessage = {
   role: "system" | "user" | "assistant";
@@ -60,29 +65,49 @@ async function requestDeepSeek(messages: DeepSeekMessage[]) {
   const apiKey = process.env.DEEPSEEK_API_KEY;
   if (!apiKey) throw new Error("缺少 DEEPSEEK_API_KEY");
 
-  const response = await fetch(`${DEEPSEEK_BASE_URL.replace(/\/$/, "")}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model: DEEPSEEK_MODEL,
-      messages,
-      temperature: 0.85,
-      response_format: { type: "json_object" }
-    })
+  const maxOutputTokens = 4096;
+  const estimatedInputTokens = new TextEncoder().encode(JSON.stringify(messages)).length;
+  const billing = await reserveMainAppCredits({
+    operation: "copy",
+    providerId: "deepseek",
+    model: DEEPSEEK_MODEL,
+    estimatedInputTokens,
+    maxOutputTokens,
   });
+  try {
+    const response = await fetch(`${DEEPSEEK_BASE_URL.replace(/\/$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: DEEPSEEK_MODEL,
+        messages,
+        temperature: 0.85,
+        response_format: { type: "json_object" },
+        max_tokens: maxOutputTokens,
+      })
+    });
 
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const message = typeof data?.error?.message === "string" ? data.error.message : `DeepSeek 请求失败：${response.status}`;
-    throw new Error(message);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = typeof data?.error?.message === "string" ? data.error.message : `DeepSeek 请求失败：${response.status}`;
+      throw new Error(message);
+    }
+
+    const content = data?.choices?.[0]?.message?.content;
+    if (typeof content !== "string" || !content.trim()) throw new Error("DeepSeek 未返回有效内容");
+    await billing.settleText(parseOpenAiUsage(data, {
+      inputTokens: estimatedInputTokens,
+      outputText: content,
+    }));
+    return JSON.parse(extractJsonObject(content)) as Record<string, unknown>;
+  } catch (error) {
+    if (error instanceof MainAppBillingError) throw error;
+    await billing.release();
+    throw error;
   }
-
-  const content = data?.choices?.[0]?.message?.content;
-  if (typeof content !== "string" || !content.trim()) throw new Error("DeepSeek 未返回有效内容");
-  return JSON.parse(extractJsonObject(content)) as Record<string, unknown>;
 }
 
 function shouldUseMock() {
@@ -161,6 +186,7 @@ export async function generateTitlesWithDeepSeek(input: unknown) {
 
     return { provider: "deepseek", model: DEEPSEEK_MODEL, input, titles };
   } catch (error) {
+    if (error instanceof MainAppBillingError) throw error;
     return {
       provider: "mock-fallback",
       model: DEEPSEEK_MODEL,
@@ -222,6 +248,7 @@ export async function generateCopiesWithDeepSeek(input: unknown) {
 
     return { provider: "deepseek", model: DEEPSEEK_MODEL, input, copies };
   } catch (error) {
+    if (error instanceof MainAppBillingError) throw error;
     return {
       provider: "mock-fallback",
       model: DEEPSEEK_MODEL,
