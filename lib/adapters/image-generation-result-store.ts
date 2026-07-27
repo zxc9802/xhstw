@@ -1,0 +1,139 @@
+import { randomUUID } from "node:crypto";
+
+export const IMAGE_GENERATION_RESULT_TTL_MS = 30 * 60 * 1000;
+export const MAX_IMAGE_GENERATION_RESULT_BYTES = 20 * 1024 * 1024;
+export const MAX_IMAGE_GENERATION_RESULT_SET_BYTES = 100 * 1024 * 1024;
+const MAX_CACHED_IMAGE_GENERATION_RESULT_BYTES = 256 * 1024 * 1024;
+const IMAGE_GENERATION_RESULT_DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
+
+type StoredImageGenerationResult = {
+  token: string;
+  bytes: Uint8Array;
+  contentType: string;
+  expiresAt: number;
+};
+
+const resultGlobal = globalThis as typeof globalThis & {
+  __imageGenerationResults?: Map<string, StoredImageGenerationResult>;
+};
+
+const results = resultGlobal.__imageGenerationResults ?? new Map<string, StoredImageGenerationResult>();
+resultGlobal.__imageGenerationResults = results;
+
+function cleanupExpiredResults(now: number) {
+  for (const [token, result] of results) {
+    if (result.expiresAt <= now) results.delete(token);
+  }
+}
+
+function normalizedResultOrigin(origin: string) {
+  try {
+    const parsed = new URL(origin);
+    if (!/^https?:$/.test(parsed.protocol) || parsed.username || parsed.password) throw new Error("unsafe");
+    return parsed.origin;
+  } catch {
+    throw new Error("成品图片暂存地址无效，请检查应用公开域名。");
+  }
+}
+
+function imageContentType(response: Response, source: string) {
+  const header = response.headers.get("Content-Type") || "";
+  if (/^image\//i.test(header)) return header;
+  const extension = new URL(source).pathname.toLowerCase().match(/\.(avif|gif|jpe?g|png|webp)$/)?.[1];
+  if (!extension) return undefined;
+  return ({
+    avif: "image/avif",
+    gif: "image/gif",
+    jpeg: "image/jpeg",
+    jpg: "image/jpeg",
+    png: "image/png",
+    webp: "image/webp"
+  } as Record<string, string>)[extension];
+}
+
+async function downloadImage(source: string) {
+  try {
+    const response = await fetch(source, {
+      cache: "no-store",
+      redirect: "follow",
+      signal: AbortSignal.timeout(IMAGE_GENERATION_RESULT_DOWNLOAD_TIMEOUT_MS)
+    });
+    const contentType = imageContentType(response, source);
+    if (!response.ok || !contentType) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const statedLength = Number(response.headers.get("Content-Length"));
+    if (Number.isFinite(statedLength) && statedLength > MAX_IMAGE_GENERATION_RESULT_BYTES) {
+      throw new Error("单张成品图片超过 20 MB");
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (!bytes.byteLength) throw new Error("图片内容为空");
+    if (bytes.byteLength > MAX_IMAGE_GENERATION_RESULT_BYTES) {
+      throw new Error("单张成品图片超过 20 MB");
+    }
+    return { bytes, contentType };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "连接失败";
+    throw new Error(`成品图片后台下载失败：${message}`);
+  }
+}
+
+export async function cacheImageGenerationResult(result: unknown, origin: string) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return result;
+  const record = result as Record<string, unknown>;
+  if (!Array.isArray(record.images)) return result;
+
+  const remoteImages = record.images.flatMap((image, index) => {
+    if (!image || typeof image !== "object") return [];
+    const url = (image as Record<string, unknown>).url;
+    return typeof url === "string" && /^https?:\/\//i.test(url) ? [{ index, url }] : [];
+  });
+  if (!remoteImages.length) return result;
+
+  const publicOrigin = normalizedResultOrigin(origin);
+  const downloaded = await Promise.all(remoteImages.map(async ({ index, url }) => ({
+    index,
+    ...(await downloadImage(url))
+  })));
+  const totalBytes = downloaded.reduce((sum, image) => sum + image.bytes.byteLength, 0);
+  if (totalBytes > MAX_IMAGE_GENERATION_RESULT_SET_BYTES) {
+    throw new Error("单次生成的成品图片总大小超过 100 MB。");
+  }
+
+  const now = Date.now();
+  cleanupExpiredResults(now);
+  const cachedBytes = [...results.values()].reduce((sum, image) => sum + image.bytes.byteLength, 0);
+  if (cachedBytes + totalBytes > MAX_CACHED_IMAGE_GENERATION_RESULT_BYTES) {
+    throw new Error("成品图片暂存空间不足，请稍后重试。");
+  }
+
+  const replacements = new Map<number, string>();
+  for (const image of downloaded) {
+    const token = randomUUID();
+    results.set(token, {
+      token,
+      bytes: image.bytes,
+      contentType: image.contentType,
+      expiresAt: now + IMAGE_GENERATION_RESULT_TTL_MS
+    });
+    replacements.set(image.index, new URL(`/api/image/result/${token}`, publicOrigin).toString());
+  }
+
+  return {
+    ...record,
+    images: record.images.map((image, index) => {
+      const url = replacements.get(index);
+      return url && image && typeof image === "object"
+        ? { ...(image as Record<string, unknown>), url }
+        : image;
+    })
+  };
+}
+
+export function getImageGenerationResult(token: string, now = Date.now()) {
+  cleanupExpiredResults(now);
+  const result = results.get(token);
+  return result
+    ? { ...result, bytes: new Uint8Array(result.bytes) }
+    : undefined;
+}

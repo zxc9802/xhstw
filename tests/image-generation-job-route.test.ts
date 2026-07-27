@@ -3,7 +3,11 @@ import test, { type TestContext } from "node:test";
 import { POST } from "../app/api/image/generate/route";
 import { GET } from "../app/api/image/generate/[jobId]/route";
 import { GET as GET_REFERENCE } from "../app/api/image/reference/[token]/route";
-import { createImageGenerationJob, runImageGenerationJob } from "../lib/adapters/image-generation-job-store";
+import { GET as GET_RESULT } from "../app/api/image/result/[token]/route";
+import {
+  getImageGenerationResult,
+  IMAGE_GENERATION_RESULT_TTL_MS
+} from "../lib/adapters/image-generation-result-store";
 
 function useMockImageProvider(t: TestContext) {
   const previous = process.env.IMAGE_MODEL_PROVIDER;
@@ -11,15 +15,6 @@ function useMockImageProvider(t: TestContext) {
   t.after(() => {
     if (previous === undefined) delete process.env.IMAGE_MODEL_PROVIDER;
     else process.env.IMAGE_MODEL_PROVIDER = previous;
-  });
-}
-
-function useImageProxySecret(t: TestContext) {
-  const previous = process.env.GPT_IMAGE2_SECRET_KEY;
-  process.env.GPT_IMAGE2_SECRET_KEY = "image-proxy-secret";
-  t.after(() => {
-    if (previous === undefined) delete process.env.GPT_IMAGE2_SECRET_KEY;
-    else process.env.GPT_IMAGE2_SECRET_KEY = previous;
   });
 }
 
@@ -87,24 +82,11 @@ async function waitForJob(jobId: string) {
     });
     const payload = await response.json();
     if (payload.data?.status === "completed" || payload.data?.status === "failed") {
-      return payload.data as { status: string; error?: string };
+      return payload.data as { status: string; error?: string; result?: unknown };
     }
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
   throw new Error("job did not finish");
-}
-
-async function createImage2ProxyUrl(origin = "https://app.test", headers?: HeadersInit) {
-  const job = createImageGenerationJob();
-  await runImageGenerationJob(job.id, async () => ({
-    provider: "Image 2.0",
-    images: [{ url: "http://provider.test/generated/cat.jpg" }]
-  }));
-  const response = await GET(new Request(`${origin}/api/image/generate/${job.id}`, { headers }), {
-    params: Promise.resolve({ jobId: job.id })
-  });
-  const payload = await response.json();
-  return String(payload.data.result.images[0].url);
 }
 
 test("POST returns 202 with a queued image generation job", async (t) => {
@@ -123,6 +105,118 @@ test("POST returns 202 with a queued image generation job", async (t) => {
   assert.match(payload.data.jobId, /^[0-9a-f-]{36}$/);
 });
 
+test("keeps the job processing until provider images are cached locally", async (t) => {
+  useImage2Provider(t);
+  const previousFetch = globalThis.fetch;
+  let imageDownloadStarted = false;
+  let resolveImageDownload: ((response: Response) => void) | undefined;
+  globalThis.fetch = async (url) => {
+    if (String(url) === IMAGE2_ENV.GPT_IMAGE2_API_URL) {
+      return Response.json({
+        success: true,
+        data: { images: [{ url: "https://img.test/generated.jpg" }] }
+      });
+    }
+    if (String(url) === "https://img.test/generated.jpg") {
+      imageDownloadStarted = true;
+      return new Promise<Response>((resolve) => {
+        resolveImageDownload = resolve;
+      });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+  });
+
+  const response = await POST(new Request("https://app.test/api/image/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider: "Image 2.0", prompt: "test", count: 1 })
+  }));
+  const created = await response.json();
+
+  for (let attempt = 0; attempt < 20 && !imageDownloadStarted; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  const processingResponse = await GET(new Request("https://app.test"), {
+    params: Promise.resolve({ jobId: created.data.jobId })
+  });
+  const processingPayload = await processingResponse.json();
+
+  assert.equal(imageDownloadStarted, true);
+  assert.equal(processingPayload.data.status, "processing");
+
+  resolveImageDownload!(new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), {
+    headers: { "Content-Type": "image/jpeg" }
+  }));
+  const completed = await waitForJob(created.data.jobId);
+  const imageUrl = String(
+    ((completed.result as { images?: Array<{ url?: unknown }> })?.images?.[0]?.url) || ""
+  );
+
+  assert.equal(completed.status, "completed");
+  assert.match(imageUrl, /^https:\/\/app\.test\/api\/image\/result\/[0-9a-f-]{36}$/);
+  const token = new URL(imageUrl).pathname.split("/").pop() || "";
+  const imageResponse = await GET_RESULT(new Request(imageUrl), {
+    params: Promise.resolve({ token })
+  });
+  assert.equal(imageResponse.status, 200);
+  assert.equal(imageResponse.headers.get("Content-Type"), "image/jpeg");
+  assert.equal(imageResponse.headers.get("Content-Length"), "4");
+  assert.deepEqual(
+    [...new Uint8Array(await imageResponse.arrayBuffer())],
+    [0xff, 0xd8, 0xff, 0xd9]
+  );
+  assert.equal(
+    getImageGenerationResult(token, Date.now() + IMAGE_GENERATION_RESULT_TTL_MS + 1),
+    undefined
+  );
+});
+
+test("records a provider image download error before completing the job", async (t) => {
+  useImage2Provider(t);
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url) === IMAGE2_ENV.GPT_IMAGE2_API_URL) {
+      return Response.json({
+        success: true,
+        data: { images: [{ url: "https://img.test/unavailable.jpg" }] }
+      });
+    }
+    if (String(url) === "https://img.test/unavailable.jpg") {
+      return new Response(null, { status: 524 });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+  });
+
+  const response = await POST(new Request("https://app.test/api/image/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider: "Image 2.0", prompt: "test", count: 1 })
+  }));
+  const created = await response.json();
+  const failed = await waitForJob(created.data.jobId);
+
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.result, undefined);
+  assert.match(failed.error || "", /成品图片后台下载失败：HTTP 524/);
+});
+
+test("returns 404 when a cached result image is unknown", async () => {
+  const response = await GET_RESULT(new Request("https://app.test/api/image/result/missing"), {
+    params: Promise.resolve({ token: "missing" })
+  });
+  const payload = await response.json();
+
+  assert.equal(response.status, 404);
+  assert.equal(payload.ok, false);
+  assert.match(payload.message, /不存在或已过期/);
+});
+
 test("publishes local Image 2.0 references and preserves public URLs in resources", async (t) => {
   useImage2Provider(t);
   const previousFetch = globalThis.fetch;
@@ -130,7 +224,12 @@ test("publishes local Image 2.0 references and preserves public URLs in resource
     payload: { resources: string[] };
   } | undefined;
   let temporaryToken = "";
-  globalThis.fetch = async (_url, init) => {
+  globalThis.fetch = async (url, init) => {
+    if (String(url) === "https://img.test/generated.jpg") {
+      return new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), {
+        headers: { "Content-Type": "image/jpeg" }
+      });
+    }
     requestBody = JSON.parse(String(init?.body)) as {
       payload: { resources: string[] };
     };
@@ -175,6 +274,10 @@ test("publishes local Image 2.0 references and preserves public URLs in resource
 
   assert.equal(job.status, "completed");
   assert.match(
+    String(((job.result as { images?: Array<{ url?: unknown }> })?.images?.[0]?.url) || ""),
+    /^https:\/\/xhstw\.qycm\.top\/api\/image\/result\/[0-9a-f-]{36}$/
+  );
+  assert.match(
     requestBody!.payload.resources[0],
     /^https:\/\/xhstw\.qycm\.top\/api\/image\/reference\/[0-9a-f-]{36}$/
   );
@@ -191,6 +294,11 @@ test("keeps local reference data available to direct Yunwu edits", async (t) => 
   const previousFetch = globalThis.fetch;
   let editForm: FormData | undefined;
   globalThis.fetch = async (url, init) => {
+    if (String(url) === "https://img.test/yunwu-edit.jpg") {
+      return new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), {
+        headers: { "Content-Type": "image/jpeg" }
+      });
+    }
     assert.equal(String(url), "https://yunwu.test/v1/images/edits");
     editForm = init?.body as FormData;
     return Response.json({ data: [{ url: "https://img.test/yunwu-edit.jpg" }] });
@@ -199,7 +307,7 @@ test("keeps local reference data available to direct Yunwu edits", async (t) => 
     globalThis.fetch = previousFetch;
   });
 
-  const response = await POST(new Request("http://localhost/api/image/generate", {
+  const response = await POST(new Request("https://app.test/api/image/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -366,92 +474,4 @@ test("GET returns 404 for an unknown image generation job", async () => {
   assert.equal(response.status, 404);
   assert.equal(payload.ok, false);
   assert.match(payload.message, /重新生成/);
-});
-
-test("GET rewrites Image 2.0 results to a signed same-origin image URL", async (t) => {
-  useImageProxySecret(t);
-  const imageUrl = new URL(await createImage2ProxyUrl());
-
-  assert.equal(imageUrl.origin, "https://app.test");
-  assert.equal(imageUrl.pathname, "/api/image/generate/proxy");
-  assert.equal(imageUrl.searchParams.get("source"), "http://provider.test/generated/cat.jpg");
-  assert.match(imageUrl.searchParams.get("signature") || "", /^[A-Za-z0-9_-]{43}$/);
-});
-
-test("GET uses the forwarded public origin instead of Zeabur's internal listener", async (t) => {
-  useImageProxySecret(t);
-  const imageUrl = new URL(await createImage2ProxyUrl("https://0.0.0.0:3000", {
-    "X-Forwarded-Host": "xhstw.qycm.top",
-    "X-Forwarded-Proto": "https"
-  }));
-
-  assert.equal(imageUrl.origin, "https://xhstw.qycm.top");
-  assert.equal(imageUrl.pathname, "/api/image/generate/proxy");
-});
-
-test("proxy GET buffers a correctly signed provider image before returning it", async (t) => {
-  useImageProxySecret(t);
-  const proxyUrl = await createImage2ProxyUrl();
-  const previousFetch = globalThis.fetch;
-  let fetchedUrl = "";
-  let chunksRead = 0;
-  let upstreamFinished = false;
-  globalThis.fetch = async (input) => {
-    fetchedUrl = String(input);
-    return new Response(new ReadableStream<Uint8Array>({
-      pull(controller) {
-        if (chunksRead === 0) {
-          controller.enqueue(Uint8Array.from([0xff, 0xd8]));
-          chunksRead += 1;
-          return;
-        }
-        if (chunksRead === 1) {
-          controller.enqueue(Uint8Array.from([0xff, 0xd9]));
-          chunksRead += 1;
-          return;
-        }
-        upstreamFinished = true;
-        controller.close();
-      }
-    }), {
-      headers: { "Content-Type": "image/jpeg" }
-    });
-  };
-  t.after(() => {
-    globalThis.fetch = previousFetch;
-  });
-
-  const response = await GET(new Request(proxyUrl), {
-    params: Promise.resolve({ jobId: "proxy" })
-  });
-
-  assert.equal(response.status, 200);
-  assert.equal(fetchedUrl, "http://provider.test/generated/cat.jpg");
-  assert.equal(upstreamFinished, true);
-  assert.equal(response.headers.get("Content-Type"), "image/jpeg");
-  assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff");
-  assert.equal(response.headers.get("Content-Length"), "4");
-  assert.deepEqual([...new Uint8Array(await response.arrayBuffer())], [0xff, 0xd8, 0xff, 0xd9]);
-});
-
-test("proxy GET rejects a tampered provider URL", async (t) => {
-  useImageProxySecret(t);
-  const proxyUrl = new URL(await createImage2ProxyUrl());
-  proxyUrl.searchParams.set("source", "http://provider.test/generated/other.jpg");
-  const previousFetch = globalThis.fetch;
-  let fetchCalls = 0;
-  globalThis.fetch = async () => {
-    fetchCalls += 1;
-    return new Response();
-  };
-  t.after(() => {
-    globalThis.fetch = previousFetch;
-  });
-
-  const response = await GET(new Request(proxyUrl), {
-    params: Promise.resolve({ jobId: "proxy" })
-  });
-
-  assert.equal(response.status, 403);
-  assert.equal(fetchCalls, 0);
 });
