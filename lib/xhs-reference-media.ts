@@ -23,6 +23,18 @@ export function normalizeXhsReferenceMedia(media: unknown): XhsReferenceMedia[] 
   });
 }
 
+export async function loadXhsReferenceMediaBlob(
+  media: Pick<XhsReferenceMedia, "localAssetKey">,
+  store: MediaBlobStore
+) {
+  if (!media.localAssetKey) return null;
+  try {
+    return await store.getBlob(media.localAssetKey);
+  } catch {
+    return null;
+  }
+}
+
 export async function loadXhsReferenceMediaObjectUrls(
   media: XhsReferenceMedia[],
   store: MediaBlobStore,

@@ -17,7 +17,7 @@ import { formatProductCopyContext, readProductLibrary, type ProductLibraryItem }
 import { loadGeneratedImages, saveGeneratedImages } from "@/lib/utils/image-generation-history";
 import { pollImageGenerationJob } from "@/lib/utils/image-generation-job-client";
 import { addKeywordValues, removeKeywordValue, reorderAssignedImages, withoutSelectedKeywords } from "@/lib/utils/production-workflow";
-import { loadXhsReferenceMediaObjectUrls, normalizeXhsReferenceMedia, resolveXhsReferenceMedia, type XhsReferenceMedia } from "@/lib/xhs-reference-media";
+import { loadXhsReferenceMediaBlob, loadXhsReferenceMediaObjectUrls, normalizeXhsReferenceMedia, resolveXhsReferenceMedia, type XhsReferenceMedia } from "@/lib/xhs-reference-media";
 import { createXhsTopicMediaStore } from "@/lib/xhs-topic-media-store";
 import type { ImagePlanItem, ImageProvider } from "@/types/image";
 import type { VideoProvider, VideoScriptRow, VideoShotPlan } from "@/types/video";
@@ -270,16 +270,34 @@ function imageSourceForStorage(asset: ImageSourceAsset): ImageSourceAsset {
   return { ...asset, url: stableUrl, storageUrl: stableUrl };
 }
 
+async function persistCollectedImageSource(asset: ImageSourceAsset, scope: string) {
+  if (!asset.localAssetKey) return null;
+  const blob = await loadXhsReferenceMediaBlob(asset, createXhsTopicMediaStore());
+  if (!blob) return null;
+  const storageUrl = await persistImageFile(blob, scope);
+  const resolvedUrl = await resolveImageRef(storageUrl);
+  return { ...asset, url: resolvedUrl || storageUrl, storageUrl };
+}
+
 async function hydrateImageSource(asset: ImageSourceAsset): Promise<ImageSourceAsset> {
   const stableUrl = asset.storageUrl ?? asset.url;
-  if (!isStoredImageRef(stableUrl)) return { ...asset, storageUrl: stableUrl };
-  const resolvedUrl = await resolveImageRef(stableUrl);
-  return { ...asset, url: resolvedUrl || stableUrl, storageUrl: stableUrl };
+  if (isStoredImageRef(stableUrl)) {
+    const resolvedUrl = await resolveImageRef(stableUrl);
+    return { ...asset, url: resolvedUrl || stableUrl, storageUrl: stableUrl };
+  }
+  const collectedSource = await persistCollectedImageSource(asset, `rehydrated_reference_${Date.now()}`);
+  return collectedSource ?? { ...asset, storageUrl: stableUrl };
 }
 
 async function stabilizeImageSource(asset: ImageSourceAsset, scope: string): Promise<ImageSourceAsset> {
   const stableUrl = asset.storageUrl ?? asset.url;
-  if (isStoredImageRef(stableUrl) || /^https?:\/\//i.test(stableUrl) || stableUrl.startsWith("/")) {
+  if (isStoredImageRef(stableUrl)) {
+    const resolvedUrl = await resolveImageRef(stableUrl);
+    return { ...asset, url: resolvedUrl || stableUrl, storageUrl: stableUrl };
+  }
+  const collectedSource = await persistCollectedImageSource(asset, scope);
+  if (collectedSource) return collectedSource;
+  if (/^https?:\/\//i.test(stableUrl) || stableUrl.startsWith("/")) {
     return { ...asset, storageUrl: stableUrl };
   }
   const [storedUrl] = await persistImageRefs([stableUrl], scope);
@@ -1497,9 +1515,19 @@ export default function ContentPage() {
     }
   };
 
-  const imageUrlForModelRequest = async (url: string) => {
-    if (url.startsWith("data:image/") || /^https?:\/\//i.test(url)) return url;
-    const response = await fetch(url);
+  const imageUrlForModelRequest = async (asset: ImageSourceAsset) => {
+    const readableUrl = await imageRefToUploadUrl(asset.storageUrl ?? asset.url);
+    if (!readableUrl) throw new Error("参考图本地数据不存在，请重新选择图片。");
+    if (readableUrl.startsWith("data:image/")) return readableUrl;
+    if (/^https?:\/\//i.test(readableUrl)) {
+      const hostname = new URL(readableUrl).hostname.toLowerCase();
+      if (hostname === "xhscdn.com" || hostname.endsWith(".xhscdn.com")) {
+        throw new Error("小红书参考图本地数据不存在，请重新通过插件采集。");
+      }
+      return readableUrl;
+    }
+    const response = await fetch(readableUrl);
+    if (!response.ok) throw new Error(`参考图读取失败（HTTP ${response.status}）。`);
     const blob = await response.blob();
     return await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
@@ -1520,7 +1548,7 @@ export default function ContentPage() {
     setFeedback(`P${page} 正在调用 ${provider} 生成图片，真实模型通常需要 30-90 秒；其他页面可以继续生成。`);
     try {
       const selectedSources = planSourceMap[page] ?? [];
-      const sourceImageUrls = await Promise.all(selectedSources.map((item) => imageUrlForModelRequest(item.url).catch(() => "")));
+      const sourceImageUrls = await Promise.all(selectedSources.map((item) => imageUrlForModelRequest(item)));
       const response = await fetch("/api/image/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

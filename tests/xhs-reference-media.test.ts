@@ -9,6 +9,10 @@ test("collected reference media keeps local asset keys and prefers local Blob UR
   assert.equal(existsSync(helperPath), true, "reference media helper is missing");
   const helper = await import(pathToFileURL(helperPath).href) as {
     normalizeXhsReferenceMedia(media: unknown): Array<{ url: string; localAssetKey?: string }>;
+    loadXhsReferenceMediaBlob(
+      media: { url: string; localAssetKey?: string },
+      store: { getBlob(assetKey: string): Promise<Blob | null> }
+    ): Promise<Blob | null>;
     loadXhsReferenceMediaObjectUrls(
       media: Array<{ url: string; localAssetKey?: string }>,
       store: { getBlob(assetKey: string): Promise<Blob | null> },
@@ -27,6 +31,13 @@ test("collected reference media keeps local asset keys and prefers local Blob UR
   }]);
 
   assert.equal(media[0].localAssetKey, assetKey);
+  assert.equal(
+    (await helper.loadXhsReferenceMediaBlob(
+      media[0],
+      { async getBlob(key) { return key === assetKey ? new Blob(["image"], { type: "image/jpeg" }) : null; } }
+    ))?.type,
+    "image/jpeg"
+  );
   const objectUrls = await helper.loadXhsReferenceMediaObjectUrls(
     media,
     { async getBlob(key) { return key === assetKey ? new Blob(["image"], { type: "image/jpeg" }) : null; } },
@@ -40,4 +51,13 @@ test("content page rehydrates collected reference media from IndexedDB", () => {
   assert.match(source, /createXhsTopicMediaStore\(\)/);
   assert.match(source, /loadXhsReferenceMediaObjectUrls/);
   assert.match(source, /resolvedReferenceMedia/);
+});
+
+test("content generation uses stored reference bytes and never silently drops failed references", () => {
+  const source = readFileSync("app/content/page.tsx", "utf8");
+  assert.match(source, /loadXhsReferenceMediaBlob/);
+  assert.match(source, /imageRefToUploadUrl\(asset\.storageUrl \?\? asset\.url\)/);
+  assert.match(source, /小红书参考图本地数据不存在，请重新通过插件采集/);
+  assert.doesNotMatch(source, /imageUrlForModelRequest\(item\.url\)\.catch\(\(\) => ""\)/);
+  assert.match(source, /selectedSources\.map\(\(item\) => imageUrlForModelRequest\(item\)\)/);
 });
