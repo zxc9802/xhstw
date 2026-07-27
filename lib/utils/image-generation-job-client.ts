@@ -21,7 +21,7 @@ const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(r
 
 export async function pollImageGenerationJob(jobId: string, options: ImageGenerationPollOptions = {}): Promise<unknown> {
   const fetcher = options.fetcher ?? fetch;
-  const intervalMs = options.intervalMs ?? 3000;
+  const intervalMs = options.intervalMs ?? 1500;
   const timeoutMs = options.timeoutMs ?? 6 * 60 * 1000;
   const sleep = options.sleep ?? defaultSleep;
   const now = options.now ?? Date.now;

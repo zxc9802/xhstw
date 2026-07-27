@@ -127,6 +127,26 @@ test("sends reference images to the project OpenAPI resources field", async () =
   });
 });
 
+test("background replacement guidance does not preserve the original background", async () => {
+  let requestBody: Record<string, unknown> | undefined;
+  await withProvider(async (_url, init) => {
+    requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return Response.json({
+      success: true,
+      data: { images: [{ url: "https://img.test/replaced-background.jpg" }] }
+    });
+  }, async () => {
+    await generateImage({
+      prompt: "换个人物，换个背景，换个服装",
+      sourceImageUrls: ["https://img.test/source.jpg"]
+    });
+
+    assert.match(String(requestBody?.prompt), /必须明显替换原背景/);
+    assert.match(String(requestBody?.prompt), /必须执行用户明确要求的修改/);
+    assert.doesNotMatch(String(requestBody?.prompt), /背景、文字位置、光线和风格尽量保持不变/);
+  });
+});
+
 test("uses Yunwu edits directly for reference images when configured for Yunwu", async () => {
   let receivedUrl = "";
   let editForm: FormData | undefined;

@@ -604,6 +604,7 @@ export default function ContentPage() {
   const [imageDraftHydrated, setImageDraftHydrated] = useState(false);
   const [previewImage, setPreviewImage] = useState<GeneratedImagePreview | null>(null);
   const [generatingImagePages, setGeneratingImagePages] = useState<Record<number, ImageProvider>>({});
+  const [generatingAllPages, setGeneratingAllPages] = useState(false);
   const [draggingImagePage, setDraggingImagePage] = useState<number | null>(null);
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [finishedPreviewOpen, setFinishedPreviewOpen] = useState(false);
@@ -1537,15 +1538,15 @@ export default function ContentPage() {
     });
   };
 
-  const generateSinglePlanImage = async (page: number) => {
+  const generateSinglePlanImage = async (page: number, announce = true): Promise<boolean> => {
     const plan = imagePlanItems.find((item) => item.page === page);
-    if (!plan) return;
+    if (!plan) return false;
     const count = Math.max(1, Math.min(10, Number(planCountMap[page] || "1")));
     const provider = planProviderMap[page] ?? imageProvider;
     const previousPageImageUrls = generatedImages.filter((image) => image.planPage === page).map(generatedImageKey);
     setGeneratingImagePages((items) => ({ ...items, [page]: provider }));
     setImagePlanItems((items) => items.map((item) => item.page === page ? { ...item, status: "generating" as const } : item));
-    setFeedback(`P${page} 正在调用 ${provider} 生成图片，真实模型通常需要 30-90 秒；其他页面可以继续生成。`);
+    if (announce) setFeedback(`P${page} 正在调用 ${provider} 生成图片，真实模型通常需要 30-90 秒；其他页面可以继续生成。`);
     try {
       const selectedSources = planSourceMap[page] ?? [];
       const sourceImageUrls = await Promise.all(selectedSources.map((item) => imageUrlForModelRequest(item)));
@@ -1570,7 +1571,7 @@ export default function ContentPage() {
           ? (result as { jobId: string }).jobId
           : "";
         if (!jobId) throw new Error("图片接口未返回任务 ID");
-        setFeedback(`P${page} 图片任务已提交，正在等待 ${provider} 生成结果。`);
+        if (announce) setFeedback(`P${page} 图片任务已提交，正在等待 ${provider} 生成结果。`);
         result = await pollImageGenerationJob(jobId);
       }
       const imageUrls = extractGeneratedImageUrls((result as { images?: unknown } | undefined)?.images ?? result);
@@ -1602,16 +1603,38 @@ export default function ContentPage() {
       }
       setGeneratedImages((items) => [...nextImages, ...items.filter((item) => item.planPage !== page)]);
       setImagePlanItems((items) => items.map((item) => item.page === page ? { ...item, status: "done" as const } : item));
-      setFeedback(imageUrls.length ? `P${page} 已通过 ${provider} 生成 ${nextImages.length} 张图片。` : `P${page} 已生成本地提示词占位图。`);
+      if (announce) setFeedback(imageUrls.length ? `P${page} 已通过 ${provider} 生成 ${nextImages.length} 张图片。` : `P${page} 已生成本地提示词占位图。`);
+      return true;
     } catch (error) {
       setImagePlanItems((items) => items.map((item) => item.page === page ? { ...item, status: "failed" as const } : item));
-      setFeedback(error instanceof Error ? `P${page} 生成失败：${error.message}` : `P${page} 生成失败。`);
+      if (announce) setFeedback(error instanceof Error ? `P${page} 生成失败：${error.message}` : `P${page} 生成失败。`);
+      return false;
     } finally {
       setGeneratingImagePages((items) => {
         const next = { ...items };
         delete next[page];
         return next;
       });
+    }
+  };
+
+  const generateAllPlanImages = async () => {
+    const pages = [...imagePlanItems]
+      .sort((a, b) => a.page - b.page)
+      .map((item) => item.page)
+      .filter((page) => !generatingImagePages[page]);
+    if (!pages.length || generatingAllPages) return;
+
+    setGeneratingAllPages(true);
+    setFeedback(`正在同时生成 ${pages.map((page) => `P${page}`).join("、")}，各页面会独立返回结果。`);
+    try {
+      const results = await Promise.all(pages.map((page) => generateSinglePlanImage(page, false)));
+      const failedPages = pages.filter((_, index) => !results[index]);
+      setFeedback(failedPages.length
+        ? `多页面生成完成：${pages.length - failedPages.length} 个成功，失败页面为 ${failedPages.map((page) => `P${page}`).join("、")}。`
+        : `多页面生成完成：P${pages.join("、P")} 均已生成。`);
+    } finally {
+      setGeneratingAllPages(false);
     }
   };
 
@@ -2310,6 +2333,20 @@ export default function ContentPage() {
                 </div>
                 <div className="min-h-0 min-w-0 overflow-y-auto pr-1">
                 <div className="space-y-5 pb-20">
+                <div className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-white/95 p-3 shadow-sm backdrop-blur">
+                  <div>
+                    <p className="text-sm font-medium text-ink">多页面并行生成</p>
+                    <p className="text-xs text-muted">可逐页生成，也可让 P1、P2、P3 等全部页面同时提交。</p>
+                  </div>
+                  <Button
+                    variant="primary"
+                    icon={<ImagePlus className="h-4 w-4" />}
+                    disabled={generatingAllPages || Object.keys(generatingImagePages).length > 0}
+                    onClick={() => void generateAllPlanImages()}
+                  >
+                    {generatingAllPages ? "全部页面生成中..." : `同时生成全部页面（${imagePlanItems.length}）`}
+                  </Button>
+                </div>
                 {[...imagePlanItems].sort((a, b) => a.page - b.page).map((item) => {
                   const selectedSources = planSourceMap[item.page] ?? [];
                   const planImages = generatedImages.filter((image) => image.planPage === item.page);
@@ -2346,7 +2383,7 @@ export default function ContentPage() {
                               <label className="block text-sm font-medium text-ink">图片比例<select value={planSizeMap[item.page] ?? "3:4"} onChange={(event) => setPlanSizeMap((items) => ({ ...items, [item.page]: event.target.value }))} className="mt-2 h-10 w-full rounded-md border border-line px-3 text-sm text-muted outline-none"><option>3:4</option><option>9:16</option><option>1:1</option><option>4:3</option><option>16:9</option></select></label>
                               <label className="block text-sm font-medium text-ink">模型<select value={pageProvider} onChange={(event) => setPlanProviderMap((items) => ({ ...items, [item.page]: event.target.value as ImageProvider }))} className="mt-2 h-10 w-full rounded-md border border-line px-3 text-sm text-muted outline-none">{imageProviders.map((provider) => <option key={provider}>{provider}</option>)}</select></label>
                             </div>
-                            <Button variant="primary" icon={<ImagePlus className="h-4 w-4" />} disabled={Boolean(pageGeneratingProvider)} onClick={() => void generateSinglePlanImage(item.page)}>
+                            <Button variant="primary" icon={<ImagePlus className="h-4 w-4" />} disabled={generatingAllPages || Boolean(pageGeneratingProvider)} onClick={() => void generateSinglePlanImage(item.page)}>
                               {pageGeneratingProvider ? "生成中..." : planImages.length ? "重新生成" : "生成图片"}
                             </Button>
                           </div>

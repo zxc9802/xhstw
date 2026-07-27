@@ -80,7 +80,7 @@ function image2Config(): Image2Config {
     secretKey: process.env.GPT_IMAGE2_SECRET_KEY || "",
     modelId: process.env.GPT_IMAGE2_MODEL_ID || "gpt-image2-low",
     resolution: process.env.GPT_IMAGE2_RESOLUTION || "1K",
-    pollIntervalMs: boundedInteger(process.env.GPT_IMAGE2_POLL_INTERVAL_MS, 3000, 0, 60000),
+    pollIntervalMs: boundedInteger(process.env.GPT_IMAGE2_POLL_INTERVAL_MS, 1500, 0, 60000),
     pollMaxAttempts: boundedInteger(process.env.GPT_IMAGE2_POLL_MAX_ATTEMPTS, 100, 1, 600)
   };
 }
@@ -242,6 +242,18 @@ function providerError(data: unknown, fallback: string) {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function referenceEditGuidance(prompt: string) {
+  const preserveBackground = /(?:背景|background).{0,8}(?:不变|保持|保留|不要改|勿改|unchanged|keep|preserve)/i.test(prompt);
+  const replaceBackground = /(?:换个?背景|更换.{0,4}背景|替换.{0,4}背景|修改.{0,4}背景|改变.{0,4}背景|背景.{0,4}(?:换成|改成|替换成)|(?:change|replace).{0,12}background)/i.test(prompt);
+  return [
+    "已随请求传入参考图。这是基于参考图的编辑任务，必须执行用户明确要求的修改，不能把参考图原样返回。",
+    "用户点名要更换的人物、背景、服装等元素都必须明显变化；只保留用户没有要求改变的元素，不要让通用保持要求覆盖用户指令。",
+    replaceBackground && !preserveBackground
+      ? "用户明确要求换背景：必须明显替换原背景，不得保留或复刻原背景；新背景应符合用户描述。"
+      : ""
+  ].filter(Boolean).join("\n");
 }
 
 function providerHeaders(config: Image2Config) {
@@ -529,7 +541,7 @@ export async function generateImage(input: unknown) {
     body.prompt || "生成一张适合内容生产中台图文页面的真实图片。",
     body.sourceImages?.length ? `参考素材名称：${body.sourceImages.join("、")}` : "",
     body.sourceImageUrls?.length
-      ? "已随请求传入参考图。请严格按用户提示处理参考图关系，只修改指定对象，其他构图、背景、文字位置、光线和风格尽量保持不变。"
+      ? referenceEditGuidance(body.prompt || "")
       : ""
   ].filter(Boolean).join("\n");
   const requestedCount = Math.max(1, Math.min(MAX_IMAGES_PER_RUN, Number(body.count) || 1));

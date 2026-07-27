@@ -34,6 +34,21 @@ test("polls queued and processing jobs until the image result is completed", asy
   ]);
 });
 
+test("uses the faster default polling interval", async () => {
+  const responses = [
+    { ok: true, data: { status: "processing" } },
+    { ok: true, data: { status: "completed", result: { images: ["image-1"] } } }
+  ];
+  const sleepIntervals: number[] = [];
+
+  await pollImageGenerationJob("fast-job", {
+    fetcher: async () => jsonResponse(responses.shift()),
+    sleep: async (ms) => { sleepIntervals.push(ms); }
+  });
+
+  assert.deepEqual(sleepIntervals, [1500]);
+});
+
 test("throws the recorded provider error for a failed job", async () => {
   await assert.rejects(
     pollImageGenerationJob("failed-job", {
