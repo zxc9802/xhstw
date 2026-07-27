@@ -5,7 +5,7 @@ import { ok } from "@/lib/utils/api";
 export const runtime = "nodejs";
 
 const IMAGE_PROXY_JOB_ID = "proxy";
-const IMAGE_PROXY_TIMEOUT_MS = 60_000;
+const IMAGE_PROXY_TIMEOUT_MS = 5 * 60_000;
 
 function imageProxySignature(source: string, secret: string) {
   return createHmac("sha256", secret).update(source).digest("base64url");
@@ -76,14 +76,14 @@ async function proxyImage(request: Request, secret: string) {
     if (!upstream.ok || !upstream.body || !contentType) {
       return Response.json({ ok: false, message: "服务商图片下载失败。" }, { status: 502 });
     }
+    const imageBytes = await upstream.arrayBuffer();
     const headers = new Headers({
       "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+      "Content-Length": String(imageBytes.byteLength),
       "Content-Type": contentType,
       "X-Content-Type-Options": "nosniff"
     });
-    const contentLength = upstream.headers.get("Content-Length");
-    if (contentLength) headers.set("Content-Length", contentLength);
-    return new Response(upstream.body, { status: 200, headers });
+    return new Response(imageBytes, { status: 200, headers });
   } catch {
     return Response.json({ ok: false, message: "服务商图片连接失败。" }, { status: 502 });
   }

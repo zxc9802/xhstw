@@ -389,14 +389,31 @@ test("GET uses the forwarded public origin instead of Zeabur's internal listener
   assert.equal(imageUrl.pathname, "/api/image/generate/proxy");
 });
 
-test("proxy GET streams a correctly signed provider image", async (t) => {
+test("proxy GET buffers a correctly signed provider image before returning it", async (t) => {
   useImageProxySecret(t);
   const proxyUrl = await createImage2ProxyUrl();
   const previousFetch = globalThis.fetch;
   let fetchedUrl = "";
+  let chunksRead = 0;
+  let upstreamFinished = false;
   globalThis.fetch = async (input) => {
     fetchedUrl = String(input);
-    return new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), {
+    return new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (chunksRead === 0) {
+          controller.enqueue(Uint8Array.from([0xff, 0xd8]));
+          chunksRead += 1;
+          return;
+        }
+        if (chunksRead === 1) {
+          controller.enqueue(Uint8Array.from([0xff, 0xd9]));
+          chunksRead += 1;
+          return;
+        }
+        upstreamFinished = true;
+        controller.close();
+      }
+    }), {
       headers: { "Content-Type": "image/jpeg" }
     });
   };
@@ -410,8 +427,10 @@ test("proxy GET streams a correctly signed provider image", async (t) => {
 
   assert.equal(response.status, 200);
   assert.equal(fetchedUrl, "http://provider.test/generated/cat.jpg");
+  assert.equal(upstreamFinished, true);
   assert.equal(response.headers.get("Content-Type"), "image/jpeg");
   assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff");
+  assert.equal(response.headers.get("Content-Length"), "4");
   assert.deepEqual([...new Uint8Array(await response.arrayBuffer())], [0xff, 0xd8, 0xff, 0xd9]);
 });
 
