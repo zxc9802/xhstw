@@ -1,13 +1,24 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { NextRequest } from "next/server";
 
 import { GET } from "../app/api/image/reference/[token]/route";
 import {
   IMAGE_REFERENCE_TTL_MS,
   publishImageReferences
 } from "../lib/adapters/image-reference-store";
+import { middleware } from "../middleware";
 
 const PNG_DATA_URL = "data:image/png;base64,iVBORw0KGgo=";
+
+test("allows image providers to fetch temporary references without an SSO session", async () => {
+  const response = await middleware(
+    new NextRequest("https://xhstw.qycm.top/api/image/reference/test-token")
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-middleware-next"), "1");
+});
 
 test("streams a stored reference with image safety headers", async () => {
   const published = publishImageReferences([PNG_DATA_URL], "https://app.test");
