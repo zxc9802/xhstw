@@ -1,6 +1,6 @@
 "use client";
 
-import { type DragEvent, type ReactNode, useEffect, useMemo, useState } from "react";
+import { type DragEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { FileText, FolderOpen, ImagePlus, Link2, Sparkles, Trash2, UploadCloud } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
@@ -15,7 +15,7 @@ import { appendMaterialLibrary, createLibraryAsset, getAssetBlob, readMaterialLi
 import { loadVersionedState, saveVersionedState } from "@/lib/utils/local-state";
 import { formatProductCopyContext, readProductLibrary, type ProductLibraryItem } from "@/lib/utils/product-library";
 import { loadGeneratedImages, saveGeneratedImages } from "@/lib/utils/image-generation-history";
-import { pollImageGenerationJob } from "@/lib/utils/image-generation-job-client";
+import { imageGenerationWarnings, pollImageGenerationJob } from "@/lib/utils/image-generation-job-client";
 import { addKeywordValues, removeKeywordValue, reorderAssignedImages, withoutSelectedKeywords } from "@/lib/utils/production-workflow";
 import { loadXhsReferenceMediaBlob, loadXhsReferenceMediaObjectUrls, normalizeXhsReferenceMedia, resolveXhsReferenceMedia, type XhsReferenceMedia } from "@/lib/xhs-reference-media";
 import { createXhsTopicMediaStore } from "@/lib/xhs-topic-media-store";
@@ -25,6 +25,7 @@ import type { VideoProvider, VideoScriptRow, VideoShotPlan } from "@/types/video
 type MainTab = "图文内容" | "视频内容";
 type ImageStep = "发布文案生成" | "图片生成";
 type VideoStep = "发布文案生成" | "视频脚本生成" | "视频素材生成";
+type ImagePageGenerationOutcome = { success: boolean; warning?: string };
 
 const imageSteps: ImageStep[] = ["发布文案生成", "图片生成"];
 const videoSteps: VideoStep[] = ["发布文案生成", "视频脚本生成", "视频素材生成"];
@@ -605,6 +606,7 @@ export default function ContentPage() {
   const [previewImage, setPreviewImage] = useState<GeneratedImagePreview | null>(null);
   const [generatingImagePages, setGeneratingImagePages] = useState<Record<number, ImageProvider>>({});
   const [generatingAllPages, setGeneratingAllPages] = useState(false);
+  const imagePageGenerationLock = useRef(false);
   const [draggingImagePage, setDraggingImagePage] = useState<number | null>(null);
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [finishedPreviewOpen, setFinishedPreviewOpen] = useState(false);
@@ -1538,9 +1540,14 @@ export default function ContentPage() {
     });
   };
 
-  const generateSinglePlanImage = async (page: number, announce = true): Promise<boolean> => {
+  const generateSinglePlanImage = async (page: number, announce = true): Promise<ImagePageGenerationOutcome> => {
+    if (imagePageGenerationLock.current) {
+      if (announce) setFeedback("已有页面正在生成，请等待当前页面完成后再生成下一页。");
+      return { success: false };
+    }
     const plan = imagePlanItems.find((item) => item.page === page);
-    if (!plan) return false;
+    if (!plan) return { success: false };
+    imagePageGenerationLock.current = true;
     const count = Math.max(1, Math.min(10, Number(planCountMap[page] || "1")));
     const provider = planProviderMap[page] ?? imageProvider;
     const previousPageImageUrls = generatedImages.filter((image) => image.planPage === page).map(generatedImageKey);
@@ -1574,6 +1581,7 @@ export default function ContentPage() {
         if (announce) setFeedback(`P${page} 图片任务已提交，正在等待 ${provider} 生成结果。`);
         result = await pollImageGenerationJob(jobId);
       }
+      const warnings = imageGenerationWarnings(result);
       const imageUrls = extractGeneratedImageUrls((result as { images?: unknown } | undefined)?.images ?? result);
       if (!imageUrls.length && !provider.includes("仅生成提示词")) throw new Error("模型接口已返回，但未解析到图片 URL / base64。请查看服务日志中的 raw 返回格式。");
       const generatedAt = Date.now();
@@ -1603,13 +1611,18 @@ export default function ContentPage() {
       }
       setGeneratedImages((items) => [...nextImages, ...items.filter((item) => item.planPage !== page)]);
       setImagePlanItems((items) => items.map((item) => item.page === page ? { ...item, status: "done" as const } : item));
-      if (announce) setFeedback(imageUrls.length ? `P${page} 已通过 ${provider} 生成 ${nextImages.length} 张图片。` : `P${page} 已生成本地提示词占位图。`);
-      return true;
+      const completionMessage = imageUrls.length
+        ? `P${page} 已通过 ${provider} 生成 ${nextImages.length} 张图片。`
+        : `P${page} 已生成本地提示词占位图。`;
+      const warning = warnings.join("；");
+      if (announce) setFeedback(warning ? `${completionMessage} 部分图片未完成：${warning}` : completionMessage);
+      return { success: true, ...(warning ? { warning } : {}) };
     } catch (error) {
       setImagePlanItems((items) => items.map((item) => item.page === page ? { ...item, status: "failed" as const } : item));
       if (announce) setFeedback(error instanceof Error ? `P${page} 生成失败：${error.message}` : `P${page} 生成失败。`);
-      return false;
+      return { success: false };
     } finally {
+      imagePageGenerationLock.current = false;
       setGeneratingImagePages((items) => {
         const next = { ...items };
         delete next[page];
@@ -1619,6 +1632,10 @@ export default function ContentPage() {
   };
 
   const generateAllPlanImages = async () => {
+    if (imagePageGenerationLock.current) {
+      setFeedback("已有页面正在生成，请等待当前页面完成后再开始全部页面任务。");
+      return;
+    }
     const pages = [...imagePlanItems]
       .sort((a, b) => a.page - b.page)
       .map((item) => item.page)
@@ -1626,13 +1643,20 @@ export default function ContentPage() {
     if (!pages.length || generatingAllPages) return;
 
     setGeneratingAllPages(true);
-    setFeedback(`正在同时生成 ${pages.map((page) => `P${page}`).join("、")}，各页面会独立返回结果。`);
     try {
-      const results = await Promise.all(pages.map((page) => generateSinglePlanImage(page, false)));
-      const failedPages = pages.filter((_, index) => !results[index]);
-      setFeedback(failedPages.length
+      const results: ImagePageGenerationOutcome[] = [];
+      for (const [index, page] of pages.entries()) {
+        setFeedback(`正在依次生成 P${page}（${index + 1}/${pages.length}），完成后自动开始下一页。`);
+        results.push(await generateSinglePlanImage(page, false));
+      }
+      const failedPages = pages.filter((_, index) => !results[index].success);
+      const partialWarnings = results.flatMap((result, index) => result.warning ? [`P${pages[index]}：${result.warning}`] : []);
+      const completionMessage = failedPages.length
         ? `多页面生成完成：${pages.length - failedPages.length} 个成功，失败页面为 ${failedPages.map((page) => `P${page}`).join("、")}。`
-        : `多页面生成完成：P${pages.join("、P")} 均已生成。`);
+        : `多页面生成完成：P${pages.join("、P")} 均已生成。`;
+      setFeedback(partialWarnings.length
+        ? `${completionMessage} 部分图片未完成：${partialWarnings.join("；")}`
+        : completionMessage);
     } finally {
       setGeneratingAllPages(false);
     }
@@ -2335,8 +2359,8 @@ export default function ContentPage() {
                 <div className="space-y-5 pb-20">
                 <div className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-white/95 p-3 shadow-sm backdrop-blur">
                   <div>
-                    <p className="text-sm font-medium text-ink">多页面并行生成</p>
-                    <p className="text-xs text-muted">可逐页生成，也可让 P1、P2、P3 等全部页面同时提交。</p>
+                    <p className="text-sm font-medium text-ink">多页面顺序生成</p>
+                    <p className="text-xs text-muted">一次只生成一个 P 页面，当前页面完成后自动开始下一页。</p>
                   </div>
                   <Button
                     variant="primary"
@@ -2344,7 +2368,7 @@ export default function ContentPage() {
                     disabled={generatingAllPages || Object.keys(generatingImagePages).length > 0}
                     onClick={() => void generateAllPlanImages()}
                   >
-                    {generatingAllPages ? "全部页面生成中..." : `同时生成全部页面（${imagePlanItems.length}）`}
+                    {generatingAllPages ? "全部页面依次生成中..." : `依次生成全部页面（${imagePlanItems.length}）`}
                   </Button>
                 </div>
                 {[...imagePlanItems].sort((a, b) => a.page - b.page).map((item) => {
@@ -2383,7 +2407,7 @@ export default function ContentPage() {
                               <label className="block text-sm font-medium text-ink">图片比例<select value={planSizeMap[item.page] ?? "3:4"} onChange={(event) => setPlanSizeMap((items) => ({ ...items, [item.page]: event.target.value }))} className="mt-2 h-10 w-full rounded-md border border-line px-3 text-sm text-muted outline-none"><option>3:4</option><option>9:16</option><option>1:1</option><option>4:3</option><option>16:9</option></select></label>
                               <label className="block text-sm font-medium text-ink">模型<select value={pageProvider} onChange={(event) => setPlanProviderMap((items) => ({ ...items, [item.page]: event.target.value as ImageProvider }))} className="mt-2 h-10 w-full rounded-md border border-line px-3 text-sm text-muted outline-none">{imageProviders.map((provider) => <option key={provider}>{provider}</option>)}</select></label>
                             </div>
-                            <Button variant="primary" icon={<ImagePlus className="h-4 w-4" />} disabled={generatingAllPages || Boolean(pageGeneratingProvider)} onClick={() => void generateSinglePlanImage(item.page)}>
+                            <Button variant="primary" icon={<ImagePlus className="h-4 w-4" />} disabled={generatingAllPages || Object.keys(generatingImagePages).length > 0} onClick={() => void generateSinglePlanImage(item.page)}>
                               {pageGeneratingProvider ? "生成中..." : planImages.length ? "重新生成" : "生成图片"}
                             </Button>
                           </div>

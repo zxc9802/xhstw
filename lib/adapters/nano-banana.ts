@@ -108,7 +108,7 @@ export async function generateWithNanoBanana(input: unknown) {
   });
 
   const count = Math.max(1, Math.min(10, Number(body.count) || 1));
-  const results = await Promise.all(Array.from({ length: count }, async (_, index) => {
+  const results = await Promise.allSettled(Array.from({ length: count }, async (_, index) => {
     const billing = await reserveMainAppCredits({
       operation: "image-generate",
       providerId: "yunwu",
@@ -138,11 +138,25 @@ export async function generateWithNanoBanana(input: unknown) {
     }
   }));
 
-  const images = results.flatMap(flattenImageUrls).slice(0, count).map((url, index) => ({
+  const successfulResults = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+  const warnings = results.flatMap((result, index) => result.status === "rejected"
+    ? [`第 ${index + 1} 张生成失败：${result.reason instanceof Error ? result.reason.message : String(result.reason)}`]
+    : []);
+  const images = successfulResults.flatMap(flattenImageUrls).slice(0, count).map((url, index) => ({
     id: `nano_${Date.now()}_${index}`,
     url,
     provider: "Nano Banana 2"
   }));
-  if (!images.length) console.warn("[nano-banana] no image url parsed", JSON.stringify(results).slice(0, 1200));
-  return { provider: "Nano Banana 2", model: NANO_BANANA_MODEL, input: body, images, raw: images.length ? undefined : results };
+  if (!images.length) {
+    if (warnings.length) throw new Error(warnings.join("；"));
+    console.warn("[nano-banana] no image url parsed", JSON.stringify(successfulResults).slice(0, 1200));
+    throw new Error("Nano Banana 2 未返回可解析的图片结果");
+  }
+  return {
+    provider: "Nano Banana 2",
+    model: NANO_BANANA_MODEL,
+    input: body,
+    images,
+    ...(warnings.length ? { warnings } : {})
+  };
 }

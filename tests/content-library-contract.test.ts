@@ -12,6 +12,13 @@ test("finished library exports real images to the selected local folder", () => 
   assert.equal(source.includes("当前为本地 mock 导出"), false);
 });
 
+test("each exported work includes its title and copy as text", () => {
+  assert.equal(source.includes("utf8TextBlob"), true);
+  assert.equal(source.includes('name: "标题和文案.txt"'), true);
+  assert.equal(source.includes("标题：${item.title}"), true);
+  assert.equal(source.includes("文案：\\n${item.body}"), true);
+});
+
 test("card and detail images open one top-level preview", () => {
   assert.equal(source.includes("previewImageUrl"), true);
   assert.equal(source.includes("setPreviewImageUrl"), true);

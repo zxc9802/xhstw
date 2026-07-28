@@ -10,7 +10,7 @@ import { PlatformBadge } from "@/components/ui/PlatformBadge";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { feishuSyncPlatformOptions } from "@/lib/constants/platforms";
 import { accounts as productionAccounts } from "@/lib/mock/data";
-import { imageExtension, safeFileName, writeBlobFiles, type WritableDirectoryLike } from "@/lib/utils/browser-file-export";
+import { imageExtension, safeFileName, utf8TextBlob, writeBlobFiles, type WritableDirectoryLike } from "@/lib/utils/browser-file-export";
 import { cn } from "@/lib/utils/cn";
 import { imageRefToUploadUrl, isStoredImageRef, resolveImageRefs } from "@/lib/utils/image-store";
 import { selectExportTargets } from "@/lib/utils/production-workflow";
@@ -434,16 +434,13 @@ export default function ContentLibraryPage() {
       const rootDirectory = pickerWindow.showDirectoryPicker ? await pickerWindow.showDirectoryPicker() : null;
       let saved = 0;
       let failed = 0;
-      let skipped = 0;
 
       for (const [itemIndex, item] of targets.entries()) {
         const imageUrls = realMediaUrls(item);
-        if (!imageUrls.length) {
-          skipped += 1;
-          continue;
-        }
-
-        const blobs = [];
+        const blobs = [{
+          name: "标题和文案.txt",
+          blob: utf8TextBlob(`标题：${item.title}\n\n文案：\n${item.body}`)
+        }];
         for (const [imageIndex, imageUrl] of imageUrls.entries()) {
           try {
             const blob = await finishedImageBlob(imageUrl);
@@ -454,11 +451,6 @@ export default function ContentLibraryPage() {
           } catch {
             failed += 1;
           }
-        }
-
-        if (!blobs.length) {
-          skipped += 1;
-          continue;
         }
 
         if (rootDirectory) {
@@ -480,8 +472,8 @@ export default function ContentLibraryPage() {
       }
 
       setFeedback(rootDirectory
-        ? `已导出 ${saved} 张真实图片到 ${rootDirectory.name}${failed ? `，${failed} 张失败` : ""}${skipped ? `，跳过 ${skipped} 条无图内容` : ""}。`
-        : `当前浏览器不支持直接写入文件夹，已下载 ${saved} 张真实图片${failed ? `，${failed} 张失败` : ""}${skipped ? `，跳过 ${skipped} 条无图内容` : ""}。`);
+        ? `已导出 ${saved} 个文件到 ${rootDirectory.name}，每条作品文件夹均包含“标题和文案.txt”${failed ? `，${failed} 个文件失败` : ""}。`
+        : `当前浏览器不支持直接写入文件夹，已下载 ${saved} 个文件，每条作品均包含标题和文案文本${failed ? `，${failed} 个文件失败` : ""}。`);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       setFeedback(error instanceof Error ? `本地导出失败：${error.message}` : "本地导出失败，请重试。");

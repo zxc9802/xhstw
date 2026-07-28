@@ -4,7 +4,9 @@ export const IMAGE_GENERATION_RESULT_TTL_MS = 30 * 60 * 1000;
 export const MAX_IMAGE_GENERATION_RESULT_BYTES = 20 * 1024 * 1024;
 export const MAX_IMAGE_GENERATION_RESULT_SET_BYTES = 100 * 1024 * 1024;
 const MAX_CACHED_IMAGE_GENERATION_RESULT_BYTES = 256 * 1024 * 1024;
-const IMAGE_GENERATION_RESULT_DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
+export const IMAGE_GENERATION_RESULT_DOWNLOAD_TIMEOUT_MS = 2 * 60 * 1000;
+export const IMAGE_GENERATION_RESULT_DOWNLOAD_MAX_ATTEMPTS = 3;
+export const IMAGE_GENERATION_RESULT_DOWNLOAD_CONCURRENCY = 2;
 
 type StoredImageGenerationResult = {
   token: string;
@@ -78,6 +80,50 @@ async function downloadImage(source: string) {
   }
 }
 
+function retryableDownloadError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /timeout|timed out|terminated|aborted|fetch failed|econnreset|econnrefused|socket hang up|HTTP (?:408|425|429|5\d\d)/i.test(message);
+}
+
+async function waitBeforeDownloadRetry(attempt: number) {
+  if (process.env.NODE_TEST_CONTEXT) return;
+  await new Promise((resolve) => setTimeout(resolve, attempt * 1_000));
+}
+
+async function downloadImageWithRetry(source: string) {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= IMAGE_GENERATION_RESULT_DOWNLOAD_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await downloadImage(source);
+    } catch (error) {
+      lastError = error;
+      if (attempt === IMAGE_GENERATION_RESULT_DOWNLOAD_MAX_ATTEMPTS || !retryableDownloadError(error)) {
+        throw error;
+      }
+      await waitBeforeDownloadRetry(attempt);
+    }
+  }
+  throw lastError;
+}
+
+async function settleWithConcurrency<T>(tasks: Array<() => Promise<T>>, concurrency: number) {
+  const results: PromiseSettledResult<T>[] = [];
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(concurrency, tasks.length) }, async () => {
+    while (nextIndex < tasks.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      try {
+        results[currentIndex] = { status: "fulfilled", value: await tasks[currentIndex]() };
+      } catch (reason) {
+        results[currentIndex] = { status: "rejected", reason };
+      }
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 export async function cacheImageGenerationResult(result: unknown, origin: string) {
   if (!result || typeof result !== "object" || Array.isArray(result)) return result;
   const record = result as Record<string, unknown>;
@@ -91,10 +137,25 @@ export async function cacheImageGenerationResult(result: unknown, origin: string
   if (!remoteImages.length) return result;
 
   const publicOrigin = normalizedResultOrigin(origin);
-  const downloaded = await Promise.all(remoteImages.map(async ({ index, url }) => ({
-    index,
-    ...(await downloadImage(url))
-  })));
+  const downloadResults = await settleWithConcurrency(
+    remoteImages.map(({ index, url }) => async () => ({
+      index,
+      ...(await downloadImageWithRetry(url))
+    })),
+    IMAGE_GENERATION_RESULT_DOWNLOAD_CONCURRENCY
+  );
+  const downloaded = downloadResults.flatMap((download) => download.status === "fulfilled" ? [download.value] : []);
+  const failedDownloads = downloadResults.flatMap((download, downloadIndex) => download.status === "rejected"
+    ? [{
+        index: remoteImages[downloadIndex].index,
+        error: download.reason instanceof Error ? download.reason.message : String(download.reason)
+      }]
+    : []);
+  const failedIndexes = new Set(failedDownloads.map((download) => download.index));
+  const remainingImages = record.images.filter((_, index) => !failedIndexes.has(index));
+  if (!remainingImages.length && failedDownloads.length) {
+    throw new Error(failedDownloads[0].error);
+  }
   const totalBytes = downloaded.reduce((sum, image) => sum + image.bytes.byteLength, 0);
   if (totalBytes > MAX_IMAGE_GENERATION_RESULT_SET_BYTES) {
     throw new Error("单次生成的成品图片总大小超过 100 MB。");
@@ -119,6 +180,16 @@ export async function cacheImageGenerationResult(result: unknown, origin: string
     replacements.set(image.index, new URL(`/api/image/result/${token}`, publicOrigin).toString());
   }
 
+  const previousWarnings = Array.isArray(record.warnings)
+    ? record.warnings.filter((warning): warning is string => typeof warning === "string")
+    : [];
+  const warnings = failedDownloads.length
+    ? [
+        ...previousWarnings,
+        `${failedDownloads.length} 张成品图片后台下载失败，已保留其余 ${remainingImages.length} 张：${failedDownloads[0].error}`
+      ]
+    : previousWarnings;
+
   return {
     ...record,
     images: record.images.map((image, index) => {
@@ -126,7 +197,8 @@ export async function cacheImageGenerationResult(result: unknown, origin: string
       return url && image && typeof image === "object"
         ? { ...(image as Record<string, unknown>), url }
         : image;
-    })
+    }).filter((_, index) => !failedIndexes.has(index)),
+    ...(warnings.length ? { warnings } : {})
   };
 }
 

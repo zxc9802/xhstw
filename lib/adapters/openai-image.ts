@@ -537,7 +537,7 @@ export async function generateImage(input: unknown) {
   }
 
   const prompt = [
-    "请生成真实摄影质感的图片，优先像手机或相机拍摄的真实产品图/生活场景图。避免假海报感、3D 渲染感、塑料质感、过度磨皮、卡通插画、AI 拼贴感和虚假品牌包装。光线自然，材质真实，产品边缘清晰。",
+    "请生成高画质但未经精修的真实照片，呈现普通人使用原生手机或相机直出的素人随手拍质感。使用自然环境光和普通生活场景，保留真实皮肤纹理、毛孔和轻微瑕疵，手部与产品比例自然，材质和产品标签清晰可信。禁止商业棚拍、广告大片、过度磨皮、塑料皮肤、3D 渲染、卡通插画、AI 拼贴、虚假包装和过度锐化。",
     body.prompt || "生成一张适合内容生产中台图文页面的真实图片。",
     body.sourceImages?.length ? `参考素材名称：${body.sourceImages.join("、")}` : "",
     body.sourceImageUrls?.length

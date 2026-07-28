@@ -35,6 +35,10 @@ export function imageExtension(blob: Blob): "png" | "jpg" | "webp" | "gif" {
   return "png";
 }
 
+export function utf8TextBlob(value: string) {
+  return new Blob([`\uFEFF${value}`], { type: "text/plain;charset=utf-8" });
+}
+
 export async function writeBlobFiles(directory: WritableDirectoryLike, files: BlobFile[]) {
   let saved = 0;
   const errors: string[] = [];

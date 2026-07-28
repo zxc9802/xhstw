@@ -6,6 +6,9 @@ import { GET as GET_REFERENCE } from "../app/api/image/reference/[token]/route";
 import { GET as GET_RESULT } from "../app/api/image/result/[token]/route";
 import {
   getImageGenerationResult,
+  IMAGE_GENERATION_RESULT_DOWNLOAD_CONCURRENCY,
+  IMAGE_GENERATION_RESULT_DOWNLOAD_MAX_ATTEMPTS,
+  IMAGE_GENERATION_RESULT_DOWNLOAD_TIMEOUT_MS,
   IMAGE_GENERATION_RESULT_TTL_MS
 } from "../lib/adapters/image-generation-result-store";
 
@@ -88,6 +91,12 @@ async function waitForJob(jobId: string) {
   }
   throw new Error("job did not finish");
 }
+
+test("uses the requested generated-image download policy", () => {
+  assert.equal(IMAGE_GENERATION_RESULT_DOWNLOAD_TIMEOUT_MS, 2 * 60 * 1000);
+  assert.equal(IMAGE_GENERATION_RESULT_DOWNLOAD_MAX_ATTEMPTS, 3);
+  assert.equal(IMAGE_GENERATION_RESULT_DOWNLOAD_CONCURRENCY, 2);
+});
 
 test("POST returns 202 with a queued image generation job", async (t) => {
   useMockImageProvider(t);
@@ -204,6 +213,139 @@ test("records a provider image download error before completing the job", async 
   assert.equal(failed.status, "failed");
   assert.equal(failed.result, undefined);
   assert.match(failed.error || "", /成品图片后台下载失败：HTTP 524/);
+});
+
+test("retries a transient image download and completes on the third attempt", async (t) => {
+  useImage2Provider(t);
+  const previousFetch = globalThis.fetch;
+  let downloadAttempts = 0;
+  globalThis.fetch = async (url) => {
+    if (String(url) === IMAGE2_ENV.GPT_IMAGE2_API_URL) {
+      return Response.json({
+        success: true,
+        data: { images: [{ url: "https://img.test/transient.jpg" }] }
+      });
+    }
+    if (String(url) === "https://img.test/transient.jpg") {
+      downloadAttempts += 1;
+      if (downloadAttempts < 3) {
+        throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+      }
+      return new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), {
+        headers: { "Content-Type": "image/jpeg" }
+      });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+  });
+
+  const response = await POST(new Request("https://app.test/api/image/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider: "Image 2.0", prompt: "test", count: 1 })
+  }));
+  const created = await response.json();
+  const completed = await waitForJob(created.data.jobId);
+
+  assert.equal(completed.status, "completed");
+  assert.equal(downloadAttempts, 3);
+  assert.equal(
+    (completed.result as { images?: unknown[] })?.images?.length,
+    1
+  );
+});
+
+test("keeps successfully cached images when one provider image remains unavailable", async (t) => {
+  useImage2Provider(t);
+  const previousFetch = globalThis.fetch;
+  let providerRequests = 0;
+  let failedDownloadAttempts = 0;
+  globalThis.fetch = async (url) => {
+    if (String(url) === IMAGE2_ENV.GPT_IMAGE2_API_URL) {
+      providerRequests += 1;
+      return Response.json({
+        success: true,
+        data: {
+          images: [{
+            url: providerRequests === 1
+              ? "https://img.test/available.jpg"
+              : "https://img.test/unavailable-partial.jpg"
+          }]
+        }
+      });
+    }
+    if (String(url) === "https://img.test/available.jpg") {
+      return new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), {
+        headers: { "Content-Type": "image/jpeg" }
+      });
+    }
+    if (String(url) === "https://img.test/unavailable-partial.jpg") {
+      failedDownloadAttempts += 1;
+      return new Response(null, { status: 524 });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+  });
+
+  const response = await POST(new Request("https://app.test/api/image/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider: "Image 2.0", prompt: "test", count: 2 })
+  }));
+  const created = await response.json();
+  const completed = await waitForJob(created.data.jobId);
+  const result = completed.result as { images?: unknown[]; warnings?: string[] };
+
+  assert.equal(completed.status, "completed");
+  assert.equal(result.images?.length, 1);
+  assert.equal(failedDownloadAttempts, 3);
+  assert.match(result.warnings?.[0] || "", /1 张成品图片后台下载失败，已保留其余 1 张/);
+});
+
+test("downloads generated images with a maximum concurrency of two", async (t) => {
+  useImage2Provider(t);
+  const previousFetch = globalThis.fetch;
+  let providerRequests = 0;
+  let activeDownloads = 0;
+  let maximumActiveDownloads = 0;
+  globalThis.fetch = async (url) => {
+    if (String(url) === IMAGE2_ENV.GPT_IMAGE2_API_URL) {
+      providerRequests += 1;
+      return Response.json({
+        success: true,
+        data: { images: [{ url: `https://img.test/concurrency-${providerRequests}.jpg` }] }
+      });
+    }
+    if (/^https:\/\/img\.test\/concurrency-\d+\.jpg$/.test(String(url))) {
+      activeDownloads += 1;
+      maximumActiveDownloads = Math.max(maximumActiveDownloads, activeDownloads);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      activeDownloads -= 1;
+      return new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), {
+        headers: { "Content-Type": "image/jpeg" }
+      });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+  });
+
+  const response = await POST(new Request("https://app.test/api/image/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider: "Image 2.0", prompt: "test", count: 3 })
+  }));
+  const created = await response.json();
+  const completed = await waitForJob(created.data.jobId);
+
+  assert.equal(completed.status, "completed");
+  assert.equal((completed.result as { images?: unknown[] })?.images?.length, 3);
+  assert.equal(maximumActiveDownloads, 2);
 });
 
 test("returns 404 when a cached result image is unknown", async () => {

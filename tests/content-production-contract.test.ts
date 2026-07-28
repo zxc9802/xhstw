@@ -54,11 +54,15 @@ test("generated image bytes are persisted immediately instead of retaining provi
   assert.equal(source.includes("storageUrl"), true);
 });
 
-test("all image-plan pages can be submitted concurrently", () => {
+test("image-plan pages are generated one at a time", () => {
   assert.equal(source.includes("const generateAllPlanImages = async () =>"), true);
-  assert.equal(source.includes("Promise.all(pages.map((page) => generateSinglePlanImage(page, false)))"), true);
-  assert.equal(source.includes("同时生成全部页面"), true);
-  assert.equal(source.includes("正在同时生成"), true);
+  assert.equal(source.includes("for (const [index, page] of pages.entries())"), true);
+  assert.equal(source.includes("await generateSinglePlanImage(page, false)"), true);
+  assert.equal(source.includes("Promise.all(pages.map((page) => generateSinglePlanImage(page, false)))"), false);
+  assert.equal(source.includes("if (imagePageGenerationLock.current)"), true);
+  assert.equal(source.includes("disabled={generatingAllPages || Object.keys(generatingImagePages).length > 0}"), true);
+  assert.equal(source.includes("依次生成全部页面"), true);
+  assert.equal(source.includes("正在依次生成"), true);
 });
 
 test("finished preview starts empty and supports manual upload and ordering", () => {
