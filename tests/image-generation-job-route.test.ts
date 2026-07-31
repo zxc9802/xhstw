@@ -476,15 +476,20 @@ test("routes nanobanan新 through the aggregation API and cleans temporary refer
       assert.equal(reference.status, 200);
       return Response.json({ success: true, data: { taskId: "nano-new-task" } });
     }
-    assert.equal(String(url), "https://aggregation.test/openApi/queryResult");
-    queryCalls += 1;
-    return Response.json({
-      success: true,
-      data: {
-        taskId: "nano-new-task",
-        status: 2,
-        images: [{ url: "https://img.test/nanobanana-new.jpg" }]
-      }
+    if (String(url) === "https://aggregation.test/openApi/queryResult") {
+      queryCalls += 1;
+      return Response.json({
+        success: true,
+        data: {
+          taskId: "nano-new-task",
+          status: 2,
+          images: [{ url: "https://img.test/nanobanana-new.jpg" }]
+        }
+      });
+    }
+    assert.equal(String(url), "https://img.test/nanobanana-new.jpg");
+    return new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), {
+      headers: { "Content-Type": "image/jpeg" }
     });
   };
   t.after(() => {
