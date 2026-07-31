@@ -10,7 +10,10 @@ import {
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  if (pathname === "/api/sso/callback") {
+  if (
+    pathname === "/api/sso/callback"
+    || pathname.startsWith("/api/image/reference/")
+  ) {
     return NextResponse.next();
   }
 

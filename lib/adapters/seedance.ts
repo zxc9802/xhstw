@@ -1,4 +1,9 @@
 import { videoScriptRows, videoShots } from "@/lib/mock/data";
+import {
+  MainAppBillingError,
+  parseOpenAiUsage,
+  reserveMainAppCredits,
+} from "@/lib/main-app-billing";
 
 type Message = {
   role: "system" | "user";
@@ -23,29 +28,49 @@ async function requestOpenAI(messages: Message[]) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error("缺少 OPENAI_API_KEY");
 
-  const response = await fetch(`${OPENAI_BASE_URL.replace(/\/$/, "")}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model: OPENAI_SCRIPT_MODEL,
-      messages,
-      temperature: 0.7,
-      response_format: { type: "json_object" }
-    })
+  const maxOutputTokens = 4096;
+  const estimatedInputTokens = new TextEncoder().encode(JSON.stringify(messages)).length;
+  const billing = await reserveMainAppCredits({
+    operation: "video-script",
+    providerId: "openai",
+    model: OPENAI_SCRIPT_MODEL,
+    estimatedInputTokens,
+    maxOutputTokens,
   });
+  try {
+    const response = await fetch(`${OPENAI_BASE_URL.replace(/\/$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: OPENAI_SCRIPT_MODEL,
+        messages,
+        temperature: 0.7,
+        response_format: { type: "json_object" },
+        max_tokens: maxOutputTokens,
+      })
+    });
 
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const message = typeof data?.error?.message === "string" ? data.error.message : `OpenAI 请求失败：${response.status}`;
-    throw new Error(message);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = typeof data?.error?.message === "string" ? data.error.message : `OpenAI 请求失败：${response.status}`;
+      throw new Error(message);
+    }
+
+    const content = data?.choices?.[0]?.message?.content;
+    if (typeof content !== "string" || !content.trim()) throw new Error("OpenAI 未返回有效内容");
+    await billing.settleText(parseOpenAiUsage(data, {
+      inputTokens: estimatedInputTokens,
+      outputText: content,
+    }));
+    return JSON.parse(extractJsonObject(content)) as Record<string, unknown>;
+  } catch (error) {
+    if (error instanceof MainAppBillingError) throw error;
+    await billing.release();
+    throw error;
   }
-
-  const content = data?.choices?.[0]?.message?.content;
-  if (typeof content !== "string" || !content.trim()) throw new Error("OpenAI 未返回有效内容");
-  return JSON.parse(extractJsonObject(content)) as Record<string, unknown>;
 }
 
 function normalizeScriptRows(rows: unknown) {
@@ -85,6 +110,7 @@ export async function parseVideo(input: unknown) {
     ]);
     return { provider: "gpt", model: OPENAI_SCRIPT_MODEL, input, script: normalizeScriptRows(result.script) };
   } catch (error) {
+    if (error instanceof MainAppBillingError) throw error;
     return { provider: "mock-fallback", error: error instanceof Error ? error.message : "GPT 脚本拆解失败", input, script: videoScriptRows };
   }
 }
@@ -110,6 +136,7 @@ export async function generateVideoScript(input: unknown) {
     ]);
     return { provider: "gpt", model: OPENAI_SCRIPT_MODEL, input, script: normalizeScriptRows(result.script) };
   } catch (error) {
+    if (error instanceof MainAppBillingError) throw error;
     return { provider: "mock-fallback", error: error instanceof Error ? error.message : "GPT 脚本仿写失败", input, script: videoScriptRows };
   }
 }

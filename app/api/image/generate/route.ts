@@ -1,6 +1,11 @@
 import { generateImage } from "@/lib/adapters/openai-image";
 import { generateWithNanoBanana } from "@/lib/adapters/nano-banana";
 import { createImageGenerationJob, runImageGenerationJob } from "@/lib/adapters/image-generation-job-store";
+import { cacheImageGenerationResult } from "@/lib/adapters/image-generation-result-store";
+import {
+  currentBillingUserId,
+  runWithMainAppBillingUser,
+} from "@/lib/main-app-billing";
 import {
   ImageReferenceInputError,
   deleteImageReferences,
@@ -92,11 +97,14 @@ export async function POST(request: Request) {
     throw error;
   }
 
+  const billingUserId = await currentBillingUserId();
   const job = createImageGenerationJob();
+  const resultOrigin = publicRequestOrigin(request);
 
-  void runImageGenerationJob(job.id, async () => {
+  void runImageGenerationJob(job.id, () => runWithMainAppBillingUser(billingUserId, async () => {
     try {
-      const result = provider.includes("Nano") || process.env.IMAGE_MODEL_PROVIDER === "nano-banana" ? await generateWithNanoBanana(jobBody) : await generateImage(jobBody);
+      const generated = provider.includes("Nano") || process.env.IMAGE_MODEL_PROVIDER === "nano-banana" ? await generateWithNanoBanana(jobBody) : await generateImage(jobBody);
+      const result = await cacheImageGenerationResult(generated, resultOrigin);
       const imageCount = result && typeof result === "object" && "images" in result && Array.isArray((result as { images?: unknown }).images) ? (result as { images: unknown[] }).images.length : 0;
       console.log(`[image/generate] job=${job.id} provider=${provider || "default"} images=${imageCount}`);
       return result;
@@ -106,7 +114,7 @@ export async function POST(request: Request) {
     } finally {
       deleteImageReferences(referenceTokens);
     }
-  });
+  }));
 
   return Response.json(
     { ok: true, data: { jobId: job.id, status: job.status } },

@@ -10,10 +10,10 @@ import { PlatformBadge } from "@/components/ui/PlatformBadge";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { feishuSyncPlatformOptions } from "@/lib/constants/platforms";
 import { accounts as productionAccounts } from "@/lib/mock/data";
-import { imageExtension, safeFileName, writeBlobFiles, type WritableDirectoryLike } from "@/lib/utils/browser-file-export";
+import { imageExtension, safeFileName, utf8TextBlob, writeBlobFiles, type WritableDirectoryLike } from "@/lib/utils/browser-file-export";
 import { cn } from "@/lib/utils/cn";
-import { imageRefToUploadUrl, isStoredImageRef, resolveImageRefs } from "@/lib/utils/image-store";
-import { selectExportTargets } from "@/lib/utils/production-workflow";
+import { imageRefToUploadUrl, isStoredImageRef, persistImageFile, resolveImageRef, resolveImageRefs } from "@/lib/utils/image-store";
+import { reorderImageUrls, selectExportTargets } from "@/lib/utils/production-workflow";
 
 type LibraryStatus = "可发布" | "已保存本地" | "需复查" | "已归档" | "已淘汰";
 type RiskLevel = "低" | "中" | "高";
@@ -372,6 +372,15 @@ export default function ContentLibraryPage() {
   };
   const mediaUrlsFor = (item: FinishedContent) => resolvedMediaMap[item.id] ?? realMediaUrls(item).filter((url) => !isStoredImageRef(url));
   const coverUrlFor = (item: FinishedContent) => mediaUrlsFor(item)[0] ?? mockCover(item);
+  const openEditor = (item: FinishedContent) => {
+    const mediaUrls = realMediaUrls(item);
+    setEditingItem({
+      ...item,
+      mediaUrls,
+      pages: item.pages?.map((page) => ({ ...page, images: [] })),
+      mediaCount: item.mediaKind === "image" ? `${mediaUrls.length} 张图` : item.mediaCount
+    });
+  };
 
   const syncContentToFeishu = async (item: FinishedContent, openAfterSync = true) => {
     const platform = getPublishPlatform(item);
@@ -434,16 +443,13 @@ export default function ContentLibraryPage() {
       const rootDirectory = pickerWindow.showDirectoryPicker ? await pickerWindow.showDirectoryPicker() : null;
       let saved = 0;
       let failed = 0;
-      let skipped = 0;
 
       for (const [itemIndex, item] of targets.entries()) {
         const imageUrls = realMediaUrls(item);
-        if (!imageUrls.length) {
-          skipped += 1;
-          continue;
-        }
-
-        const blobs = [];
+        const blobs = [{
+          name: "标题和文案.txt",
+          blob: utf8TextBlob(`标题：${item.title}\n\n文案：\n${item.body}`)
+        }];
         for (const [imageIndex, imageUrl] of imageUrls.entries()) {
           try {
             const blob = await finishedImageBlob(imageUrl);
@@ -454,11 +460,6 @@ export default function ContentLibraryPage() {
           } catch {
             failed += 1;
           }
-        }
-
-        if (!blobs.length) {
-          skipped += 1;
-          continue;
         }
 
         if (rootDirectory) {
@@ -480,8 +481,8 @@ export default function ContentLibraryPage() {
       }
 
       setFeedback(rootDirectory
-        ? `已导出 ${saved} 张真实图片到 ${rootDirectory.name}${failed ? `，${failed} 张失败` : ""}${skipped ? `，跳过 ${skipped} 条无图内容` : ""}。`
-        : `当前浏览器不支持直接写入文件夹，已下载 ${saved} 张真实图片${failed ? `，${failed} 张失败` : ""}${skipped ? `，跳过 ${skipped} 条无图内容` : ""}。`);
+        ? `已导出 ${saved} 个文件到 ${rootDirectory.name}，每条作品文件夹均包含“标题和文案.txt”${failed ? `，${failed} 个文件失败` : ""}。`
+        : `当前浏览器不支持直接写入文件夹，已下载 ${saved} 个文件，每条作品均包含标题和文案文本${failed ? `，${failed} 个文件失败` : ""}。`);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       setFeedback(error instanceof Error ? `本地导出失败：${error.message}` : "本地导出失败，请重试。");
@@ -492,7 +493,17 @@ export default function ContentLibraryPage() {
 
   const saveEdit = () => {
     if (!editingItem) return;
-    setItems((current) => current.map((item) => item.id === editingItem.id ? editingItem : item));
+    const nextItem = {
+      ...editingItem,
+      updatedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
+      mediaCount: editingItem.mediaKind === "image" ? `${editingItem.mediaUrls?.length ?? 0} 张图` : editingItem.mediaCount
+    };
+    setItems((current) => {
+      const nextItems = current.map((item) => item.id === nextItem.id ? nextItem : item);
+      window.localStorage.setItem(FINISHED_CONTENT_STORAGE_KEY, JSON.stringify(nextItems));
+      return nextItems;
+    });
+    setDetailItem((current) => current?.id === nextItem.id ? nextItem : current);
     setFeedback(`已保存内容修改：${editingItem.title}`);
     setEditingItem(null);
   };
@@ -647,7 +658,8 @@ export default function ContentLibraryPage() {
                           暂无真实生成图片，请从图文生产重新预览并打包。
                         </div>
                       )}
-                      <div className="flex justify-end border-t border-line p-3">
+                      <div className="flex justify-end gap-2 border-t border-line p-3">
+                        <Button icon={<Edit3 className="h-4 w-4" />} onClick={() => openEditor(item)}>编辑</Button>
                         <Button variant="danger" icon={<Trash2 className="h-4 w-4" />} onClick={() => deleteItems([item])}>删除</Button>
                       </div>
                     </article>
@@ -690,7 +702,7 @@ export default function ContentLibraryPage() {
               <td className="px-4 py-3"><StatusBadge status={statusKey(item.status)} label={item.status} /></td>
               <td className="max-w-56 truncate px-4 py-3 text-xs text-muted" title={item.localPath}>{item.localPath}</td>
               <td className="px-4 py-3 text-muted">{item.updatedAt}</td>
-              <td className="px-4 py-3"><RowActions item={item} onDetail={setDetailItem} onEdit={setEditingItem} onCopy={copyContent} onExport={(row) => exportPackage([row])} onArchive={(row) => updateStatus([row], "已归档")} onMore={(row, action) => updateStatus([row], action)} onDelete={(row) => deleteItems([row])} onFeedback={setFeedback} /></td>
+              <td className="px-4 py-3"><RowActions item={item} onDetail={setDetailItem} onEdit={openEditor} onCopy={copyContent} onExport={(row) => exportPackage([row])} onArchive={(row) => updateStatus([row], "已归档")} onMore={(row, action) => updateStatus([row], action)} onDelete={(row) => deleteItems([row])} onFeedback={setFeedback} /></td>
             </tr>
           ))}
         </DataTable>
@@ -710,7 +722,7 @@ export default function ContentLibraryPage() {
                 <div className="mt-3 flex items-center justify-between text-xs text-muted"><span>重复率 {item.duplicateRate}%</span><span>{item.updatedAt}</span></div>
                 <div className="mt-4 grid grid-cols-6 gap-2">
                   <IconButton title="查看详情" icon={<Eye className="h-4 w-4" />} onClick={() => setDetailItem(item)} />
-                  <IconButton title="编辑内容" icon={<Edit3 className="h-4 w-4" />} onClick={() => setEditingItem(item)} />
+                  <IconButton title="编辑内容" icon={<Edit3 className="h-4 w-4" />} onClick={() => openEditor(item)} />
                   <IconButton title="复制文案" icon={<Copy className="h-4 w-4" />} onClick={() => void copyContent(item)} />
                   <IconButton title="导出内容包" icon={<Download className="h-4 w-4" />} onClick={() => exportPackage([item])} />
                   <IconButton title="进入初检查重" icon={<FileCheck2 className="h-4 w-4" />} onClick={() => { window.location.href = `/detection?contentId=${encodeURIComponent(item.id)}`; }} />
@@ -722,8 +734,10 @@ export default function ContentLibraryPage() {
         </section>
       )}
 
-      {detailItem ? <DetailDrawer item={detailItem} mediaUrls={mediaUrlsFor(detailItem)} onClose={() => setDetailItem(null)} onEdit={setEditingItem} onCopy={copyContent} onExport={(item) => exportPackage([item])} onArchive={(item) => updateStatus([item], "已归档")} onFeedback={setFeedback} onPreview={setPreviewImageUrl} /> : null}
-      {editingItem ? <EditModal item={editingItem} onChange={setEditingItem} onClose={() => setEditingItem(null)} onSave={saveEdit} /> : null}
+      </div>
+
+      {detailItem ? <DetailDrawer item={detailItem} mediaUrls={mediaUrlsFor(detailItem)} onClose={() => setDetailItem(null)} onEdit={openEditor} onCopy={copyContent} onExport={(item) => exportPackage([item])} onArchive={(item) => updateStatus([item], "已归档")} onFeedback={setFeedback} onPreview={setPreviewImageUrl} /> : null}
+      {editingItem ? <EditModal item={editingItem} onChange={setEditingItem} onClose={() => setEditingItem(null)} onSave={saveEdit} onPreview={setPreviewImageUrl} /> : null}
       {previewImageUrl ? (
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/75 p-4" onClick={() => setPreviewImageUrl("")}>
           <div className="max-h-[92vh] max-w-5xl overflow-hidden rounded-lg bg-white shadow-xl" onClick={(event) => event.stopPropagation()}>
@@ -732,7 +746,6 @@ export default function ContentLibraryPage() {
           </div>
         </div>
       ) : null}
-      </div>
     </>
   );
 }
@@ -808,15 +821,117 @@ function DetailSection({ title, items }: { title: string; items: [string, string
   return <Card><CardHeader title={title} /><CardBody className="grid gap-3 md:grid-cols-2">{items.map(([label, value]) => <div key={label} className="rounded-lg bg-slate-50 p-3"><p className="text-xs text-muted">{label}</p><p className="mt-2 text-sm font-medium text-ink">{value}</p></div>)}</CardBody></Card>;
 }
 
-function EditModal({ item, onChange, onClose, onSave }: { item: FinishedContent; onChange: (item: FinishedContent) => void; onClose: () => void; onSave: () => void }) {
+function EditModal({ item, onChange, onClose, onSave, onPreview }: { item: FinishedContent; onChange: (item: FinishedContent) => void; onClose: () => void; onSave: () => void; onPreview: (url: string) => void }) {
+  const [resolvedUrls, setResolvedUrls] = useState<Record<string, string>>({});
+  const [draggingImageUrl, setDraggingImageUrl] = useState("");
+  const [uploadingImages, setUploadingImages] = useState(false);
+  const mediaUrls = item.mediaUrls ?? [];
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all(mediaUrls.map(async (url) => [url, await resolveImageRef(url)] as const)).then((rows) => {
+      if (!cancelled) setResolvedUrls(Object.fromEntries(rows));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [mediaUrls]);
+
+  const uploadImages = async (files: FileList | null) => {
+    const imageFiles = Array.from(files ?? []).filter((file) => file.type.startsWith("image/"));
+    if (!imageFiles.length) return;
+    setUploadingImages(true);
+    try {
+      const uploadedUrls = await Promise.all(imageFiles.map((file, index) => persistImageFile(file, `library_edit_${item.id}_${Date.now()}_${index}`)));
+      const nextUrls = [...uploadedUrls, ...mediaUrls];
+      onChange({ ...item, mediaUrls: nextUrls, mediaCount: `${nextUrls.length} 张图` });
+    } finally {
+      setUploadingImages(false);
+    }
+  };
+
+  const deleteImage = (url: string) => {
+    const nextUrls = mediaUrls.filter((itemUrl) => itemUrl !== url);
+    onChange({ ...item, mediaUrls: nextUrls, mediaCount: `${nextUrls.length} 张图` });
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30 p-4">
-      <div className="w-full max-w-2xl rounded-lg border border-line bg-white shadow-xl">
+      <div className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-line bg-white shadow-xl">
         <div className="flex items-start justify-between border-b border-line px-5 py-4"><div><h2 className="text-lg font-semibold text-ink">编辑内容</h2><p className="mt-1 text-sm text-muted">{item.id}</p></div><button onClick={onClose} className="rounded-md p-2 text-muted hover:bg-slate-100"><X className="h-5 w-5" /></button></div>
-        <div className="space-y-4 p-5">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
           <label className="block text-sm font-medium text-ink">标题<input value={item.title} onChange={(event) => onChange({ ...item, title: event.target.value })} className="mt-2 h-10 w-full rounded-md border border-line px-3 text-sm outline-none focus:border-orange-300" /></label>
           <label className="block text-sm font-medium text-ink">正文 / 口播<textarea value={item.body} onChange={(event) => onChange({ ...item, body: event.target.value })} className="mt-2 min-h-36 w-full rounded-md border border-line px-3 py-2 text-sm leading-6 outline-none focus:border-orange-300" /></label>
           <label className="block text-sm font-medium text-ink">标签<input value={item.tags.join("、")} onChange={(event) => onChange({ ...item, tags: event.target.value.split(/[、,\s]+/).filter(Boolean) })} className="mt-2 h-10 w-full rounded-md border border-line px-3 text-sm outline-none focus:border-orange-300" /></label>
+          {item.mediaKind === "image" ? (
+            <section className="rounded-lg border border-line bg-slate-50 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-medium text-ink">作品图片</h3>
+                  <p className="mt-1 text-xs text-muted">拖动图片可调整顺序；点击图片可放大，右上角可删除图片。</p>
+                </div>
+                <div>
+                  <input
+                    id={`library-edit-upload-${item.id}`}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    className="hidden"
+                    onChange={(event) => {
+                      const input = event.currentTarget;
+                      void uploadImages(input.files).finally(() => {
+                        input.value = "";
+                      });
+                    }}
+                  />
+                  <Button disabled={uploadingImages} icon={<Plus className="h-4 w-4" />} onClick={() => document.getElementById(`library-edit-upload-${item.id}`)?.click()}>
+                    {uploadingImages ? "添加中..." : "添加本地图片"}
+                  </Button>
+                </div>
+              </div>
+              {mediaUrls.length ? (
+                <div className="mt-4 grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-5">
+                  {mediaUrls.map((url, index) => {
+                    const previewUrl = resolvedUrls[url] ?? (isStoredImageRef(url) ? "" : url);
+                    return (
+                      <div
+                        key={`${url}-${index}`}
+                        draggable
+                        onDragStart={() => setDraggingImageUrl(url)}
+                        onDragOver={(event) => event.preventDefault()}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          if (!draggingImageUrl) return;
+                          const bounds = event.currentTarget.getBoundingClientRect();
+                          const placement = event.clientX < bounds.left + bounds.width / 2 ? "before" : "after";
+                          onChange({ ...item, mediaUrls: reorderImageUrls(mediaUrls, draggingImageUrl, url, placement) });
+                          setDraggingImageUrl("");
+                        }}
+                        onDragEnd={() => setDraggingImageUrl("")}
+                        className={cn("relative cursor-grab overflow-hidden rounded-lg border border-line bg-white active:cursor-grabbing", draggingImageUrl === url ? "opacity-60" : "")}
+                      >
+                        <button type="button" onClick={() => previewUrl && onPreview(previewUrl)} className="block w-full" title={`放大图片 ${index + 1}`}>
+                          {previewUrl ? <img src={previewUrl} alt={`${item.title} 图片 ${index + 1}`} className="aspect-[3/4] w-full object-cover" /> : <span className="grid aspect-[3/4] place-items-center text-xs text-muted">读取中...</span>}
+                        </button>
+                        <button
+                          type="button"
+                          title="删除图片"
+                          aria-label={`删除图片 ${index + 1}`}
+                          onClick={() => deleteImage(url)}
+                          className="absolute right-1 top-1 grid h-6 w-6 place-items-center rounded-full bg-slate-950/75 text-sm leading-none text-white hover:bg-red-600"
+                        >
+                          ×
+                        </button>
+                        <p className="px-2 py-1 text-center text-[11px] text-muted">第 {index + 1} 张</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="mt-4 flex h-24 items-center justify-center rounded-lg border border-dashed border-line bg-white text-xs text-muted">暂无图片，可从本地添加。</div>
+              )}
+            </section>
+          ) : null}
           <label className="block text-sm font-medium text-ink">提示词<textarea value={item.prompts.join("\n")} onChange={(event) => onChange({ ...item, prompts: event.target.value.split(/\n+/).filter(Boolean) })} className="mt-2 min-h-24 w-full rounded-md border border-line px-3 py-2 text-sm leading-6 outline-none focus:border-orange-300" /></label>
           <label className="block text-sm font-medium text-ink">备注<textarea value={item.reviewNotes.join("\n")} onChange={(event) => onChange({ ...item, reviewNotes: event.target.value.split(/\n+/).filter(Boolean) })} className="mt-2 min-h-20 w-full rounded-md border border-line px-3 py-2 text-sm leading-6 outline-none focus:border-orange-300" /></label>
         </div>

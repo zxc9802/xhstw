@@ -264,10 +264,13 @@ function extractMedia(fields: OpenCliFields): ReferenceMedia[] {
   return [...unique.values()].slice(0, 12);
 }
 
-function downloadedMediaForXiaohongshu(url: string): ReferenceMedia[] {
-  const noteId = extractXiaohongshuNoteId(url);
-  const folder = path.join(process.cwd(), "xiaohongshu-downloads", noteId);
-  return mediaFromFolder(folder);
+function createXiaohongshuDownloadRoot(url: string) {
+  const noteId = extractXiaohongshuNoteId(url).replace(/[^a-zA-Z0-9_-]/g, "_");
+  return path.join(
+    process.cwd(),
+    "xiaohongshu-downloads",
+    `parse_${noteId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+  );
 }
 
 function mediaFromFolder(folder: string): ReferenceMedia[] {
@@ -286,21 +289,22 @@ function mediaFromFolder(folder: string): ReferenceMedia[] {
     });
 }
 
-function latestDownloadedXiaohongshuMedia(since: number): ReferenceMedia[] {
-  const root = path.join(process.cwd(), "xiaohongshu-downloads");
+function mediaFromFolderTree(root: string): ReferenceMedia[] {
   if (!fs.existsSync(root)) return [];
-  const folders = fs.readdirSync(root)
-    .map((name) => path.join(root, name))
-    .filter((folder) => fs.existsSync(folder) && fs.statSync(folder).isDirectory())
-    .map((folder) => ({ folder, mtimeMs: fs.statSync(folder).mtimeMs }))
-    .filter((item) => item.mtimeMs >= since - 2000)
-    .sort((a, b) => b.mtimeMs - a.mtimeMs);
-
-  for (const item of folders) {
-    const media = mediaFromFolder(item.folder);
-    if (media.length) return media;
+  const folders = [root];
+  const media: ReferenceMedia[] = [];
+  while (folders.length) {
+    const folder = folders.shift();
+    if (!folder) continue;
+    for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
+      const target = path.join(folder, entry.name);
+      if (entry.isDirectory()) {
+        folders.push(target);
+      }
+    }
+    media.push(...mediaFromFolder(folder));
   }
-  return [];
+  return media.slice(0, 12);
 }
 
 export async function parseReferenceLink(input: unknown) {
@@ -322,10 +326,9 @@ export async function parseReferenceLink(input: unknown) {
       const noteType = pickField(fields, ["type", "mediaType", "类型"], "");
       let media = extractMedia(fields);
       if (platform === "小红书") {
-        const downloadStartedAt = Date.now();
-        await runOpenCli(["xiaohongshu", "download", url]).catch(() => ({}));
-        const localMedia = downloadedMediaForXiaohongshu(url);
-        media = [...(localMedia.length ? localMedia : latestDownloadedXiaohongshuMedia(downloadStartedAt)), ...media];
+        const downloadRoot = createXiaohongshuDownloadRoot(url);
+        await runOpenCli(["xiaohongshu", "download", url, "--output", downloadRoot]).catch(() => ({}));
+        media = [...mediaFromFolderTree(downloadRoot), ...media];
       }
       return {
         provider,

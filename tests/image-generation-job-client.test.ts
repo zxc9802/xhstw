@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { pollImageGenerationJob } from "../lib/utils/image-generation-job-client";
+import { imageGenerationWarnings, pollImageGenerationJob } from "../lib/utils/image-generation-job-client";
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -32,6 +32,29 @@ test("polls queued and processing jobs until the image result is completed", asy
     "/api/image/generate/job%201",
     "/api/image/generate/job%201"
   ]);
+});
+
+test("extracts partial image-generation warnings for the page feedback", () => {
+  assert.deepEqual(imageGenerationWarnings({
+    images: ["image-1"],
+    warnings: ["第 2 张被安全审核拦截", "", 3]
+  }), ["第 2 张被安全审核拦截"]);
+  assert.deepEqual(imageGenerationWarnings({ images: ["image-1"] }), []);
+});
+
+test("uses the faster default polling interval", async () => {
+  const responses = [
+    { ok: true, data: { status: "processing" } },
+    { ok: true, data: { status: "completed", result: { images: ["image-1"] } } }
+  ];
+  const sleepIntervals: number[] = [];
+
+  await pollImageGenerationJob("fast-job", {
+    fetcher: async () => jsonResponse(responses.shift()),
+    sleep: async (ms) => { sleepIntervals.push(ms); }
+  });
+
+  assert.deepEqual(sleepIntervals, [1500]);
 });
 
 test("throws the recorded provider error for a failed job", async () => {

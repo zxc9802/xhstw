@@ -127,6 +127,46 @@ test("sends reference images to the project OpenAPI resources field", async () =
   });
 });
 
+test("background replacement guidance does not preserve the original background", async () => {
+  let requestBody: Record<string, unknown> | undefined;
+  await withProvider(async (_url, init) => {
+    requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return Response.json({
+      success: true,
+      data: { images: [{ url: "https://img.test/replaced-background.jpg" }] }
+    });
+  }, async () => {
+    await generateImage({
+      prompt: "换个人物，换个背景，换个服装",
+      sourceImageUrls: ["https://img.test/source.jpg"]
+    });
+
+    assert.match(String(requestBody?.prompt), /必须明显替换原背景/);
+    assert.match(String(requestBody?.prompt), /必须执行用户明确要求的修改/);
+    assert.doesNotMatch(String(requestBody?.prompt), /背景、文字位置、光线和风格尽量保持不变/);
+  });
+});
+
+test("adds unretouched amateur camera quality guidance without changing the request shape", async () => {
+  let requestBody: Record<string, unknown> | undefined;
+  await withProvider(async (_url, init) => {
+    requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return Response.json({
+      success: true,
+      data: { images: [{ url: "https://img.test/amateur-camera.jpg" }] }
+    });
+  }, async () => {
+    await generateImage({ prompt: "手持产品", size: "3:4", count: 1 });
+
+    assert.match(String(requestBody?.prompt), /普通人使用原生手机或相机直出的素人随手拍质感/);
+    assert.match(String(requestBody?.prompt), /保留真实皮肤纹理、毛孔和轻微瑕疵/);
+    assert.match(String(requestBody?.prompt), /禁止商业棚拍、广告大片、过度磨皮/);
+    assert.deepEqual(requestBody?.payload, {
+      params: { resolution: "1K", scale: "3:4" }
+    });
+  });
+});
+
 test("uses Yunwu edits directly for reference images when configured for Yunwu", async () => {
   let receivedUrl = "";
   let editForm: FormData | undefined;

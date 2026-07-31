@@ -4,6 +4,7 @@ import {
   directoryPickerFailure,
   imageExtension,
   safeFileName,
+  utf8TextBlob,
   writeBlobFiles,
   type WritableDirectoryLike
 } from "../lib/utils/browser-file-export";
@@ -25,6 +26,15 @@ test("infers image extensions from MIME types", () => {
   assert.equal(imageExtension(new Blob([], { type: "image/webp" })), "webp");
   assert.equal(imageExtension(new Blob([], { type: "image/gif" })), "gif");
   assert.equal(imageExtension(new Blob([], { type: "application/octet-stream" })), "png");
+});
+
+test("creates UTF-8 text files with a BOM for Windows editors", async () => {
+  const blob = utf8TextBlob("标题：测试\n\n文案：\n正文");
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+
+  assert.equal(blob.type, "text/plain;charset=utf-8");
+  assert.deepEqual([...bytes.slice(0, 3)], [0xef, 0xbb, 0xbf]);
+  assert.equal(new TextDecoder().decode(bytes.slice(3)), "标题：测试\n\n文案：\n正文");
 });
 
 test("writes every valid blob and continues after an individual failure", async () => {

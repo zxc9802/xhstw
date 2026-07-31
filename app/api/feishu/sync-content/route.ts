@@ -1,5 +1,5 @@
 import { ok, readJson } from "@/lib/utils/api";
-import { resolveFeishuContentFieldNames } from "@/lib/adapters/feishu-content-fields";
+import { resolveFeishuContentFieldNames, resolveFeishuTagFieldValue } from "@/lib/adapters/feishu-content-fields";
 import { buildFeishuBaseUrl } from "@/lib/adapters/feishu-target";
 import { getFeishuUploadDateValue } from "@/lib/utils/feishu-upload-date";
 import { NextResponse } from "next/server";
@@ -120,9 +120,10 @@ export async function POST(request: Request) {
     const token = await getTenantAccessToken();
     const tableId = await getTableId(appToken, token);
     const fields = await getFieldNames(appToken, tableId, token);
-    const { titleFieldName, attachmentFieldName } = resolveFeishuContentFieldNames(fields);
+    const { titleFieldName, attachmentFieldName, tagFieldName } = resolveFeishuContentFieldNames(fields);
     const imageText = (payload.images ?? []).filter(Boolean).join("\n");
     const tagText = (payload.tags ?? []).map((tag) => tag.startsWith("#") ? tag : `#${tag}`).join(" ");
+    const tagFieldValue = resolveFeishuTagFieldValue(fields, tagFieldName, payload.tags ?? []);
     const uploadWarnings: string[] = [];
     let attachmentValues: Array<{ file_token: string }> = [];
 
@@ -158,6 +159,9 @@ export async function POST(request: Request) {
       小红书tag: tagText
     };
     if (titleFieldName) candidateFields[titleFieldName] = payload.title ?? "";
+    if (tagFieldName && (Array.isArray(tagFieldValue) ? tagFieldValue.length : tagFieldValue)) {
+      candidateFields[tagFieldName] = tagFieldValue;
+    }
     if (attachmentFieldName && attachmentValues.length) {
       candidateFields[attachmentFieldName] = attachmentValues;
     }
@@ -167,7 +171,7 @@ export async function POST(request: Request) {
       return type !== 17 || Array.isArray(value);
     }));
     if (!Object.keys(recordFields).length) {
-      throw new Error("飞书表中未匹配到字段：平台、账号名称、图片或视频、标题、内容正文、小红书tag");
+      throw new Error("飞书表中未匹配到字段：平台、账号名称、图片或视频、标题、内容正文、小红书tag、关键词、标签");
     }
 
     const result = await feishuRequest(`/bitable/v1/apps/${appToken}/tables/${tableId}/records`, {

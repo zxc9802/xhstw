@@ -19,9 +19,16 @@ type ImageGenerationJobPayload = {
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+export function imageGenerationWarnings(result: unknown) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return [];
+  const warnings = (result as { warnings?: unknown }).warnings;
+  if (!Array.isArray(warnings)) return [];
+  return warnings.filter((warning): warning is string => typeof warning === "string" && Boolean(warning.trim()));
+}
+
 export async function pollImageGenerationJob(jobId: string, options: ImageGenerationPollOptions = {}): Promise<unknown> {
   const fetcher = options.fetcher ?? fetch;
-  const intervalMs = options.intervalMs ?? 3000;
+  const intervalMs = options.intervalMs ?? 1500;
   const timeoutMs = options.timeoutMs ?? 6 * 60 * 1000;
   const sleep = options.sleep ?? defaultSleep;
   const now = options.now ?? Date.now;

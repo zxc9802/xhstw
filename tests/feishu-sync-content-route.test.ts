@@ -82,7 +82,49 @@ test("uploads a browser image and title into the live Feishu fields", async (t) 
   assert.equal(response.status, 200);
   assert.equal(mediaUploadCalls, 1);
   assert.equal(recordFields?.标题, "浏览器素材标题");
+  assert.equal(recordFields?.小红书tag, "#测试标签");
   assert.deepEqual(recordFields?.图片或视频, [{ file_token: "file-token-1" }]);
+});
+
+test("syncs tags into a multi-select keyword alias when that is the live field", async (t) => {
+  installFeishuEnv(t);
+  const originalFetch = globalThis.fetch;
+  let recordFields: Record<string, unknown> | undefined;
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (url.endsWith("/auth/v3/tenant_access_token/internal")) {
+      return jsonResponse({ tenant_access_token: "tenant-token" });
+    }
+    if (url.endsWith("/fields")) {
+      return jsonResponse({ data: { items: [
+        { field_name: "标题", type: 1 },
+        { field_name: "内容正文", type: 1 },
+        { field_name: "关键词", type: 4 }
+      ] } });
+    }
+    if (url.endsWith("/records")) {
+      recordFields = (JSON.parse(String(init?.body)) as { fields: Record<string, unknown> }).fields;
+      return jsonResponse({ data: { record: { record_id: "record-keywords" } } });
+    }
+    throw new Error(`Unexpected Feishu request: ${url}`);
+  }) as typeof fetch;
+
+  const response = await POST(new Request("http://localhost/api/feishu/sync-content", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      title: "关键词同步",
+      body: "其他字段保持不变",
+      tags: ["#防晒", "通勤"]
+    })
+  }));
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(recordFields?.关键词, ["防晒", "通勤"]);
+  assert.equal(recordFields?.标题, "关键词同步");
+  assert.equal(recordFields?.内容正文, "其他字段保持不变");
 });
 
 test("does not create a text-only record when every requested image upload fails", async (t) => {

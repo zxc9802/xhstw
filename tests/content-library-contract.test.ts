@@ -12,10 +12,27 @@ test("finished library exports real images to the selected local folder", () => 
   assert.equal(source.includes("当前为本地 mock 导出"), false);
 });
 
+test("each exported work includes its title and copy as text", () => {
+  assert.equal(source.includes("utf8TextBlob"), true);
+  assert.equal(source.includes('name: "标题和文案.txt"'), true);
+  assert.equal(source.includes("标题：${item.title}"), true);
+  assert.equal(source.includes("文案：\\n${item.body}"), true);
+});
+
 test("card and detail images open one top-level preview", () => {
   assert.equal(source.includes("previewImageUrl"), true);
   assert.equal(source.includes("setPreviewImageUrl"), true);
   assert.equal(source.includes("z-[80]"), true);
+});
+
+test("content edits persist and support image upload, deletion, preview, and ordering", () => {
+  assert.equal(source.includes("persistImageFile"), true);
+  assert.equal(source.includes("reorderImageUrls"), true);
+  assert.equal(source.includes("保存修改"), true);
+  assert.equal(source.includes("添加本地图片"), true);
+  assert.equal(source.includes("删除图片"), true);
+  assert.equal(source.includes("拖动图片可调整顺序"), true);
+  assert.equal(source.includes("window.localStorage.setItem(FINISHED_CONTENT_STORAGE_KEY"), true);
 });
 
 test("table action menu does not nest interactive buttons", () => {
