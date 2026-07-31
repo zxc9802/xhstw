@@ -78,6 +78,30 @@ function useYunwuProvider(t: TestContext) {
   });
 }
 
+function useNanobananaNewProvider(t: TestContext) {
+  const values = {
+    IMAGE_AGGREGATION_API_BASE_URL: "https://aggregation.test",
+    IMAGE_AGGREGATION_PROJECT_CODE: "project-code",
+    IMAGE_AGGREGATION_ACCESS_KEY: "access-key",
+    IMAGE_AGGREGATION_SECRET_KEY: "secret-key",
+    NANOBANANA_NEW_MODEL_ID: "gemini-3.1-flash-image-preview",
+    NANOBANANA_NEW_POLL_INTERVAL_MS: "0",
+    NANOBANANA_NEW_POLL_MAX_ATTEMPTS: "2"
+  } as const;
+  const keys = Object.keys(values);
+  const previous: Record<string, string | undefined> = Object.fromEntries(
+    keys.map((key) => [key, process.env[key]])
+  );
+  Object.assign(process.env, values);
+  t.after(() => {
+    for (const key of keys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+}
+
 async function waitForJob(jobId: string) {
   for (let attempt = 0; attempt < 30; attempt += 1) {
     const response = await GET(new Request("https://app.test"), {
@@ -424,6 +448,74 @@ test("publishes local Image 2.0 references and preserves public URLs in resource
     /^https:\/\/xhstw\.qycm\.top\/api\/image\/reference\/[0-9a-f-]{36}$/
   );
   assert.equal(requestBody!.payload.resources[1], "https://img.test/existing.jpg");
+
+  const cleaned = await GET_REFERENCE(new Request("https://xhstw.qycm.top"), {
+    params: Promise.resolve({ token: temporaryToken })
+  });
+  assert.equal(cleaned.status, 404);
+});
+
+test("routes nanobanan新 through the aggregation API and cleans temporary references", async (t) => {
+  useNanobananaNewProvider(t);
+  const previousFetch = globalThis.fetch;
+  let submitBody: {
+    modelId: string;
+    abilityType: string;
+    payload: { resources: string[] };
+  } | undefined;
+  let temporaryToken = "";
+  let queryCalls = 0;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith("/openApi/generate")) {
+      submitBody = JSON.parse(String(init?.body)) as typeof submitBody;
+      const temporaryUrl = new URL(submitBody!.payload.resources[0]);
+      temporaryToken = temporaryUrl.pathname.split("/").pop() || "";
+      const reference = await GET_REFERENCE(new Request(temporaryUrl), {
+        params: Promise.resolve({ token: temporaryToken })
+      });
+      assert.equal(reference.status, 200);
+      return Response.json({ success: true, data: { taskId: "nano-new-task" } });
+    }
+    assert.equal(String(url), "https://aggregation.test/openApi/queryResult");
+    queryCalls += 1;
+    return Response.json({
+      success: true,
+      data: {
+        taskId: "nano-new-task",
+        status: 2,
+        images: [{ url: "https://img.test/nanobanana-new.jpg" }]
+      }
+    });
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+  });
+
+  const response = await POST(new Request("https://0.0.0.0:3000/api/image/generate", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Forwarded-Host": "xhstw.qycm.top",
+      "X-Forwarded-Proto": "https"
+    },
+    body: JSON.stringify({
+      provider: "nanobanan新",
+      prompt: "只替换背景",
+      size: "9:16",
+      sourceImageUrls: ["data:image/png;base64,iVBORw0KGgo="]
+    })
+  }));
+  const created = await response.json();
+  const job = await waitForJob(created.data.jobId);
+
+  assert.equal(job.status, "completed");
+  assert.equal(submitBody?.modelId, "gemini-3.1-flash-image-preview");
+  assert.equal(submitBody?.abilityType, "IMAGE");
+  assert.match(
+    submitBody!.payload.resources[0],
+    /^https:\/\/xhstw\.qycm\.top\/api\/image\/reference\/[0-9a-f-]{36}$/
+  );
+  assert.equal(queryCalls, 1);
 
   const cleaned = await GET_REFERENCE(new Request("https://xhstw.qycm.top"), {
     params: Promise.resolve({ token: temporaryToken })

@@ -1,5 +1,6 @@
 import { generateImage } from "@/lib/adapters/openai-image";
 import { generateWithNanoBanana } from "@/lib/adapters/nano-banana";
+import { generateWithNanobananaNew } from "@/lib/adapters/nanobanana-new";
 import { createImageGenerationJob, runImageGenerationJob } from "@/lib/adapters/image-generation-job-store";
 import { cacheImageGenerationResult } from "@/lib/adapters/image-generation-result-store";
 import {
@@ -31,6 +32,10 @@ function usesImage2References(provider: string) {
     && process.env.IMAGE_MODEL_PROVIDER !== "nano-banana"
     && process.env.IMAGE_MODEL_PROVIDER !== "mock"
     && process.env.IMAGE_MODEL_PROVIDER !== "yunwu";
+}
+
+function isNanobananaNew(provider: string) {
+  return provider === "nanobanan新";
 }
 
 function imageSourceUrls(body: unknown) {
@@ -103,7 +108,11 @@ export async function POST(request: Request) {
 
   void runImageGenerationJob(job.id, () => runWithMainAppBillingUser(billingUserId, async () => {
     try {
-      const generated = provider.includes("Nano") || process.env.IMAGE_MODEL_PROVIDER === "nano-banana" ? await generateWithNanoBanana(jobBody) : await generateImage(jobBody);
+      const generated = isNanobananaNew(provider)
+        ? await generateWithNanobananaNew(jobBody)
+        : provider.includes("Nano") || process.env.IMAGE_MODEL_PROVIDER === "nano-banana"
+          ? await generateWithNanoBanana(jobBody)
+          : await generateImage(jobBody);
       const result = await cacheImageGenerationResult(generated, resultOrigin);
       const imageCount = result && typeof result === "object" && "images" in result && Array.isArray((result as { images?: unknown }).images) ? (result as { images: unknown[] }).images.length : 0;
       console.log(`[image/generate] job=${job.id} provider=${provider || "default"} images=${imageCount}`);
