@@ -4,6 +4,15 @@ import test from "node:test";
 
 const source = readFileSync("app/content/page.tsx", "utf8");
 const imageStoreSource = readFileSync("lib/utils/image-store.ts", "utf8");
+const imageTypeSource = readFileSync("types/image.ts", "utf8");
+
+test("all image provider selectors expose nanobanan新", () => {
+  assert.equal(imageTypeSource.includes('"nanobanan新"'), true);
+  assert.match(
+    source,
+    /const imageProviders: ImageProvider\[\] = \[[^\]]*"nanobanan新"/
+  );
+});
 
 test("persists keyword-library and image-draft state with versioned keys", () => {
   assert.equal(source.includes("content-production-studio.keyword-library"), true);

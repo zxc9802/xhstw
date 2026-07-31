@@ -1,4 +1,4 @@
-export type ImageProvider = "Image 2.0" | "GPT Image" | "Nano Banana 2" | "仅生成提示词，不直接生图";
+export type ImageProvider = "Image 2.0" | "GPT Image" | "Nano Banana 2" | "nanobanan新" | "仅生成提示词，不直接生图";
 
 export interface ImagePlanItem {
   page: number;

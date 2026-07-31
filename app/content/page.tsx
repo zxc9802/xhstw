@@ -29,7 +29,7 @@ type ImagePageGenerationOutcome = { success: boolean; warning?: string };
 
 const imageSteps: ImageStep[] = ["发布文案生成", "图片生成"];
 const videoSteps: VideoStep[] = ["发布文案生成", "视频脚本生成", "视频素材生成"];
-const imageProviders: ImageProvider[] = ["Image 2.0", "Nano Banana 2", "仅生成提示词，不直接生图"];
+const imageProviders: ImageProvider[] = ["Image 2.0", "Nano Banana 2", "nanobanan新", "仅生成提示词，不直接生图"];
 const videoProviders: VideoProvider[] = ["Seedance 2.0", "仅生成分镜提示词，不直接生成视频"];
 const actionLinkClass = "inline-flex h-9 cursor-pointer items-center justify-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink transition hover:border-orange-200 hover:bg-orange-50";
 const FINISHED_CONTENT_STORAGE_KEY = "content-production-studio-xhs.finished-content";
