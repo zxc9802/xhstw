@@ -25,6 +25,16 @@ test("card and detail images open one top-level preview", () => {
   assert.equal(source.includes("z-[80]"), true);
 });
 
+test("content edits persist and support image upload, deletion, preview, and ordering", () => {
+  assert.equal(source.includes("persistImageFile"), true);
+  assert.equal(source.includes("reorderImageUrls"), true);
+  assert.equal(source.includes("保存修改"), true);
+  assert.equal(source.includes("添加本地图片"), true);
+  assert.equal(source.includes("删除图片"), true);
+  assert.equal(source.includes("拖动图片可调整顺序"), true);
+  assert.equal(source.includes("window.localStorage.setItem(FINISHED_CONTENT_STORAGE_KEY"), true);
+});
+
 test("table action menu does not nest interactive buttons", () => {
   assert.equal(source.includes('<button title="更多操作" className="group relative'), false);
   assert.equal(source.includes('<div className="group relative inline-flex'), true);

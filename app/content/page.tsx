@@ -10,13 +10,13 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 import { accounts, copyCandidates, imagePlans, referenceSources, titleCandidates, trafficTags, videoExtraction, videoScriptRows, videoShots } from "@/lib/mock/data";
 import { directoryPickerFailure, imageExtension, writeBlobFiles, type WritableDirectoryLike } from "@/lib/utils/browser-file-export";
 import { cn } from "@/lib/utils/cn";
-import { imageRefToUploadUrl, isStoredImageRef, persistImageFile, persistImageRefs, resolveImageRef } from "@/lib/utils/image-store";
+import { deleteImageRef, imageRefToUploadUrl, isStoredImageRef, persistImageFile, persistImageRefs, resolveImageRef } from "@/lib/utils/image-store";
 import { appendMaterialLibrary, createLibraryAsset, getAssetBlob, readMaterialLibrary, type LibraryAsset } from "@/lib/utils/material-library";
 import { loadVersionedState, saveVersionedState } from "@/lib/utils/local-state";
 import { formatProductCopyContext, readProductLibrary, type ProductLibraryItem } from "@/lib/utils/product-library";
 import { loadGeneratedImages, saveGeneratedImages } from "@/lib/utils/image-generation-history";
 import { imageGenerationWarnings, pollImageGenerationJob } from "@/lib/utils/image-generation-job-client";
-import { addKeywordValues, removeKeywordValue, reorderAssignedImages, withoutSelectedKeywords } from "@/lib/utils/production-workflow";
+import { addKeywordValues, prependAssignedImages, removeAssignedImage, removeKeywordValue, reorderAssignedImages, withoutSelectedKeywords } from "@/lib/utils/production-workflow";
 import { loadXhsReferenceMediaBlob, loadXhsReferenceMediaObjectUrls, normalizeXhsReferenceMedia, resolveXhsReferenceMedia, type XhsReferenceMedia } from "@/lib/xhs-reference-media";
 import { createXhsTopicMediaStore } from "@/lib/xhs-topic-media-store";
 import type { ImagePlanItem, ImageProvider } from "@/types/image";
@@ -1836,11 +1836,17 @@ export default function ContentPage() {
       } satisfies GeneratedImagePreview;
     }));
     setGeneratedImages((items) => [...uploaded, ...items]);
-    setFinishedImageAssignments((items) => ({
-      ...items,
-      [workIndex]: [...(items[workIndex] ?? []), ...uploaded.map(generatedImageKey)]
-    }));
+    setFinishedImageAssignments((items) => prependAssignedImages(items, workIndex, uploaded.map(generatedImageKey)));
     setFeedback(`已为作品 ${workIndex + 1} 上传并选择 ${uploaded.length} 张本地图片。`);
+  };
+
+  const deleteFinishedUploadedImage = (image: GeneratedImagePreview) => {
+    const imageKey = generatedImageKey(image);
+    setGeneratedImages((items) => items.filter((item) => generatedImageKey(item) !== imageKey));
+    setFinishedImageAssignments((items) => removeAssignedImage(items, imageKey));
+    if (image.storageUrl) void deleteImageRef(image.storageUrl).catch(() => null);
+    if (image.url.startsWith("blob:")) URL.revokeObjectURL(image.url);
+    setFeedback("已删除上传图片。");
   };
 
   const chooseLocalSaveFolder = async () => {
@@ -2803,8 +2809,16 @@ export default function ContentPage() {
                     return image ? [image] : [];
                   });
                   const pageOptions = ["全部", ...Array.from(new Set(generatedImages.filter((image) => image.planPage > 0).map((image) => `P${image.planPage}`)))];
-                  const visibleImages = [...generatedImages]
-                    .sort((a, b) => a.planPage - b.planPage || a.id.localeCompare(b.id))
+                  const visibleImages = generatedImages
+                    .map((image, index) => ({ image, index }))
+                    .sort((a, b) => {
+                      const aUploaded = a.image.provider === "本地上传";
+                      const bUploaded = b.image.provider === "本地上传";
+                      if (aUploaded !== bUploaded) return aUploaded ? -1 : 1;
+                      if (aUploaded && bUploaded) return a.index - b.index;
+                      return a.image.planPage - b.image.planPage || a.image.id.localeCompare(b.image.id);
+                    })
+                    .map(({ image }) => image)
                     .filter((image) => previewImagePageFilter === "全部" || generatedImagePageLabel(image) === previewImagePageFilter);
                   const expanded = expandedPreviewWork === workIndex;
                   return (
@@ -2848,12 +2862,23 @@ export default function ContentPage() {
                                       setDraggingFinishedImageUrl(null);
                                     }}
                                     onDragEnd={() => setDraggingFinishedImageUrl(null)}
-                                    className={cn("w-20 shrink-0 cursor-grab overflow-hidden rounded-lg border border-emerald-200 bg-emerald-50 text-left active:cursor-grabbing", draggingFinishedImageUrl === imageKey ? "opacity-60" : "")}
+                                    className={cn("relative w-20 shrink-0 cursor-grab overflow-hidden rounded-lg border border-emerald-200 bg-emerald-50 text-left active:cursor-grabbing", draggingFinishedImageUrl === imageKey ? "opacity-60" : "")}
                                   >
                                     <button type="button" onClick={() => setPreviewImage(image)} className="block w-full text-left">
                                       <img src={image.url} alt={`已选 ${generatedImagePageLabel(image)}`} className="aspect-[3/4] w-full object-cover" />
                                       <p className="truncate px-1 py-0.5 text-[10px] text-emerald-700">{generatedImagePageLabel(image)}</p>
                                     </button>
+                                    {image.provider === "本地上传" ? (
+                                      <button
+                                        type="button"
+                                        title="删除上传图片"
+                                        aria-label="删除上传图片"
+                                        onClick={() => deleteFinishedUploadedImage(image)}
+                                        className="absolute right-1 top-1 grid h-5 w-5 place-items-center rounded-full bg-slate-950/75 text-xs leading-none text-white hover:bg-red-600"
+                                      >
+                                        ×
+                                      </button>
+                                    ) : null}
                                   </div>
                                 );
                               })}
@@ -2873,10 +2898,21 @@ export default function ContentPage() {
                                 const imageKey = generatedImageKey(image);
                                 const checked = selectedUrls.includes(imageKey);
                                 return (
-                                  <div key={`${work.id}-${image.id}`} className={cn("overflow-hidden rounded-lg border bg-slate-50 text-left transition", checked ? "border-emerald-300 ring-2 ring-emerald-100" : "border-line")}>
+                                  <div key={`${work.id}-${image.id}`} className={cn("relative overflow-hidden rounded-lg border bg-slate-50 text-left transition", checked ? "border-emerald-300 ring-2 ring-emerald-100" : "border-line")}>
                                     <button onClick={() => setPreviewImage(image)} className="block w-full">
                                       <img src={image.url} alt={`P${image.planPage} 生成结果`} className="aspect-[3/4] w-full object-cover" />
                                     </button>
+                                    {image.provider === "本地上传" ? (
+                                      <button
+                                        type="button"
+                                        title="删除上传图片"
+                                        aria-label="删除上传图片"
+                                        onClick={() => deleteFinishedUploadedImage(image)}
+                                        className="absolute right-1 top-1 grid h-5 w-5 place-items-center rounded-full bg-slate-950/75 text-xs leading-none text-white hover:bg-red-600"
+                                      >
+                                        ×
+                                      </button>
+                                    ) : null}
                                     <button onClick={() => toggleFinishedImageAssignment(workIndex, imageKey)} className={cn("flex w-full items-center justify-between px-2 py-1 text-xs", checked ? "bg-emerald-50 text-emerald-700" : "bg-white text-muted hover:bg-orange-50 hover:text-orange-700")}>
                                       <span className="truncate">{generatedImagePageLabel(image)} · {image.provider}</span>
                                       <span className={cn("ml-1 grid h-4 w-4 shrink-0 place-items-center rounded-full border text-[10px]", checked ? "border-emerald-500 bg-emerald-500 text-white" : "border-slate-300")}>{checked ? "✓" : ""}</span>

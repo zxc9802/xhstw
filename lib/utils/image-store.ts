@@ -46,6 +46,16 @@ async function getStoredImage(id: string) {
   }).finally(() => db.close());
 }
 
+async function deleteStoredImage(id: string) {
+  const db = await openImageDb();
+  return new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    tx.objectStore(STORE_NAME).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  }).finally(() => db.close());
+}
+
 function makeImageKey(scope: string, index: number) {
   return `${scope}_${index}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -58,6 +68,11 @@ export async function persistImageFile(blob: Blob, scope: string) {
   const id = makeImageKey(scope, 0);
   await putStoredImage({ id, blob, createdAt: new Date().toISOString() });
   return `${IMAGE_STORE_PREFIX}${id}`;
+}
+
+export async function deleteImageRef(url: string) {
+  if (!isStoredImageRef(url)) return;
+  await deleteStoredImage(url.slice(IMAGE_STORE_PREFIX.length));
 }
 
 export async function persistImageRefs(urls: string[], scope: string) {

@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   addKeywordValues,
+  prependAssignedImages,
   removeKeywordValue,
+  removeAssignedImage,
   reorderAssignedImages,
+  reorderImageUrls,
   selectExportTargets,
   withoutSelectedKeywords
 } from "../lib/utils/production-workflow";
@@ -34,6 +37,25 @@ test("unknown image reorder inputs keep the current logical order", () => {
 
   assert.deepEqual(reorderAssignedImages(current, 0, "missing", "a"), current);
   assert.deepEqual(reorderAssignedImages(current, 0, "a", "missing"), current);
+});
+
+test("newly uploaded finished images are selected before older images", () => {
+  assert.deepEqual(
+    prependAssignedImages({ 0: ["old-a", "old-b"] }, 0, ["new-a", "new-b"]),
+    { 0: ["new-a", "new-b", "old-a", "old-b"] }
+  );
+});
+
+test("deleting an uploaded finished image removes every work assignment", () => {
+  assert.deepEqual(
+    removeAssignedImage({ 0: ["keep", "remove"], 1: ["remove", "other"] }, "remove"),
+    { 0: ["keep"], 1: ["other"] }
+  );
+});
+
+test("content-library images preserve drag-and-drop ordering", () => {
+  assert.deepEqual(reorderImageUrls(["a", "b", "c"], "c", "a"), ["c", "a", "b"]);
+  assert.deepEqual(reorderImageUrls(["a", "b", "c"], "a", "b", "after"), ["b", "a", "c"]);
 });
 
 test("exports selected items when present and otherwise visible items", () => {

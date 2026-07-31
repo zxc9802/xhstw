@@ -71,6 +71,9 @@ test("finished preview starts empty and supports manual upload and ordering", ()
   assert.equal(source.includes("reorderAssignedImages"), true);
   assert.equal(source.includes("event.clientX"), true);
   assert.equal(source.includes("上传图片"), true);
+  assert.equal(source.includes("prependAssignedImages"), true);
+  assert.equal(source.includes("removeAssignedImage"), true);
+  assert.equal(source.includes("删除上传图片"), true);
   assert.equal(source.includes("z-[80]"), true);
 });
 

@@ -61,7 +61,7 @@ function pickArray(record: Record<string, unknown>, keys: string[]) {
   return [];
 }
 
-async function requestDeepSeek(messages: DeepSeekMessage[]) {
+async function requestDeepSeek(messages: DeepSeekMessage[], temperature = 0.85) {
   const apiKey = process.env.DEEPSEEK_API_KEY;
   if (!apiKey) throw new Error("缺少 DEEPSEEK_API_KEY");
 
@@ -84,7 +84,7 @@ async function requestDeepSeek(messages: DeepSeekMessage[]) {
       body: JSON.stringify({
         model: DEEPSEEK_MODEL,
         messages,
-        temperature: 0.85,
+        temperature,
         response_format: { type: "json_object" },
         max_tokens: maxOutputTokens,
       })
@@ -108,6 +108,36 @@ async function requestDeepSeek(messages: DeepSeekMessage[]) {
     await billing.release();
     throw error;
   }
+}
+
+function requiresNoChinese(prompt: string) {
+  return /不(?:要|得|能|可).{0,8}中文|无中文|禁(?:止|用)中文|只(?:要|用|写|输出).{0,4}(?:英文|英语)|(?:english|non-chinese)\s+only|no\s+chinese/iu.test(prompt);
+}
+
+function containsChinese(value: unknown) {
+  return /[\u3400-\u9fff]/u.test(JSON.stringify(value));
+}
+
+async function requestLanguageCompliantJson(
+  messages: DeepSeekMessage[],
+  noChinese: boolean,
+  hasExpectedRows: (result: Record<string, unknown>) => boolean
+) {
+  const firstResult = await requestDeepSeek(messages, noChinese ? 0.65 : 0.85);
+  if (!noChinese || (hasExpectedRows(firstResult) && !containsChinese(firstResult))) return firstResult;
+
+  const correctedResult = await requestDeepSeek([
+    ...messages,
+    { role: "assistant", content: JSON.stringify(firstResult) },
+    {
+      role: "user",
+      content: "上一版违反了硬性语言要求。请重新返回完整 JSON：所有可见文本字段不得包含任何中文汉字，只能使用自然英文；不要解释。"
+    }
+  ], 0.2);
+  if (!hasExpectedRows(correctedResult) || containsChinese(correctedResult)) {
+    throw new Error("DeepSeek 连续两次未遵守“不要中文”的硬性要求");
+  }
+  return correctedResult;
 }
 
 function shouldUseMock() {
@@ -138,6 +168,35 @@ function fallbackTitlesFromReference(title: string) {
   }));
 }
 
+function fallbackEnglishTitles() {
+  const patterns = [
+    "An Honest Everyday Review",
+    "What I Wish I Knew Before Trying It",
+    "A Simple Real-Life Guide",
+    "The Details That Actually Matter",
+    "My Unfiltered Experience",
+    "A Practical Checklist for Beginners",
+    "What Worked for Me in Daily Life",
+    "A Calm Review Without the Hype",
+    "The Small Things Worth Noticing",
+    "A Straightforward Use-Case Breakdown"
+  ];
+  return patterns.map((title, index) => ({
+    title,
+    score: Math.max(86, 96 - index),
+    tag: "Natural voice"
+  }));
+}
+
+function fallbackEnglishCopies() {
+  return Array.from({ length: 10 }, (_, index) => ({
+    id: `A${index + 1}`,
+    style: "Natural diary",
+    summary: "A concise, honest summary based on an everyday use case.",
+    body: "This version keeps the tone natural and personal, focuses on a realistic everyday experience, and avoids exaggerated claims. It is intended as a clean draft for further human review."
+  }));
+}
+
 export async function generateTitlesWithDeepSeek(input: unknown) {
   const reference = getReference(input);
   const title = String(reference.title ?? "");
@@ -146,35 +205,42 @@ export async function generateTitlesWithDeepSeek(input: unknown) {
   const keywords = getKeywords(input);
   const product = getTextField(input, "product");
   const prompt = getTextField(input, "prompt");
+  const noChinese = requiresNoChinese(prompt);
 
-  if (shouldUseMock()) return { provider: "mock", input, titles: fallbackTitlesFromReference(title) };
+  if (shouldUseMock()) return { provider: "mock", input, titles: noChinese ? fallbackEnglishTitles() : fallbackTitlesFromReference(title) };
 
   try {
-    const result = await requestDeepSeek([
+    const result = await requestLanguageCompliantJson([
       {
         role: "system",
-        content: "你是小红书内容生产中台的资深中文文案策划。只返回 JSON，不要输出 Markdown。"
+        content: noChinese
+          ? "你是小红书内容生产中台的文案策划。只返回 JSON，不要输出 Markdown。用户要求英文时，所有可见文本字段不得包含任何中文汉字，只能使用自然英文。"
+          : "你是小红书内容生产中台的资深中文文案策划。只返回 JSON，不要输出 Markdown。"
       },
       {
         role: "user",
         content: [
           "请基于参考作品仿写 10 条标题候选。",
           "要求：不是照抄，要保留参考作品的真实主题、场景、人物/地点/产品逻辑，重写表达；不要擅自改成防晒、护肤或其他无关主题；适合小红书图文或短视频表达；避免绝对化功效承诺。",
-          "返回 JSON 格式：{\"titles\":[{\"title\":\"...\",\"score\":96,\"tag\":\"高点击\"}]}。",
+          noChinese
+            ? "返回 JSON 格式：{\"titles\":[{\"title\":\"...\",\"score\":96,\"tag\":\"Natural voice\"}]}。"
+            : "返回 JSON 格式：{\"titles\":[{\"title\":\"...\",\"score\":96,\"tag\":\"高点击\"}]}。",
           keywords.length ? `用户指定关键词：${keywords.join("、")}` : "用户指定关键词：无",
           keywords.length ? "标题需要自然围绕这些关键词，但不要生硬堆砌。" : "",
           product ? `产品资料库（唯一产品事实来源）：${product}` : "产品资料库：未选择",
           product ? "只可使用上述产品资料库中的产品名称、分类、卖点、痛点和补充要求；参考作品中的品牌、产品名、品类、卖点和功效不得保留或改写后沿用。" : "",
           prompt ? `额外提示词：${prompt}` : "额外提示词：无",
+          noChinese ? "硬性语言要求（最高优先级）：title 和 tag 不得包含任何中文汉字，只能使用自然英文；参考资料中的中文信息需要翻译或改写成英文。" : "",
           `来源平台：${platform}`,
           `参考标题：${title}`,
           `参考正文：${copy}`
         ].join("\n")
       }
-    ]);
+    ], noChinese, (value) => pickArray(value, ["titles", "titleCandidates", "candidates", "标题候选", "标题"])
+      .some((item) => Boolean(item && typeof item === "object" && String((item as Partial<DeepSeekTitle>).title ?? "").trim())));
 
     const titleRows = pickArray(result, ["titles", "titleCandidates", "candidates", "标题候选", "标题"]);
-    const fallbackRows = fallbackTitlesFromReference(title);
+    const fallbackRows = noChinese ? fallbackEnglishTitles() : fallbackTitlesFromReference(title);
     const titles = titleRows.length ? titleRows.slice(0, 10).map((item, index) => {
       const record = item && typeof item === "object" ? item as Partial<DeepSeekTitle> : {};
       return {
@@ -192,14 +258,12 @@ export async function generateTitlesWithDeepSeek(input: unknown) {
       model: DEEPSEEK_MODEL,
       error: error instanceof Error ? error.message : "DeepSeek 标题生成失败",
       input,
-      titles: fallbackTitlesFromReference(title)
+      titles: noChinese ? fallbackEnglishTitles() : fallbackTitlesFromReference(title)
     };
   }
 }
 
 export async function generateCopiesWithDeepSeek(input: unknown) {
-  if (shouldUseMock()) return { provider: "mock", input, copies: copyCandidates };
-
   const reference = getReference(input);
   const title = String(reference.title ?? "");
   const copy = String(reference.copy ?? "");
@@ -207,12 +271,17 @@ export async function generateCopiesWithDeepSeek(input: unknown) {
   const keywords = getKeywords(input);
   const product = getTextField(input, "product");
   const prompt = getTextField(input, "prompt");
+  const noChinese = requiresNoChinese(prompt);
+
+  if (shouldUseMock()) return { provider: "mock", input, copies: noChinese ? fallbackEnglishCopies() : copyCandidates };
 
   try {
-    const result = await requestDeepSeek([
+    const result = await requestLanguageCompliantJson([
       {
         role: "system",
-        content: "你是小红书内容生产中台的资深中文文案策划。只返回 JSON，不要输出 Markdown。"
+        content: noChinese
+          ? "你是小红书内容生产中台的文案策划。只返回 JSON，不要输出 Markdown。用户要求英文时，所有可见文本字段不得包含任何中文汉字，只能使用自然英文。"
+          : "你是小红书内容生产中台的资深中文文案策划。只返回 JSON，不要输出 Markdown。"
       },
       {
         role: "user",
@@ -220,23 +289,29 @@ export async function generateCopiesWithDeepSeek(input: unknown) {
           "请基于参考作品仿写 10 条文案候选。",
           "重要：这里只生成正文文案，不要生成标题，不要把标题式短句放进 summary 或 body。",
           "要求：每条文案风格不同；不是照抄；必须保留参考作品的真实主题、场景、人物/地点/产品逻辑；不要擅自改成防晒、护肤或其他无关主题；保留收藏点、评论引导；避免虚假承诺和绝对化表达；适合本地内容生产后人工审核。",
-          "每条 body 必须是完整正文，建议 220-600 个中文字；summary 必须是正文摘要，40-90 个中文字，不能像标题。",
-          "返回 JSON 格式：{\"copies\":[{\"id\":\"A1\",\"style\":\"素人种草\",\"summary\":\"正文摘要...\",\"body\":\"完整正文...\"}]}。",
+          noChinese
+            ? "每条 body 必须是完整英文正文，建议 150-450 个英文单词；summary 必须是英文正文摘要，建议 25-60 个英文单词，不能像标题。"
+            : "每条 body 必须是完整正文，建议 220-600 个中文字；summary 必须是正文摘要，40-90 个中文字，不能像标题。",
+          noChinese
+            ? "返回 JSON 格式：{\"copies\":[{\"id\":\"A1\",\"style\":\"Natural diary\",\"summary\":\"Copy summary...\",\"body\":\"Complete copy...\"}]}。"
+            : "返回 JSON 格式：{\"copies\":[{\"id\":\"A1\",\"style\":\"素人种草\",\"summary\":\"正文摘要...\",\"body\":\"完整正文...\"}]}。",
           keywords.length ? `用户指定关键词：${keywords.join("、")}` : "用户指定关键词：无",
           keywords.length ? "正文需要自然覆盖这些关键词，并保留小红书口吻。" : "",
           product ? `产品资料库（唯一产品事实来源）：${product}` : "产品资料库：未选择",
           product ? "只可使用上述产品资料库中的产品名称、分类、卖点、痛点和补充要求；参考作品中的品牌、产品名、品类、卖点和功效不得保留或改写后沿用。" : "",
           prompt ? `额外提示词：${prompt}` : "额外提示词：无",
+          noChinese ? "硬性语言要求（最高优先级）：style、summary、body 不得包含任何中文汉字，只能使用自然英文；参考资料中的中文信息需要翻译或改写成英文。" : "",
           `来源平台：${platform}`,
           `参考标题：${title}`,
           `参考正文：${copy}`
         ].join("\n")
       }
-    ]);
+    ], noChinese, (value) => Array.isArray(value.copies)
+      && value.copies.some((item) => Boolean(item && typeof item === "object" && String((item as Partial<DeepSeekCopy>).body ?? "").trim())));
 
     const copies = Array.isArray(result.copies) ? result.copies.slice(0, 10).map((item, index) => {
       const record = item && typeof item === "object" ? item as Partial<DeepSeekCopy> : {};
-      const fallback = copyCandidates[index % copyCandidates.length];
+      const fallback = noChinese ? fallbackEnglishCopies()[index % 10] : copyCandidates[index % copyCandidates.length];
       const body = String(record.body || fallback.body);
       return {
         id: String(record.id || `A${index + 1}`),
@@ -254,7 +329,7 @@ export async function generateCopiesWithDeepSeek(input: unknown) {
       model: DEEPSEEK_MODEL,
       error: error instanceof Error ? error.message : "DeepSeek 文案生成失败",
       input,
-      copies: copyCandidates
+      copies: noChinese ? fallbackEnglishCopies() : copyCandidates
     };
   }
 }

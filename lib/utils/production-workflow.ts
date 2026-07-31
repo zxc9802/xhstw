@@ -45,6 +45,46 @@ export function reorderAssignedImages(
   return { ...assignments, [workIndex]: reordered };
 }
 
+export function prependAssignedImages(
+  assignments: Record<number, string[]>,
+  workIndex: number,
+  imageUrls: string[]
+): Record<number, string[]> {
+  return {
+    ...assignments,
+    [workIndex]: uniqueNonEmpty([...imageUrls, ...(assignments[workIndex] ?? [])])
+  };
+}
+
+export function removeAssignedImage(
+  assignments: Record<number, string[]>,
+  imageUrl: string
+): Record<number, string[]> {
+  return Object.fromEntries(
+    Object.entries(assignments).map(([workIndex, imageUrls]) => [
+      workIndex,
+      imageUrls.filter((url) => url !== imageUrl)
+    ])
+  );
+}
+
+export function reorderImageUrls(
+  imageUrls: string[],
+  sourceUrl: string,
+  targetUrl: string,
+  placement: "before" | "after" = "before"
+) {
+  const sourceIndex = imageUrls.indexOf(sourceUrl);
+  const targetIndex = imageUrls.indexOf(targetUrl);
+  if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return imageUrls;
+
+  const reordered = [...imageUrls];
+  reordered.splice(sourceIndex, 1);
+  const targetIndexAfterRemoval = reordered.indexOf(targetUrl);
+  reordered.splice(targetIndexAfterRemoval + (placement === "after" ? 1 : 0), 0, sourceUrl);
+  return reordered;
+}
+
 export function selectExportTargets<T>(selected: T[], visible: T[]): T[] {
   return selected.length ? selected : visible;
 }
