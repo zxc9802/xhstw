@@ -123,12 +123,14 @@ export async function POST(request: Request) {
     const { titleFieldName, attachmentFieldName, tagFieldName } = resolveFeishuContentFieldNames(fields);
     const imageText = (payload.images ?? []).filter(Boolean).join("\n");
     const tagText = (payload.tags ?? []).map((tag) => tag.startsWith("#") ? tag : `#${tag}`).join(" ");
-    const tagFieldValue = resolveFeishuTagFieldValue(fields, tagFieldName, payload.tags ?? []);
+    const tagFieldValue = tagFieldName === "正文标签"
+      ? [payload.body ?? "", tagText].filter(Boolean).join("\n\n")
+      : resolveFeishuTagFieldValue(fields, tagFieldName, payload.tags ?? []);
     const uploadWarnings: string[] = [];
     let attachmentValues: Array<{ file_token: string }> = [];
 
     if (payload.images?.length && !attachmentFieldName) {
-      uploadWarnings.push("飞书表中未找到附件字段：图片或视频、图片、平台图片");
+      uploadWarnings.push("飞书表中未找到附件字段：创作内容、图片或视频、图片、平台图片");
     }
 
     if (attachmentFieldName && payload.images?.length) {
@@ -168,10 +170,11 @@ export async function POST(request: Request) {
     const recordFields = Object.fromEntries(Object.entries(candidateFields).filter(([name, value]) => {
       if (!fields.has(name) || value === "") return false;
       const type = fields.get(name);
+      if (type === 20) return false;
       return type !== 17 || Array.isArray(value);
     }));
     if (!Object.keys(recordFields).length) {
-      throw new Error("飞书表中未匹配到字段：平台、账号名称、图片或视频、标题、内容正文、小红书tag、关键词、标签");
+      throw new Error("飞书表中未匹配到字段：创作内容、标题、正文标签、上传日期");
     }
 
     const result = await feishuRequest(`/bitable/v1/apps/${appToken}/tables/${tableId}/records`, {

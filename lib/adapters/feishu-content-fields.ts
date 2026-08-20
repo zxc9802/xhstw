@@ -1,8 +1,8 @@
 export type FeishuFieldMap = ReadonlyMap<string, number>;
 
 const TITLE_FIELD_NAMES = ["标题", "内容标题"] as const;
-const ATTACHMENT_FIELD_NAMES = ["图片或视频", "图片", "平台图片"] as const;
-const TAG_FIELD_NAMES = ["小红书tag", "关键词", "关键字", "标签"] as const;
+const ATTACHMENT_FIELD_NAMES = ["创作内容", "图片或视频", "图片", "平台图片"] as const;
+const TAG_FIELD_NAMES = ["正文标签", "小红书tag", "关键词", "关键字", "标签"] as const;
 const ATTACHMENT_FIELD_TYPE = 17;
 const MULTI_SELECT_FIELD_TYPE = 4;
 

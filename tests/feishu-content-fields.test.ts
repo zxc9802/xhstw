@@ -2,18 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { resolveFeishuContentFieldNames, resolveFeishuTagFieldValue } from "../lib/adapters/feishu-content-fields";
 
-test("matches the live Feishu title and attachment fields", () => {
+test("matches the current Feishu content fields", () => {
   const fields = new Map<string, number>([
-    ["平台", 3],
+    ["上传日期", 5],
+    ["创作内容", 17],
     ["标题", 1],
-    ["内容正文", 1],
-    ["图片或视频", 17]
+    ["正文标签", 1]
   ]);
 
   assert.deepEqual(resolveFeishuContentFieldNames(fields), {
     titleFieldName: "标题",
-    attachmentFieldName: "图片或视频",
-    tagFieldName: undefined
+    attachmentFieldName: "创作内容",
+    tagFieldName: "正文标签"
   });
 });
 

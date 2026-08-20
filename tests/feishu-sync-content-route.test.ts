@@ -33,7 +33,7 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
-test("uploads a browser image and title into the live Feishu fields", async (t) => {
+test("maps an upload into the current Feishu content fields", async (t) => {
   installFeishuEnv(t);
   const originalFetch = globalThis.fetch;
   let mediaUploadCalls = 0;
@@ -47,12 +47,12 @@ test("uploads a browser image and title into the live Feishu fields", async (t) 
     }
     if (url.endsWith("/fields")) {
       return jsonResponse({ data: { items: [
-        { field_name: "平台", type: 3 },
-        { field_name: "账号名称", type: 3 },
+        { field_name: "上传日期", type: 5 },
+        { field_name: "创作内容", type: 17 },
         { field_name: "标题", type: 1 },
-        { field_name: "内容正文", type: 1 },
-        { field_name: "图片或视频", type: 17 },
-        { field_name: "小红书tag", type: 1 }
+        { field_name: "正文标签", type: 1 },
+        { field_name: "发布账号信息", type: 18 },
+        { field_name: "平台", type: 20 }
       ] } });
     }
     if (url.endsWith("/drive/v1/medias/upload_all")) {
@@ -82,8 +82,11 @@ test("uploads a browser image and title into the live Feishu fields", async (t) 
   assert.equal(response.status, 200);
   assert.equal(mediaUploadCalls, 1);
   assert.equal(recordFields?.标题, "浏览器素材标题");
-  assert.equal(recordFields?.小红书tag, "#测试标签");
-  assert.deepEqual(recordFields?.图片或视频, [{ file_token: "file-token-1" }]);
+  assert.equal(recordFields?.正文标签, "浏览器素材正文\n\n#测试标签");
+  assert.deepEqual(recordFields?.创作内容, [{ file_token: "file-token-1" }]);
+  assert.equal(typeof recordFields?.上传日期, "number");
+  assert.equal(recordFields?.平台, undefined);
+  assert.equal(recordFields?.发布账号信息, undefined);
 });
 
 test("syncs tags into a multi-select keyword alias when that is the live field", async (t) => {
