@@ -39,10 +39,12 @@ function jsonResponse(body: unknown, status = 200) {
 
 class MemoryContentGateway implements ContentStorageGateway {
   objects = new Map<string, StoredObject>();
-  async createPutUrl(key: string) { return `https://upload.test/${encodeURIComponent(key)}`; }
   async headObject(key: string) {
     const value = this.objects.get(key);
     return value ? { contentType: value.contentType, size: value.bytes.byteLength } : undefined;
+  }
+  async putObject(key: string, bytes: Uint8Array, contentType: string) {
+    this.objects.set(key, { bytes, contentType });
   }
   async putJson(key: string, value: unknown) {
     this.objects.set(key, { bytes: new TextEncoder().encode(JSON.stringify(value)), contentType: "application/json" });
@@ -381,6 +383,6 @@ test("loads COS images in saved order while keeping the selected publish target"
   assert.deepEqual(uploadedBytes, [11, 22]);
   assert.deepEqual(recordFields?.图片或视频, [{ file_token: "token-11" }, { file_token: "token-22" }]);
   assert.equal(recordFields?.标题, "COS 顺序");
-  assert.equal(recordFields?.平台, "TikTok");
-  assert.equal(recordFields?.账号, "过期账号");
+  assert.equal(recordFields?.平台, "小红书");
+  assert.equal(recordFields?.账号, "账号");
 });

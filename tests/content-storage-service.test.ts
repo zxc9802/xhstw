@@ -12,17 +12,19 @@ import {
 } from "../lib/content-storage/service";
 import type { ContentDraft } from "../lib/content-storage/contracts";
 
+process.env.APP_SESSION_SECRET = "content-storage-service-test";
+
 class MemoryGateway implements ContentStorageGateway {
   objects = new Map<string, StoredObject>();
   rejectDeletes = false;
 
-  async createPutUrl(key: string) {
-    return `https://upload.test/${encodeURIComponent(key)}`;
-  }
-
   async headObject(key: string) {
     const value = this.objects.get(key);
     return value ? { contentType: value.contentType, size: value.bytes.byteLength } : undefined;
+  }
+
+  async putObject(key: string, bytes: Uint8Array, contentType: string) {
+    this.objects.set(key, { bytes, contentType });
   }
 
   async putJson(key: string, value: unknown) {
@@ -80,6 +82,9 @@ test("commits selected images and lists them only for the authenticated member",
     now: new Date("2026-08-21T06:00:00.000Z"),
     ids: ["11111111-2222-4333-8444-555555555555", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"]
   });
+  const uploadUrl = new URL(intent.uploads[0].uploadUrl, "https://app.test");
+  assert.equal(uploadUrl.pathname, `/api/content-storage/items/${intent.contentId}/media/${intent.uploads[0].fileId}/upload`);
+  assert.ok(uploadUrl.searchParams.get("token"));
   gateway.objects.set(intent.uploads[0].key, {
     bytes: new Uint8Array(4),
     contentType: "image/png"

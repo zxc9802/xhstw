@@ -12,9 +12,15 @@ import {
   type UploadIntentObject
 } from "./contracts";
 import type { ContentStorageGateway } from "./gateway";
+import { createUploadCapability } from "./upload-capability";
 
 type IntentOptions = { now?: Date; ids?: string[] };
 type UploadedFile = UploadIntentObject & { uploadUrl?: string };
+
+function uploadUrl(contentId: string, fileId: string, token: string) {
+  const path = `/api/content-storage/items/${encodeURIComponent(contentId)}/media/${encodeURIComponent(fileId)}/upload`;
+  return `${path}?${new URLSearchParams({ token })}`;
+}
 
 export async function createUploadIntent(
   ownerId: string,
@@ -29,12 +35,17 @@ export async function createUploadIntent(
     const fileId = mediaFileId(index, image.contentType, ids.shift() ?? randomUUID());
     return { ...image, fileId, key: imageObjectKey(ownerId, contentId, fileId) };
   });
+  const intentTime = (options.now ?? new Date()).getTime();
   return {
     contentId,
-    uploads: await Promise.all(objects.map(async (object) => ({
+    uploads: objects.map((object) => ({
       ...object,
-      uploadUrl: await gateway.createPutUrl(object.key, object.contentType)
-    })))
+      uploadUrl: uploadUrl(
+        contentId,
+        object.fileId,
+        createUploadCapability(ownerId, contentId, object.fileId, object, intentTime)
+      )
+    }))
   };
 }
 
@@ -52,12 +63,17 @@ export async function createReplacementUploadIntent(
     const fileId = mediaFileId(index, image.contentType, ids.shift() ?? randomUUID());
     return { ...image, fileId, key: imageObjectKey(ownerId, contentId, fileId) };
   });
+  const intentTime = (options.now ?? new Date()).getTime();
   return {
     contentId,
-    uploads: await Promise.all(objects.map(async (object) => ({
+    uploads: objects.map((object) => ({
       ...object,
-      uploadUrl: await gateway.createPutUrl(object.key, object.contentType)
-    })))
+      uploadUrl: uploadUrl(
+        contentId,
+        object.fileId,
+        createUploadCapability(ownerId, contentId, object.fileId, object, intentTime)
+      )
+    }))
   };
 }
 

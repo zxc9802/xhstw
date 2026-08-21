@@ -6,7 +6,6 @@ import {
   PutObjectCommand,
   S3Client
 } from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type { ContentStorageGateway } from "./gateway";
 
 function required(name: string) {
@@ -42,14 +41,6 @@ export class TencentCosGateway implements ContentStorageGateway {
     }
   });
 
-  async createPutUrl(key: string, contentType: string) {
-    return getSignedUrl(this.client, new PutObjectCommand({
-      Bucket: this.config.bucket,
-      Key: key,
-      ContentType: contentType
-    }), { expiresIn: 10 * 60 });
-  }
-
   async headObject(key: string) {
     try {
       const result = await this.client.send(new HeadObjectCommand({ Bucket: this.config.bucket, Key: key }));
@@ -66,6 +57,15 @@ export class TencentCosGateway implements ContentStorageGateway {
       Key: key,
       Body: JSON.stringify(value),
       ContentType: "application/json; charset=utf-8"
+    }));
+  }
+
+  async putObject(key: string, bytes: Uint8Array, contentType: string) {
+    await this.client.send(new PutObjectCommand({
+      Bucket: this.config.bucket,
+      Key: key,
+      Body: bytes,
+      ContentType: contentType
     }));
   }
 

@@ -143,8 +143,8 @@ export async function POST(request: Request) {
       }
       payload = {
         ...requestedPayload,
-        platform: requestedPayload.platform || manifest.platform,
-        accountName: requestedPayload.accountName || manifest.account,
+        platform: manifest.platform,
+        accountName: manifest.account,
         title: manifest.title,
         body: manifest.body,
         tags: manifest.tags

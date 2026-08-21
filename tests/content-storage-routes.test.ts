@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { NextRequest } from "next/server";
 import { createMainAppSessionCookie, getMainAppSessionCookieName } from "../lib/main-app-sso";
 import { setContentStorageGatewayForTests } from "../lib/content-storage/cos";
+import { CONTENT_IMAGE_MAX_BYTES } from "../lib/content-storage/contracts";
 import type { ContentStorageGateway, StoredObject } from "../lib/content-storage/gateway";
 import { POST as CREATE_INTENT } from "../app/api/content-storage/upload-intents/route";
 import { POST as COMMIT } from "../app/api/content-storage/items/[contentId]/commit/route";
@@ -13,13 +16,15 @@ import { GET as MEDIA } from "../app/api/content-storage/items/[contentId]/media
 
 class MemoryGateway implements ContentStorageGateway {
   objects = new Map<string, StoredObject>();
-  async createPutUrl(key: string) { return `https://upload.test/${encodeURIComponent(key)}`; }
   async headObject(key: string) {
     const value = this.objects.get(key);
     return value ? { contentType: value.contentType, size: value.bytes.byteLength } : undefined;
   }
   async putJson(key: string, value: unknown) {
     this.objects.set(key, { bytes: new TextEncoder().encode(JSON.stringify(value)), contentType: "application/json" });
+  }
+  async putObject(key: string, bytes: Uint8Array, contentType: string) {
+    this.objects.set(key, { bytes, contentType });
   }
   async getJson(key: string) {
     const value = this.objects.get(key);
@@ -114,4 +119,90 @@ test("route lifecycle is authenticated and member isolated", async (t) => {
 test("list route rejects requests without the SSO cookie", async () => {
   const response = await LIST(new NextRequest("https://app.test/api/content-storage/items"));
   assert.equal(response.status, 401);
+});
+
+test("uploads image bytes through the authenticated same-origin route", async (t) => {
+  const uploadRouteUrl = new URL("../app/api/content-storage/items/[contentId]/media/[fileId]/upload/route.ts", import.meta.url);
+  assert.equal(existsSync(fileURLToPath(uploadRouteUrl)), true, "same-origin upload route must exist");
+  const { PUT: uploadImage } = await import(uploadRouteUrl.href) as {
+    PUT: (
+      request: NextRequest,
+      context: { params: Promise<{ contentId: string; fileId: string }> }
+    ) => Promise<Response>;
+  };
+  const gateway = new MemoryGateway();
+  setContentStorageGatewayForTests(gateway);
+  t.after(() => setContentStorageGatewayForTests(undefined));
+
+  const intentResponse = await CREATE_INTENT(await request("member-a", "https://app.test/api/content-storage/upload-intents", {
+    method: "POST",
+    body: JSON.stringify({ images: [{ contentType: "image/png", size: 4 }] })
+  }));
+  const intent = (await intentResponse.json()).data;
+  const upload = intent.uploads[0];
+  const uploadUrl = new URL(upload.uploadUrl, "https://app.test");
+  assert.equal(uploadUrl.pathname, `/api/content-storage/items/${intent.contentId}/media/${upload.fileId}/upload`);
+  assert.ok(uploadUrl.searchParams.get("token"));
+
+  const response = await uploadImage(await request("member-a", `https://app.test${upload.uploadUrl}`, {
+    method: "PUT",
+    headers: { "Content-Type": "image/png" },
+    body: new Uint8Array([1, 2, 3, 4])
+  }), { params: Promise.resolve({ contentId: intent.contentId, fileId: upload.fileId }) });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(gateway.objects.get(upload.key), {
+    bytes: new Uint8Array([1, 2, 3, 4]),
+    contentType: "image/png"
+  });
+
+  uploadUrl.searchParams.set("token", "forged");
+  const forged = await uploadImage(await request("member-a", uploadUrl.toString(), {
+    method: "PUT",
+    headers: { "Content-Type": "image/png" },
+    body: new Uint8Array([9, 9, 9, 9])
+  }), { params: Promise.resolve({ contentId: intent.contentId, fileId: upload.fileId }) });
+  assert.equal(forged.status, 400);
+  assert.deepEqual(gateway.objects.get(upload.key)?.bytes, new Uint8Array([1, 2, 3, 4]));
+
+  const wrongMember = await uploadImage(await request("member-b", `https://app.test${upload.uploadUrl}`, {
+    method: "PUT",
+    headers: { "Content-Type": "image/png" },
+    body: new Uint8Array([9, 9, 9, 9])
+  }), { params: Promise.resolve({ contentId: intent.contentId, fileId: upload.fileId }) });
+  assert.equal(wrongMember.status, 400);
+  assert.equal(gateway.objects.size, 1);
+});
+
+test("stops reading an upload as soon as it exceeds the image size limit", async (t) => {
+  const { PUT: uploadImage } = await import("../app/api/content-storage/items/[contentId]/media/[fileId]/upload/route");
+  const gateway = new MemoryGateway();
+  setContentStorageGatewayForTests(gateway);
+  t.after(() => setContentStorageGatewayForTests(undefined));
+
+  const intentResponse = await CREATE_INTENT(await request("member-a", "https://app.test/api/content-storage/upload-intents", {
+    method: "POST",
+    body: JSON.stringify({ images: [{ contentType: "image/png", size: 4 }] })
+  }));
+  const intent = (await intentResponse.json()).data;
+  const upload = intent.uploads[0];
+  let pulls = 0;
+  const chunk = new Uint8Array(1024 * 1024);
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulls += 1;
+      if (pulls <= 25) controller.enqueue(chunk);
+      if (pulls === 25) controller.close();
+    }
+  });
+
+  const response = await uploadImage(await request("member-a", `https://app.test${upload.uploadUrl}`, {
+    method: "PUT",
+    headers: { "Content-Type": "image/png" },
+    body
+  }), { params: Promise.resolve({ contentId: intent.contentId, fileId: upload.fileId }) });
+
+  assert.equal(response.status, 400);
+  assert.ok(pulls <= Math.ceil(CONTENT_IMAGE_MAX_BYTES / chunk.byteLength) + 2, `read ${pulls} chunks`);
+  assert.equal(gateway.objects.has(upload.key), false);
 });
