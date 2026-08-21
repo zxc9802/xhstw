@@ -18,6 +18,9 @@ export async function deleteContentLibraryStorage(
   dependencies: DeleteStorageDependencies
 ) {
   const legacyId = item.source === "browser" ? item.id : item.legacySourceId;
+
+  if (item.source === "cos") await dependencies.deleteCosContent(item.id);
+
   const raw = legacyId ? dependencies.getLegacyContent() : null;
   const legacyExists = Boolean(legacyId) && (
     item.source === "browser"
@@ -26,8 +29,6 @@ export async function deleteContentLibraryStorage(
   const legacyDeletion = legacyExists
     ? deleteLegacyContentItem(raw, legacyId as string)
     : undefined;
-
-  if (item.source === "cos") await dependencies.deleteCosContent(item.id);
 
   if (!legacyDeletion || !legacyId) {
     return { legacyId: undefined, browserCleanupFailed: false };
