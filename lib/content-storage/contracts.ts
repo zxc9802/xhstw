@@ -16,15 +16,13 @@ export type LibraryStatus = '可发布' | '需复查' | '已归档' | '已淘汰
 export type RiskLevel = '低' | '中' | '高';
 
 export interface ImageDescriptor {
-  name: string;
   contentType: string;
   size: number;
 }
 
 export interface UploadIntentObject extends ImageDescriptor {
   fileId: string;
-  uploadUrl: string;
-  expiresAt: number;
+  key: string;
 }
 
 export interface ReferenceSourceSnapshot {
@@ -78,7 +76,7 @@ export interface StoredContentManifest {
   pages: StoredContentPage[];
   referenceSources: ReferenceSourceSnapshot[];
   tags: string[];
-  folder: string;
+  folder: string | null;
   prompts: string[];
   negativePrompts: string[];
   status: LibraryStatus;
@@ -86,26 +84,25 @@ export interface StoredContentManifest {
   duplicateRate: number;
   duplicateLabel: string;
   lowFlowRisk: RiskLevel;
-  checkAdvice: string;
-  reviewNotes: string;
+  checkAdvice: string[];
+  reviewNotes: string[];
   createdAt: string;
   updatedAt: string;
 }
 
-export type ContentDraft = Omit<StoredContentManifest, 'systemState' | 'createdAt' | 'updatedAt'> & {
+export type ContentDraft = Omit<StoredContentManifest, 'schemaVersion' | 'id' | 'ownerId' | 'media' | 'systemState' | 'createdAt' | 'updatedAt'> & {
   externalVideoUrls: string[];
 };
 
 export interface UploadIntent {
   contentId: string;
   token: string;
-  uploads: UploadIntentObject[];
-  uploadUrl: string;
+  uploads: Array<UploadIntentObject & { uploadUrl: string }>;
   expiresAt: number;
 }
 
 const CONTENT_ID_PATTERN = /^\d{8}T\d{9}Z-[0-9a-f]{12}$/;
-const FILE_ID_PATTERN = /^image-\d+-[0-9a-f]{12}\.(?:jpg|png|webp|gif|avif)$/;
+const FILE_ID_PATTERN = /^\d{3}-[0-9a-f]{12}\.(?:jpg|png|webp|gif|avif)$/;
 
 export function createContentId(now: Date, id: string): string {
   if (!(now instanceof Date) || Number.isNaN(now.getTime())) throw new Error('now');
@@ -134,12 +131,12 @@ export function manifestObjectKey(ownerId: string, contentId: string): string {
 }
 
 export function mediaFileId(index: number, contentType: string, id: string): string {
-  if (!Number.isInteger(index) || index < 1) throw new Error('index无效');
+  if (!Number.isInteger(index) || index < 0 || index > 998) throw new Error('index无效');
   const extension = CONTENT_IMAGE_TYPES.get(contentType);
   if (!extension) throw new Error('不支持的图片类型');
   const uuid = id.toLowerCase().replace(/-/g, '');
   if (!/^[0-9a-f]{32}$/.test(uuid)) throw new Error('id');
-  return `image-${String(index).padStart(2, '0')}-${uuid.slice(0, 12)}.${extension}`;
+  return `${String(index + 1).padStart(3, '0')}-${uuid.slice(0, 12)}.${extension}`;
 }
 
 export function imageObjectKey(ownerId: string, contentId: string, fileId: string): string {
@@ -158,7 +155,7 @@ export function parseImageDescriptors(value: unknown): ImageDescriptor[] {
     if (!Number.isInteger(descriptor.size) || (descriptor.size as number) <= 0) throw new Error('图片大小无效');
     if ((descriptor.size as number) > CONTENT_IMAGE_MAX_BYTES) throw new Error('单张图片不能超过 20 MB');
     total += descriptor.size as number;
-    return { name: String(descriptor.name ?? ''), contentType: descriptor.contentType as string, size: descriptor.size as number };
+    return { contentType: descriptor.contentType as string, size: descriptor.size as number };
   });
   if (total > CONTENT_IMAGE_TOTAL_MAX_BYTES) throw new Error('图片总大小不能超过 100 MB');
   return descriptors;

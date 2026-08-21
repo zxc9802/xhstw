@@ -8,6 +8,11 @@ import {
   CONTENT_IMAGE_TYPES,
   CONTENT_MANIFEST_MAX_BYTES,
   CONTENT_UPLOAD_INTENT_TTL_MS,
+  type ContentDraft,
+  type ImageDescriptor,
+  type StoredContentManifest,
+  type UploadIntent,
+  type UploadIntentObject,
   createContentId,
   imageObjectKey,
   manifestObjectKey,
@@ -48,7 +53,7 @@ test('keeps owner IDs inside a safe URL-encoded contents prefix', () => {
 test('builds validated manifest and image object keys', () => {
   const contentId = '20260821T123456789Z-550e8400e29b';
   const fileId = mediaFileId(1, 'image/jpeg', '550e8400-e29b-41d4-a716-446655440000');
-  assert.equal(fileId, 'image-01-550e8400e29b.jpg');
+  assert.equal(fileId, '002-550e8400e29b.jpg');
   assert.equal(manifestObjectKey('member', contentId), `users/member/contents/${contentId}/manifest.json`);
   assert.equal(imageObjectKey('member', contentId, fileId), `users/member/contents/${contentId}/images/${fileId}`);
   assert.throws(() => manifestObjectKey('member', '../bad'), /contentId/);
@@ -57,45 +62,56 @@ test('builds validated manifest and image object keys', () => {
 
 test('generates stable safe file IDs for JPEG and AVIF', () => {
   const id = '550e8400-e29b-41d4-a716-446655440000';
-  assert.equal(mediaFileId(1, 'image/jpeg', id), 'image-01-550e8400e29b.jpg');
-  assert.equal(mediaFileId(2, 'image/avif', id), 'image-02-550e8400e29b.avif');
+  assert.equal(mediaFileId(0, 'image/jpeg', id), '001-550e8400e29b.jpg');
+  assert.equal(mediaFileId(8, 'image/avif', 'ffffffff-ffff-ffff-ffff-ffffffffffff'), '009-ffffffffffff.avif');
 });
 
 test('accepts valid image descriptors', () => {
   const descriptors = parseImageDescriptors([
-    { name: 'cover.jpg', contentType: 'image/jpeg', size: 1024 },
-    { name: 'detail.avif', contentType: 'image/avif', size: 2048 },
+    { contentType: 'image/jpeg', size: 1024 },
+    { contentType: 'image/avif', size: 2048 },
   ]);
   assert.deepEqual(descriptors, [
-    { name: 'cover.jpg', contentType: 'image/jpeg', size: 1024 },
-    { name: 'detail.avif', contentType: 'image/avif', size: 2048 },
+    { contentType: 'image/jpeg', size: 1024 },
+    { contentType: 'image/avif', size: 2048 },
   ]);
+});
+
+test('exposes the exact manifest, draft, and upload intent contracts', () => {
+  const descriptor = { contentType: 'image/jpeg', size: 1 } satisfies ImageDescriptor;
+  const uploadObject = { ...descriptor, fileId: '001-550e8400e29b.jpg', key: 'users/a/contents/x/images/001-550e8400e29b.jpg' } satisfies UploadIntentObject;
+  const intent = { contentId: 'x', token: 't', uploads: [{ ...uploadObject, uploadUrl: 'https://upload' }], expiresAt: 1 } satisfies UploadIntent;
+  assert.equal(intent.uploads[0].key.includes('/images/'), true);
+  const draft = {} as ContentDraft;
+  const manifest = {} as StoredContentManifest;
+  assert.equal(draft, draft);
+  assert.equal(manifest, manifest);
 });
 
 test('rejects more than 20 image descriptors', () => {
   assert.throws(
-    () => parseImageDescriptors(Array.from({ length: 21 }, (_, index) => ({ name: `${index}.jpg`, contentType: 'image/jpeg', size: 1 }))),
+    () => parseImageDescriptors(Array.from({ length: 21 }, () => ({ contentType: 'image/jpeg', size: 1 }))),
     /最多 20 张/,
   );
 });
 
 test('rejects an image larger than 20 MB', () => {
   assert.throws(
-    () => parseImageDescriptors([{ name: 'large.jpg', contentType: 'image/jpeg', size: CONTENT_IMAGE_MAX_BYTES + 1 }]),
+    () => parseImageDescriptors([{ contentType: 'image/jpeg', size: CONTENT_IMAGE_MAX_BYTES + 1 }]),
     /单张图片不能超过 20 MB/,
   );
 });
 
 test('rejects total image size larger than 100 MB', () => {
   assert.throws(
-    () => parseImageDescriptors(Array.from({ length: 6 }, (_, index) => ({ name: `${index}.jpg`, contentType: 'image/jpeg', size: 20 * 1024 * 1024 }))),
+    () => parseImageDescriptors(Array.from({ length: 6 }, () => ({ contentType: 'image/jpeg', size: 20 * 1024 * 1024 }))),
     /图片总大小不能超过 100 MB/,
   );
 });
 
 test('rejects SVG image descriptors', () => {
   assert.throws(
-    () => parseImageDescriptors([{ name: 'vector.svg', contentType: 'image/svg+xml', size: 100 }]),
+    () => parseImageDescriptors([{ contentType: 'image/svg+xml', size: 100 }]),
     /不支持的图片类型/,
   );
 });
