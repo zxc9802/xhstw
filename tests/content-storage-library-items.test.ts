@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   cloudContentItem,
+  deleteLegacyContentItem,
   editableContentDraft,
   legacyContentDraft,
   mergeContentLibraryItems,
@@ -177,4 +178,24 @@ test("hides a browser legacy row after its COS migration exists", () => {
   const merged = mergeContentLibraryItems([cloudContentItem(migratedManifest)], browser);
 
   assert.deepEqual(merged.map((item) => item.title), ["迁移后标题"]);
+});
+
+test("deletes one legacy row while preserving other raw records and returning local image refs", () => {
+  const raw = JSON.stringify([
+    {
+      id: "legacy-delete",
+      title: "待删除",
+      mediaUrls: ["cps-image://cover", "https://example.com/remote.jpg"],
+      pages: [{ images: ["cps-image://page-2", "cps-image://cover"] }],
+      customField: "保持原始结构"
+    },
+    { id: "legacy-keep", title: "保留", customField: { nested: true } }
+  ]);
+
+  const result = deleteLegacyContentItem(raw, "legacy-delete");
+
+  assert.deepEqual(JSON.parse(result.serialized), [
+    { id: "legacy-keep", title: "保留", customField: { nested: true } }
+  ]);
+  assert.deepEqual(result.imageRefs, ["cps-image://cover", "cps-image://page-2"]);
 });

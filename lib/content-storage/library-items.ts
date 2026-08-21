@@ -185,6 +185,27 @@ export function parseLegacyContentItems(raw: string | null): ContentLibraryItem[
   }
 }
 
+export function deleteLegacyContentItem(raw: string | null, contentId: string) {
+  try {
+    const value = JSON.parse(raw ?? "[]") as unknown;
+    if (!Array.isArray(value)) throw new Error();
+    const removed = value.filter((candidate) => candidate
+      && typeof candidate === "object"
+      && text((candidate as Record<string, unknown>).id) === contentId);
+    if (!removed.length) throw new Error();
+    const remaining = value.filter((candidate) => !(candidate
+      && typeof candidate === "object"
+      && text((candidate as Record<string, unknown>).id) === contentId));
+    const imageRefs = [...new Set(removed.flatMap((candidate) =>
+      legacyMediaUrls(candidate as Record<string, unknown>)
+        .filter((url) => url.startsWith("cps-image://"))
+    ))];
+    return { serialized: JSON.stringify(remaining), imageRefs };
+  } catch {
+    throw new Error("浏览器旧内容删除失败");
+  }
+}
+
 export function mergeContentLibraryItems(cloudItems: ContentLibraryItem[], browserItems: ContentLibraryItem[]) {
   const migratedLegacyIds = new Set(cloudItems.flatMap((item) => item.legacySourceId ? [item.legacySourceId] : []));
   const merged = new Map(browserItems.filter((item) => !migratedLegacyIds.has(item.id)).map((item) => [item.id, item]));
