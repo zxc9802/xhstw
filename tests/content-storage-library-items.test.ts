@@ -189,13 +189,13 @@ test("deletes one legacy row while preserving other raw records and returning lo
       pages: [{ images: ["cps-image://page-2", "cps-image://cover"] }],
       customField: "保持原始结构"
     },
-    { id: "legacy-keep", title: "保留", customField: { nested: true } }
+    { id: "legacy-keep", title: "保留", mediaUrls: ["cps-image://cover"], customField: { nested: true } }
   ]);
 
   const result = deleteLegacyContentItem(raw, "legacy-delete");
 
   assert.deepEqual(JSON.parse(result.serialized), [
-    { id: "legacy-keep", title: "保留", customField: { nested: true } }
+    { id: "legacy-keep", title: "保留", mediaUrls: ["cps-image://cover"], customField: { nested: true } }
   ]);
-  assert.deepEqual(result.imageRefs, ["cps-image://cover", "cps-image://page-2"]);
+  assert.deepEqual(result.imageRefs, ["cps-image://page-2"]);
 });

@@ -132,6 +132,7 @@ function downloadFallback(item: ContentLibraryItem, files: BlobFile[]) {
 export default function ContentLibraryPage() {
   const [items, setItems] = useState<ContentLibraryItem[]>([]);
   const [resolvedBrowserImages, setResolvedBrowserImages] = useState<Record<string, string[]>>({});
+  const resolvedBrowserImagesRef = useRef<Record<string, string[]>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [viewMode, setViewMode] = useState<ViewMode>("cards");
@@ -173,7 +174,13 @@ export default function ContentLibraryPage() {
       const resolved = await resolveImageRefs(item.imageUrls).catch(() => item.imageUrls.filter((url) => !isStoredImageRef(url)));
       return [item.id, resolved] as const;
     }));
-    setResolvedBrowserImages(Object.fromEntries(resolvedRows));
+    const nextResolvedBrowserImages = Object.fromEntries(resolvedRows);
+    const nextResolvedUrls = new Set(Object.values(nextResolvedBrowserImages).flat());
+    Object.values(resolvedBrowserImagesRef.current).flat().forEach((url) => {
+      if (url.startsWith("blob:") && !nextResolvedUrls.has(url)) URL.revokeObjectURL(url);
+    });
+    resolvedBrowserImagesRef.current = nextResolvedBrowserImages;
+    setResolvedBrowserImages(nextResolvedBrowserImages);
 
     let cloudItems: ContentLibraryItem[] = [];
     try {
@@ -192,10 +199,10 @@ export default function ContentLibraryPage() {
   }, [reload]);
 
   useEffect(() => () => {
-    Object.values(resolvedBrowserImages).flat().forEach((url) => {
+    Object.values(resolvedBrowserImagesRef.current).flat().forEach((url) => {
       if (url.startsWith("blob:")) URL.revokeObjectURL(url);
     });
-  }, [resolvedBrowserImages]);
+  }, []);
 
   const filteredItems = useMemo(() => items.filter((item) => {
     const query = filters.keyword.trim().toLowerCase();
@@ -309,29 +316,40 @@ export default function ContentLibraryPage() {
     if (!window.confirm(`确定删除“${item.title}”吗？${storedData}会一起删除，且无法恢复。`)) return;
     setDeletingId(item.id);
     setNotice("");
+    let browserCleanupFailed = false;
     try {
-      if (item.source === "cos") {
-        await deleteContentItem(item.id);
-      } else {
-        const deletion = deleteLegacyContentItem(
-          window.localStorage.getItem(LEGACY_FINISHED_CONTENT_STORAGE_KEY),
-          item.id
-        );
-        window.localStorage.setItem(LEGACY_FINISHED_CONTENT_STORAGE_KEY, deletion.serialized);
-        await Promise.allSettled(deletion.imageRefs.map((url) => deleteImageRef(url)));
-        setResolvedBrowserImages((current) => {
-          const next = { ...current };
-          delete next[item.id];
-          return next;
-        });
+      const legacyId = item.source === "browser" ? item.id : item.legacySourceId;
+      if (legacyId) {
+        const raw = window.localStorage.getItem(LEGACY_FINISHED_CONTENT_STORAGE_KEY);
+        const legacyExists = item.source === "browser"
+          || parseLegacyContentItems(raw).some((candidate) => candidate.id === legacyId);
+        if (legacyExists) {
+          const deletion = deleteLegacyContentItem(
+            raw,
+            legacyId
+          );
+          window.localStorage.setItem(LEGACY_FINISHED_CONTENT_STORAGE_KEY, deletion.serialized);
+          const cleanupResults = await Promise.allSettled(deletion.imageRefs.map((url) => deleteImageRef(url)));
+          browserCleanupFailed = cleanupResults.some((result) => result.status === "rejected");
+          setResolvedBrowserImages((current) => {
+            const next = { ...current };
+            current[legacyId]?.forEach((url) => {
+              if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+            });
+            delete next[legacyId];
+            resolvedBrowserImagesRef.current = next;
+            return next;
+          });
+        }
       }
+      if (item.source === "cos") await deleteContentItem(item.id);
       setItems((current) => current.filter((candidate) => candidate.id !== item.id));
       setSelected((current) => current?.id === item.id ? null : current);
       setEditingItem((current) => current?.id === item.id ? null : current);
       setSelectedIds((current) => current.filter((id) => id !== item.id));
       setPublishPlatformMap((current) => Object.fromEntries(Object.entries(current).filter(([id]) => id !== item.id)));
       setPublishAccountMap((current) => Object.fromEntries(Object.entries(current).filter(([id]) => id !== item.id)));
-      setNotice("内容已删除");
+      setNotice(browserCleanupFailed ? "内容已删除，但部分浏览器本地图片清理失败" : "内容已删除");
     } catch (deleteError) {
       setNotice(deleteError instanceof Error ? deleteError.message : "删除失败");
     } finally {

@@ -196,9 +196,13 @@ export function deleteLegacyContentItem(raw: string | null, contentId: string) {
     const remaining = value.filter((candidate) => !(candidate
       && typeof candidate === "object"
       && text((candidate as Record<string, unknown>).id) === contentId));
+    const retainedImageRefs = new Set(remaining.flatMap((candidate) => candidate
+      && typeof candidate === "object"
+      ? legacyMediaUrls(candidate as Record<string, unknown>)
+      : []));
     const imageRefs = [...new Set(removed.flatMap((candidate) =>
       legacyMediaUrls(candidate as Record<string, unknown>)
-        .filter((url) => url.startsWith("cps-image://"))
+        .filter((url) => url.startsWith("cps-image://") && !retainedImageRefs.has(url))
     ))];
     return { serialized: JSON.stringify(remaining), imageRefs };
   } catch {
