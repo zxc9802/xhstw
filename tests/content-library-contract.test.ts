@@ -11,17 +11,21 @@ test("loads current-member COS content and browser legacy content without writin
   assert.equal(source.includes("mergeContentLibraryItems"), true);
   assert.equal(source.includes("window.localStorage.getItem(LEGACY_FINISHED_CONTENT_STORAGE_KEY)"), true);
   assert.equal(source.includes("finishedContentsSeed"), false);
-  assert.equal(source.includes("localStorage.setItem"), false);
+  assert.equal(source.includes("window.localStorage.setItem(FINISHED_CONTENT_STORAGE_KEY"), false);
   assert.equal(source.includes("localStorage.removeItem"), false);
   assert.equal(source.includes("localStorage.clear"), false);
 });
 
-test("resolves legacy IndexedDB images and deletes only COS rows", () => {
+test("deletes COS and browser rows from cards, table rows, and details", () => {
   assert.equal(source.includes("resolveImageRefs"), true);
   assert.equal(source.includes("deleteContentItem"), true);
-  assert.equal(source.includes('item.source === "cos"'), true);
+  assert.equal(source.includes("deleteLegacyContentItem"), true);
+  assert.equal(source.includes("deleteImageRef"), true);
+  assert.equal(source.includes("window.localStorage.setItem(LEGACY_FINISHED_CONTENT_STORAGE_KEY"), true);
+  assert.equal(source.includes('item.source === "cos" ? <Button variant="danger"'), false);
+  assert.equal(source.match(/void removeItem\(/g)?.length, 3);
+  assert.equal(source.includes('title="删除内容"'), true);
   assert.equal(source.includes("浏览器旧内容"), true);
-  assert.equal(source.includes("persistImageFile"), false);
 });
 
 test("restores COS image upload, drag ordering, and Feishu sync", () => {

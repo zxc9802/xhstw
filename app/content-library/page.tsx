@@ -13,6 +13,7 @@ import { CONTENT_IMAGE_MAX_COUNT, CONTENT_IMAGE_TYPES } from "@/lib/content-stor
 import {
   LEGACY_FINISHED_CONTENT_STORAGE_KEY,
   cloudContentItem,
+  deleteLegacyContentItem,
   editableContentDraft,
   legacyContentDraft,
   mergeContentLibraryItems,
@@ -31,7 +32,7 @@ import {
   type WritableDirectoryLike
 } from "@/lib/utils/browser-file-export";
 import { cn } from "@/lib/utils/cn";
-import { imageRefToUploadUrl, isStoredImageRef, resolveImageRefs } from "@/lib/utils/image-store";
+import { deleteImageRef, imageRefToUploadUrl, isStoredImageRef, resolveImageRefs } from "@/lib/utils/image-store";
 import { reorderImageUrls } from "@/lib/utils/production-workflow";
 
 type EditableImage = {
@@ -302,14 +303,34 @@ export default function ContentLibraryPage() {
   }
 
   async function removeItem(item: ContentLibraryItem) {
-    if (item.source !== "cos") return;
-    if (!window.confirm(`确定删除“${item.title}”吗？COS 中的文字和图片会一起删除。`)) return;
+    const storedData = item.source === "cos"
+      ? "COS 中的文字和图片"
+      : "浏览器中的旧记录和本地图片";
+    if (!window.confirm(`确定删除“${item.title}”吗？${storedData}会一起删除，且无法恢复。`)) return;
     setDeletingId(item.id);
     setNotice("");
     try {
-      await deleteContentItem(item.id);
+      if (item.source === "cos") {
+        await deleteContentItem(item.id);
+      } else {
+        const deletion = deleteLegacyContentItem(
+          window.localStorage.getItem(LEGACY_FINISHED_CONTENT_STORAGE_KEY),
+          item.id
+        );
+        window.localStorage.setItem(LEGACY_FINISHED_CONTENT_STORAGE_KEY, deletion.serialized);
+        await Promise.allSettled(deletion.imageRefs.map((url) => deleteImageRef(url)));
+        setResolvedBrowserImages((current) => {
+          const next = { ...current };
+          delete next[item.id];
+          return next;
+        });
+      }
       setItems((current) => current.filter((candidate) => candidate.id !== item.id));
-      if (selected?.id === item.id) setSelected(null);
+      setSelected((current) => current?.id === item.id ? null : current);
+      setEditingItem((current) => current?.id === item.id ? null : current);
+      setSelectedIds((current) => current.filter((id) => id !== item.id));
+      setPublishPlatformMap((current) => Object.fromEntries(Object.entries(current).filter(([id]) => id !== item.id)));
+      setPublishAccountMap((current) => Object.fromEntries(Object.entries(current).filter(([id]) => id !== item.id)));
       setNotice("内容已删除");
     } catch (deleteError) {
       setNotice(deleteError instanceof Error ? deleteError.message : "删除失败");
@@ -541,7 +562,7 @@ export default function ContentLibraryPage() {
                           <Button icon={<Edit3 className="h-4 w-4" />} onClick={() => openEditor(item)}>编辑</Button>
                           <Button variant="success" icon={<Send className="h-4 w-4" />} onClick={() => void syncContentToFeishu(item)} disabled={syncingId === item.id}>{syncingId === item.id ? "同步中…" : "同步"}</Button>
                           <Button icon={<Download className="h-4 w-4" />} onClick={() => void chooseLocalExportFolder(item)} disabled={exportingId === item.id}>导出</Button>
-                          {item.source === "cos" ? <Button variant="danger" icon={<Trash2 className="h-4 w-4" />} onClick={() => void removeItem(item)} disabled={deletingId === item.id}>删除</Button> : null}
+                          <Button variant="danger" icon={<Trash2 className="h-4 w-4" />} onClick={() => void removeItem(item)} disabled={deletingId === item.id}>{deletingId === item.id ? "删除中…" : "删除"}</Button>
                         </div>
                       </article>
                     );
@@ -565,7 +586,7 @@ export default function ContentLibraryPage() {
                         <td className="px-4 py-3"><StatusBadge status={statusKey(item.status)} label={item.status} /></td>
                         <td className="max-w-48 truncate px-4 py-3 text-xs text-muted">{item.localPath}</td>
                         <td className="px-4 py-3 text-muted">{dateText(item.updatedAt)}</td>
-                        <td className="px-4 py-3"><div className="flex gap-1"><IconAction title="查看详情" icon={<Eye className="h-4 w-4" />} onClick={() => setSelected(item)} /><IconAction title="编辑内容" icon={<Edit3 className="h-4 w-4" />} onClick={() => openEditor(item)} /><IconAction title="复制文案" icon={<Copy className="h-4 w-4" />} onClick={() => void copyContent(item)} /><IconAction title="导出内容包" icon={<Download className="h-4 w-4" />} onClick={() => void chooseLocalExportFolder(item)} /></div></td>
+                        <td className="px-4 py-3"><div className="flex gap-1"><IconAction title="查看详情" icon={<Eye className="h-4 w-4" />} onClick={() => setSelected(item)} /><IconAction title="编辑内容" icon={<Edit3 className="h-4 w-4" />} onClick={() => openEditor(item)} /><IconAction title="复制文案" icon={<Copy className="h-4 w-4" />} onClick={() => void copyContent(item)} /><IconAction title="导出内容包" icon={<Download className="h-4 w-4" />} onClick={() => void chooseLocalExportFolder(item)} /><IconAction title="删除内容" icon={<Trash2 className="h-4 w-4" />} onClick={() => void removeItem(item)} disabled={deletingId === item.id} /></div></td>
                       </tr>
                     );
                   })}
@@ -586,7 +607,7 @@ export default function ContentLibraryPage() {
               {selected.videoUrls.map((url) => <a key={url} href={url} target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm text-blue-700 hover:bg-blue-50"><ExternalLink className="h-4 w-4" />打开视频</a>)}
               {selected.prompts.length ? <Card><CardHeader title="提示词" /><CardBody className="space-y-2">{selected.prompts.map((prompt) => <p key={prompt} className="rounded-lg bg-slate-50 p-3 text-sm text-muted">{prompt}</p>)}</CardBody></Card> : null}
             </div>
-            <div className="sticky bottom-0 flex flex-wrap justify-end gap-2 border-t border-line bg-white px-5 py-4"><Button onClick={() => openEditor(selected)}>编辑内容</Button><Button onClick={() => void copyContent(selected)}>复制文案</Button><Button variant="success" onClick={() => void syncContentToFeishu(selected)}>同步到飞书</Button><Button onClick={() => void chooseLocalExportFolder(selected)}>导出内容包</Button><Button onClick={() => setSelected(null)}>关闭</Button></div>
+            <div className="sticky bottom-0 flex flex-wrap justify-end gap-2 border-t border-line bg-white px-5 py-4"><Button onClick={() => openEditor(selected)}>编辑内容</Button><Button onClick={() => void copyContent(selected)}>复制文案</Button><Button variant="success" onClick={() => void syncContentToFeishu(selected)}>同步到飞书</Button><Button onClick={() => void chooseLocalExportFolder(selected)}>导出内容包</Button><Button variant="danger" icon={<Trash2 className="h-4 w-4" />} onClick={() => void removeItem(selected)} disabled={deletingId === selected.id}>{deletingId === selected.id ? "删除中…" : "删除"}</Button><Button onClick={() => setSelected(null)}>关闭</Button></div>
           </aside>
         </div>
       ) : null}
@@ -606,8 +627,8 @@ function TagList({ tags }: { tags: string[] }) {
   return <div className="flex flex-wrap gap-1">{tags.slice(0, 3).map((tag) => <span key={tag} className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-600">{tag}</span>)}{tags.length > 3 ? <span className="rounded-full bg-orange-50 px-2 py-1 text-xs text-orange-700">+{tags.length - 3}</span> : null}</div>;
 }
 
-function IconAction({ title, icon, onClick }: { title: string; icon: React.ReactNode; onClick: () => void }) {
-  return <button type="button" title={title} aria-label={title} onClick={onClick} className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-line bg-white text-muted transition hover:border-orange-200 hover:bg-orange-50 hover:text-orange-700">{icon}</button>;
+function IconAction({ title, icon, onClick, disabled = false }: { title: string; icon: React.ReactNode; onClick: () => void; disabled?: boolean }) {
+  return <button type="button" title={title} aria-label={title} onClick={onClick} disabled={disabled} className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-line bg-white text-muted transition hover:border-orange-200 hover:bg-orange-50 hover:text-orange-700 disabled:cursor-not-allowed disabled:opacity-50">{icon}</button>;
 }
 
 function EditModal({
