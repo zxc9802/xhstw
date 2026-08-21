@@ -28,7 +28,7 @@ class MemoryGateway implements ContentStorageGateway {
   async deleteKeys(keys: string[]) { keys.forEach((key) => this.objects.delete(key)); }
 }
 
-async function request(ownerId: string, url: string, init?: RequestInit) {
+async function request(ownerId: string, url: string, init?: { method?: string; body?: BodyInit; headers?: HeadersInit }) {
   process.env.APP_SESSION_SECRET = "content-storage-route-test";
   const cookie = await createMainAppSessionCookie({
     token: "token",

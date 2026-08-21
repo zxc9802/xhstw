@@ -10,11 +10,12 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 import { accounts, copyCandidates, imagePlans, referenceSources, titleCandidates, trafficTags, videoExtraction, videoScriptRows, videoShots } from "@/lib/mock/data";
 import { directoryPickerFailure, imageExtension, writeBlobFiles, type WritableDirectoryLike } from "@/lib/utils/browser-file-export";
 import { cn } from "@/lib/utils/cn";
-import { deleteImageRef, imageRefToUploadUrl, isStoredImageRef, persistImageFile, persistImageRefs, resolveImageRef } from "@/lib/utils/image-store";
+import { imageRefToUploadUrl, isStoredImageRef, persistImageFile, persistImageRefs, resolveImageRef } from "@/lib/utils/image-store";
 import { appendMaterialLibrary, createLibraryAsset, getAssetBlob, readMaterialLibrary, type LibraryAsset } from "@/lib/utils/material-library";
 import { loadVersionedState, saveVersionedState } from "@/lib/utils/local-state";
 import { formatProductCopyContext, readProductLibrary, type ProductLibraryItem } from "@/lib/utils/product-library";
-import { loadGeneratedImages, saveGeneratedImages } from "@/lib/utils/image-generation-history";
+import { saveContentDraft as saveContentDraftToCos } from "@/lib/content-storage/client";
+import type { ContentDraft, LibraryStatus, ReferenceSourceSnapshot } from "@/lib/content-storage/contracts";
 import { imageGenerationWarnings, pollImageGenerationJob } from "@/lib/utils/image-generation-job-client";
 import { addKeywordValues, prependAssignedImages, removeAssignedImage, removeKeywordValue, reorderAssignedImages, withoutSelectedKeywords } from "@/lib/utils/production-workflow";
 import { loadXhsReferenceMediaBlob, loadXhsReferenceMediaObjectUrls, normalizeXhsReferenceMedia, resolveXhsReferenceMedia, type XhsReferenceMedia } from "@/lib/xhs-reference-media";
@@ -32,11 +33,8 @@ const videoSteps: VideoStep[] = ["发布文案生成", "视频脚本生成", "�
 const imageProviders: ImageProvider[] = ["Image 2.0", "Nano Banana 2", "nanobanan新", "仅生成提示词，不直接生图"];
 const videoProviders: VideoProvider[] = ["Seedance 2.0", "仅生成分镜提示词，不直接生成视频"];
 const actionLinkClass = "inline-flex h-9 cursor-pointer items-center justify-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink transition hover:border-orange-200 hover:bg-orange-50";
-const FINISHED_CONTENT_STORAGE_KEY = "content-production-studio-xhs.finished-content";
 const REFERENCE_HISTORY_STORAGE_KEY = "content-production-studio-xhs.reference-history";
-const GENERATED_IMAGES_STORAGE_KEY = "content-production-studio-xhs.generated-images";
 const KEYWORD_LIBRARY_STORAGE_KEY = "content-production-studio.keyword-library";
-const IMAGE_DRAFT_STORAGE_KEY = "content-production-studio.image-draft";
 const LOCAL_STATE_VERSION = 1;
 const defaultImagePlan: ImagePlanItem = { ...imagePlans[0], status: "pending" };
 const keywordLibrary = [
@@ -90,8 +88,10 @@ type GeneratedImagePreview = {
   planPage: number;
   url: string;
   provider: string;
-  storageUrl?: string;
+  blob: Blob;
 };
+
+type DisplayImagePreview = Omit<GeneratedImagePreview, "blob">;
 
 type GeneratedVideoPreview = {
   id: string;
@@ -127,34 +127,6 @@ type BatchDraft = {
   style: string;
 };
 
-type ImageProductionDraft = {
-  imageStep: ImageStep;
-  selectedBatchDrafts: BatchDraft[];
-  activeBatchIndex: number;
-  draftTitle: string;
-  draftCopy: string;
-  targetAccount: string;
-  contentType: string;
-  imageCount: string;
-  imageProvider: ImageProvider;
-  imagePlanItems: ImagePlanItem[];
-  activeImagePage: number;
-  imagePromptText: string;
-  imageSize: string;
-  generateCount: string;
-  productImage: ({ name: string; url: string; storageUrl?: string } | null);
-  localImageSources: ImageSourceAsset[];
-  libraryImageSources: ImageSourceAsset[];
-  productImageSources: ImageSourceAsset[];
-  selectedProductId: string;
-  planSourceMap: Record<number, ImageSourceAsset[]>;
-  planPromptMap: Record<number, string>;
-  planSizeMap: Record<number, string>;
-  planCountMap: Record<number, string>;
-  planProviderMap: Record<number, ImageProvider>;
-  parsedReference: ParsedReference | null;
-};
-
 function detectPlatformFromUrl(url: string) {
   if (url.includes("xiaohongshu.com")) return "小红书";
   return "小红书";
@@ -165,15 +137,11 @@ function mockSvg(label: string, tone = "#fff7ed") {
   return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
 }
 
-function generatedImageKey(image: GeneratedImagePreview) {
-  return image.storageUrl ?? image.url;
+function generatedImageKey(image: DisplayImagePreview) {
+  return image.url;
 }
 
-function generatedImageForStorage(image: GeneratedImagePreview): GeneratedImagePreview {
-  return image.storageUrl ? { ...image, url: image.storageUrl } : image;
-}
-
-function generatedImagePageLabel(image: GeneratedImagePreview) {
+function generatedImagePageLabel(image: DisplayImagePreview) {
   return image.planPage > 0 ? `P${image.planPage}` : "本地";
 }
 
@@ -183,6 +151,24 @@ async function imageUrlToBlob(url: string) {
   const response = await fetch(readableUrl);
   if (!response.ok) throw new Error(`图片读取失败（${response.status}）`);
   return response.blob();
+}
+
+async function normalizeCosImageBlob(blob: Blob) {
+  if (["image/jpeg", "image/png", "image/webp", "image/gif", "image/avif"].includes(blob.type)) return blob;
+  const bitmap = await createImageBitmap(blob);
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("图片格式转换失败");
+    context.drawImage(bitmap, 0, 0);
+    const result = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+    if (!result) throw new Error("图片格式转换失败");
+    return result;
+  } finally {
+    bitmap.close();
+  }
 }
 
 function downloadBlob(blob: Blob, name: string) {
@@ -266,11 +252,6 @@ function productAssetsForPool(product: ProductLibraryItem): ImageSourceAsset[] {
   });
 }
 
-function imageSourceForStorage(asset: ImageSourceAsset): ImageSourceAsset {
-  const stableUrl = asset.storageUrl ?? asset.url;
-  return { ...asset, url: stableUrl, storageUrl: stableUrl };
-}
-
 async function persistCollectedImageSource(asset: ImageSourceAsset, scope: string) {
   if (!asset.localAssetKey) return null;
   const blob = await loadXhsReferenceMediaBlob(asset, createXhsTopicMediaStore());
@@ -278,16 +259,6 @@ async function persistCollectedImageSource(asset: ImageSourceAsset, scope: strin
   const storageUrl = await persistImageFile(blob, scope);
   const resolvedUrl = await resolveImageRef(storageUrl);
   return { ...asset, url: resolvedUrl || storageUrl, storageUrl };
-}
-
-async function hydrateImageSource(asset: ImageSourceAsset): Promise<ImageSourceAsset> {
-  const stableUrl = asset.storageUrl ?? asset.url;
-  if (isStoredImageRef(stableUrl)) {
-    const resolvedUrl = await resolveImageRef(stableUrl);
-    return { ...asset, url: resolvedUrl || stableUrl, storageUrl: stableUrl };
-  }
-  const collectedSource = await persistCollectedImageSource(asset, `rehydrated_reference_${Date.now()}`);
-  return collectedSource ?? { ...asset, storageUrl: stableUrl };
 }
 
 async function stabilizeImageSource(asset: ImageSourceAsset, scope: string): Promise<ImageSourceAsset> {
@@ -304,14 +275,6 @@ async function stabilizeImageSource(asset: ImageSourceAsset, scope: string): Pro
   const [storedUrl] = await persistImageRefs([stableUrl], scope);
   const resolvedUrl = isStoredImageRef(storedUrl) ? await resolveImageRef(storedUrl) : stableUrl;
   return { ...asset, url: resolvedUrl || stableUrl, storageUrl: storedUrl };
-}
-
-async function hydrateImageSourceMap(sourceMap: Record<number, ImageSourceAsset[]>) {
-  const entries = await Promise.all(Object.entries(sourceMap).map(async ([page, assets]) => [
-    Number(page),
-    await Promise.all((assets ?? []).map(hydrateImageSource))
-  ] as const));
-  return Object.fromEntries(entries) as Record<number, ImageSourceAsset[]>;
 }
 
 function expandCopyCandidates(items: typeof copyCandidates, baseTitle: string) {
@@ -564,27 +527,6 @@ export default function ContentPage() {
   const [imageSize, setImageSize] = useState("1080x1440");
   const [generateCount, setGenerateCount] = useState("1");
   const [generatedImages, setGeneratedImages] = useState<GeneratedImagePreview[]>([]);
-  const [generatedImagesHydrated, setGeneratedImagesHydrated] = useState(false);
-
-  useEffect(() => {
-    void loadGeneratedImages(GENERATED_IMAGES_STORAGE_KEY)
-      .then(async (images) => {
-        const hydratedImages = await Promise.all(images.map(async (image) => {
-          const storedImage = image as GeneratedImagePreview;
-          const stableUrl = storedImage.storageUrl ?? storedImage.url;
-          if (!isStoredImageRef(stableUrl)) return storedImage;
-          const resolvedUrl = await resolveImageRef(stableUrl);
-          return { ...storedImage, url: resolvedUrl || stableUrl, storageUrl: stableUrl };
-        }));
-        if (hydratedImages.length) setGeneratedImages(hydratedImages);
-      })
-      .finally(() => setGeneratedImagesHydrated(true));
-  }, []);
-
-  useEffect(() => {
-    if (!generatedImagesHydrated) return;
-    void saveGeneratedImages(GENERATED_IMAGES_STORAGE_KEY, generatedImages.map(generatedImageForStorage));
-  }, [generatedImages, generatedImagesHydrated]);
 
   const [customKeywordDraft, setCustomKeywordDraft] = useState("");
   const [customKeywords, setCustomKeywords] = useState<string[]>([]);
@@ -602,8 +544,8 @@ export default function ContentPage() {
   const [planSizeMap, setPlanSizeMap] = useState<Record<number, string>>({});
   const [planCountMap, setPlanCountMap] = useState<Record<number, string>>({});
   const [planProviderMap, setPlanProviderMap] = useState<Record<number, ImageProvider>>({});
-  const [imageDraftHydrated, setImageDraftHydrated] = useState(false);
-  const [previewImage, setPreviewImage] = useState<GeneratedImagePreview | null>(null);
+  const [keywordLibraryHydrated, setKeywordLibraryHydrated] = useState(false);
+  const [previewImage, setPreviewImage] = useState<GeneratedImagePreview | DisplayImagePreview | null>(null);
   const [generatingImagePages, setGeneratingImagePages] = useState<Record<number, ImageProvider>>({});
   const [generatingAllPages, setGeneratingAllPages] = useState(false);
   const imagePageGenerationLock = useRef(false);
@@ -623,7 +565,6 @@ export default function ContentPage() {
   const [directoryPickerSupported, setDirectoryPickerSupported] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
     setDirectoryPickerSupported("showDirectoryPicker" in window);
     const keywordState = loadVersionedState(window.localStorage, KEYWORD_LIBRARY_STORAGE_KEY, LOCAL_STATE_VERSION, {
       customKeywords: [] as string[],
@@ -631,106 +572,16 @@ export default function ContentPage() {
     });
     setCustomKeywords(keywordState.customKeywords);
     setHiddenKeywords(keywordState.hiddenKeywords);
-
-    const draft = loadVersionedState<Partial<ImageProductionDraft> | null>(
-      window.localStorage,
-      IMAGE_DRAFT_STORAGE_KEY,
-      LOCAL_STATE_VERSION,
-      null
-    );
-
-    const restoreDraft = async () => {
-      if (!draft) return;
-      if (draft.imageStep && imageSteps.includes(draft.imageStep)) setImageStep(draft.imageStep);
-      if (Array.isArray(draft.selectedBatchDrafts) && draft.selectedBatchDrafts.length) setSelectedBatchDrafts(draft.selectedBatchDrafts);
-      if (draft.activeBatchIndex !== undefined) setActiveBatchIndex(draft.activeBatchIndex);
-      if (draft.draftTitle !== undefined) setDraftTitle(draft.draftTitle);
-      if (draft.draftCopy !== undefined) setDraftCopy(draft.draftCopy);
-      if (draft.targetAccount !== undefined) setTargetAccount(draft.targetAccount);
-      if (draft.contentType !== undefined) setContentType(draft.contentType);
-      if (draft.imageCount !== undefined) setImageCount(draft.imageCount);
-      if (draft.imageProvider !== undefined) setImageProvider(draft.imageProvider);
-      if (Array.isArray(draft.imagePlanItems) && draft.imagePlanItems.length) setImagePlanItems(draft.imagePlanItems);
-      if (draft.activeImagePage !== undefined) setActiveImagePage(draft.activeImagePage);
-      if (draft.imagePromptText !== undefined) setImagePromptText(draft.imagePromptText);
-      if (draft.imageSize !== undefined) setImageSize(draft.imageSize);
-      if (draft.generateCount !== undefined) setGenerateCount(draft.generateCount);
-      if (draft.selectedProductId !== undefined) setSelectedProductId(draft.selectedProductId);
-      if (draft.planPromptMap) setPlanPromptMap(draft.planPromptMap);
-      if (draft.planSizeMap) setPlanSizeMap(draft.planSizeMap);
-      if (draft.planCountMap) setPlanCountMap(draft.planCountMap);
-      if (draft.planProviderMap) setPlanProviderMap(draft.planProviderMap);
-      if (draft.parsedReference !== undefined) setParsedReference(draft.parsedReference);
-
-      const [localSources, librarySources, productSources, restoredPlanSources] = await Promise.all([
-        Promise.all((draft.localImageSources ?? []).map(hydrateImageSource)),
-        Promise.all((draft.libraryImageSources ?? []).map(hydrateImageSource)),
-        Promise.all((draft.productImageSources ?? []).map(hydrateImageSource)),
-        hydrateImageSourceMap(draft.planSourceMap ?? {})
-      ]);
-      if (cancelled) return;
-      setLocalImageSources(localSources);
-      setLibraryImageSources(librarySources);
-      setProductImageSources(productSources);
-      setPlanSourceMap(restoredPlanSources);
-
-      if (draft.productImage) {
-        const stableUrl = draft.productImage.storageUrl ?? draft.productImage.url;
-        const resolvedUrl = isStoredImageRef(stableUrl) ? await resolveImageRef(stableUrl) : stableUrl;
-        if (!cancelled) setProductImage({ ...draft.productImage, url: resolvedUrl || stableUrl, storageUrl: stableUrl });
-      }
-    };
-
-    void restoreDraft().finally(() => {
-      if (!cancelled) setImageDraftHydrated(true);
-    });
-    return () => {
-      cancelled = true;
-    };
+    setKeywordLibraryHydrated(true);
   }, []);
 
   useEffect(() => {
-    if (!imageDraftHydrated) return;
+    if (!keywordLibraryHydrated) return;
     if (!saveVersionedState(window.localStorage, KEYWORD_LIBRARY_STORAGE_KEY, LOCAL_STATE_VERSION, {
       customKeywords,
       hiddenKeywords
     })) setFeedback("关键词库无法写入浏览器本地存储，请检查浏览器存储空间或隐私设置。");
-  }, [customKeywords, hiddenKeywords, imageDraftHydrated]);
-
-  useEffect(() => {
-    if (!imageDraftHydrated) return;
-    const storedProductImage = productImage
-      ? { ...productImage, url: productImage.storageUrl ?? productImage.url, storageUrl: productImage.storageUrl ?? productImage.url }
-      : null;
-    const storedPlanSourceMap = Object.fromEntries(Object.entries(planSourceMap).map(([page, assets]) => [page, assets.map(imageSourceForStorage)]));
-    if (!saveVersionedState<ImageProductionDraft>(window.localStorage, IMAGE_DRAFT_STORAGE_KEY, LOCAL_STATE_VERSION, {
-      imageStep,
-      selectedBatchDrafts,
-      activeBatchIndex,
-      draftTitle,
-      draftCopy,
-      targetAccount,
-      contentType,
-      imageCount,
-      imageProvider,
-      imagePlanItems,
-      activeImagePage,
-      imagePromptText,
-      imageSize,
-      generateCount,
-      productImage: storedProductImage,
-      localImageSources: localImageSources.map(imageSourceForStorage),
-      libraryImageSources: libraryImageSources.map(imageSourceForStorage),
-      productImageSources: productImageSources.map(imageSourceForStorage),
-      selectedProductId,
-      planSourceMap: storedPlanSourceMap,
-      planPromptMap,
-      planSizeMap,
-      planCountMap,
-      planProviderMap,
-      parsedReference
-    })) setFeedback("图片生成草稿无法写入浏览器本地存储，请检查浏览器存储空间或隐私设置。");
-  }, [activeBatchIndex, activeImagePage, contentType, draftCopy, draftTitle, generateCount, imageCount, imageDraftHydrated, imagePlanItems, imagePromptText, imageProvider, imageSize, imageStep, libraryImageSources, localImageSources, parsedReference, planCountMap, planPromptMap, planProviderMap, planSizeMap, planSourceMap, productImage, productImageSources, selectedBatchDrafts, selectedProductId, targetAccount]);
+  }, [customKeywords, hiddenKeywords, keywordLibraryHydrated]);
 
   const [selectedVideoTitle, setSelectedVideoTitle] = useState("夏天通勤补防晒，喷雾到底怎么用才不花妆");
   const [videoCoverCopy, setVideoCoverCopy] = useState(videoExtraction.coverCopy);
@@ -1586,15 +1437,13 @@ export default function ContentPage() {
       if (!imageUrls.length && !provider.includes("仅生成提示词")) throw new Error("模型接口已返回，但未解析到图片 URL / base64。请查看服务日志中的 raw 返回格式。");
       const generatedAt = Date.now();
       const nextImages = await Promise.all((imageUrls.length ? imageUrls : Array.from({ length: count }, (_, index) => mockSvg(`P${page}-${index + 1}`, index % 2 ? "#ecfeff" : "#fff7ed"))).slice(0, count).map(async (url, index) => {
-        const blob = await imageUrlToBlob(url);
-        const storageUrl = await persistImageFile(blob, `generated_${page}_${generatedAt}_${index}`);
-        const resolvedUrl = await resolveImageRef(storageUrl);
+        const blob = await normalizeCosImageBlob(await imageUrlToBlob(url));
         return {
           id: `generated_${page}_${generatedAt}_${index}`,
           planPage: page,
-          url: resolvedUrl || storageUrl,
-          storageUrl,
-          provider
+          url: URL.createObjectURL(blob),
+          provider,
+          blob
         };
       }));
       if (previousPageImageUrls.length) {
@@ -1825,14 +1674,13 @@ export default function ContentPage() {
     const imageFiles = Array.from(files ?? []).filter((file) => file.type.startsWith("image/"));
     if (!imageFiles.length) return;
     const uploaded = await Promise.all(imageFiles.map(async (file, index) => {
-      const storageUrl = await persistImageFile(file, `finished_upload_${Date.now()}_${workIndex}_${index}`);
-      const url = await resolveImageRef(storageUrl);
+      const blob = await normalizeCosImageBlob(file);
       return {
         id: `finished_upload_${Date.now()}_${workIndex}_${index}`,
         planPage: 0,
-        url: url || URL.createObjectURL(file),
-        storageUrl,
-        provider: "本地上传"
+        url: URL.createObjectURL(blob),
+        provider: "本地上传",
+        blob
       } satisfies GeneratedImagePreview;
     }));
     setGeneratedImages((items) => [...uploaded, ...items]);
@@ -1844,7 +1692,6 @@ export default function ContentPage() {
     const imageKey = generatedImageKey(image);
     setGeneratedImages((items) => items.filter((item) => generatedImageKey(item) !== imageKey));
     setFinishedImageAssignments((items) => removeAssignedImage(items, imageKey));
-    if (image.storageUrl) void deleteImageRef(image.storageUrl).catch(() => null);
     if (image.url.startsWith("blob:")) URL.revokeObjectURL(image.url);
     setFeedback("已删除上传图片。");
   };
@@ -1876,111 +1723,72 @@ export default function ContentPage() {
     setFeedback("当前浏览器不支持直接写入文件夹，确认保存后会下载所选图片。");
   };
 
-  const compactFinishedItems = async (items: unknown[]) => Promise.all(items.map(async (item) => {
-    if (!item || typeof item !== "object") return item;
-    const record = item as { id?: string; mediaUrls?: string[]; pages?: Array<{ images?: string[] }> };
-    return {
-      ...record,
-      mediaUrls: Array.isArray(record.mediaUrls) ? await persistImageRefs(record.mediaUrls, `legacy_${record.id ?? Date.now()}`) : record.mediaUrls,
-      pages: Array.isArray(record.pages) ? record.pages.map((page) => ({ ...page, images: [] })) : record.pages
-    };
-  }));
+  const referenceSnapshot = (reference: ParsedReference | null): ReferenceSourceSnapshot[] => {
+    if (!reference || !/^https?:\/\//i.test(reference.url)) return [];
+    return [{
+      title: reference.title,
+      url: reference.url,
+      platform: reference.platform,
+      media: reference.media.flatMap((item) => /^https?:\/\//i.test(item.url) ? [{
+        type: item.type === "video" ? "video" as const : "image" as const,
+        url: item.url,
+        ...(item.name ? { name: item.name } : {})
+      }] : [])
+    }];
+  };
 
-  const saveFinishedContent = async (kind: "image" | "video", status = "需复查") => {
-    const now = new Date().toISOString().slice(0, 16).replace("T", " ");
-    const imagePages = [...imagePlanItems].sort((a, b) => a.page - b.page).map((plan) => ({
+  const imageDraftFor = (draft: BatchDraft, status: LibraryStatus): ContentDraft => ({
+    title: draft.title,
+    summary: draft.copy.slice(0, 80),
+    body: draft.copy,
+    platform: parsedReference?.platform ?? "小红书",
+    account: accounts.find((account) => account.id === targetAccount)?.name ?? "未命名账号",
+    type: contentType,
+    mediaKind: "image",
+    pages: [...imagePlanItems].sort((a, b) => a.page - b.page).map((plan) => ({
       page: plan.page,
-      title: planPromptMap[plan.page] ? `P${plan.page}` : plan.title,
-      copy: plan.copy,
+      title: plan.title,
+      copy: draft.copy.slice(0, 80),
       prompt: planPromptMap[plan.page] ?? "",
       provider: planProviderMap[plan.page] ?? imageProvider,
-      images: [],
-      sourceImages: (planSourceMap[plan.page] ?? []).map((source) => source.url)
-    }));
-    const current = await compactFinishedItems(JSON.parse(window.localStorage.getItem(FINISHED_CONTENT_STORAGE_KEY) || "[]") as unknown[]);
-    if (kind === "image") {
-      const assignments = finishedImageAssignments;
-      const imageItems = await Promise.all(selectedBatchDrafts.map(async (draft, workIndex) => {
-        const mediaUrls = await persistImageRefs((assignments[workIndex] ?? []).filter(Boolean), `finished_${Date.now()}_${workIndex + 1}`);
-        return {
-          id: `CP-${Date.now()}-${workIndex + 1}`,
-          title: draft.title,
-          summary: draft.copy.slice(0, 80),
-          body: draft.copy,
-          platform: parsedReference?.platform ?? "小红书",
-          platformBadge: "RED",
-          account: accounts.find((account) => account.id === targetAccount)?.name ?? "本地账号",
-          type: contentType,
-          mediaCount: `${mediaUrls.length} 张图`,
-          mediaKind: kind,
-          mediaUrls,
-          pages: imagePages.map((page) => ({
-            ...page,
-            title: `作品${workIndex + 1} · P${page.page}`,
-            copy: draft.copy.slice(0, 80),
-            images: []
-          })),
-          referenceSources: parsedReference ? [{ title: parsedReference.title, url: parsedReference.url, platform: parsedReference.platform, media: parsedReference.media }] : [],
-          tags: draft.tags,
-          duplicateRate: 0,
-          duplicateLabel: "待检测",
-          lowFlowRisk: "低",
-          status,
-          localPath: `outputs/content/${Date.now()}_${workIndex + 1}_${draft.title}`,
-          createdAt: now,
-          updatedAt: now,
-          prompts: imagePlanItems.map((item) => planPromptMap[item.page] ?? ""),
-          negativePrompts: imagePlanItems.map((item) => item.negativePrompt),
-          checkAdvice: ["已从批量图文生产流程保存"],
-          reviewNotes: [`${now} 批量保存到成品内容库`]
-        };
-      }));
-      window.localStorage.setItem(FINISHED_CONTENT_STORAGE_KEY, JSON.stringify([...imageItems, ...current]));
-      setFeedback(`已保存 ${imageItems.length} 条图文成品到成品内容库。`);
-      return;
+      sourceImages: (planSourceMap[plan.page] ?? []).map((source) => source.url).filter((url) => /^https?:\/\//i.test(url))
+    })),
+    referenceSources: referenceSnapshot(parsedReference),
+    tags: draft.tags,
+    folder: null,
+    prompts: imagePlanItems.map((item) => planPromptMap[item.page] ?? ""),
+    negativePrompts: imagePlanItems.map((item) => item.negativePrompt),
+    status,
+    duplicateRate: 0,
+    duplicateLabel: "待检测",
+    lowFlowRisk: "低",
+    checkAdvice: ["已从图文生产流程保存"],
+    reviewNotes: [`${new Date().toISOString()} 保存到云端内容库`],
+    externalVideoUrls: []
+  });
+
+  const saveFinishedImages = async (status: LibraryStatus) => {
+    for (const [workIndex, draft] of selectedBatchDrafts.entries()) {
+      const assigned = finishedImageAssignments[workIndex] ?? [];
+      const images = assigned.flatMap((url) => {
+        const image = generatedImages.find((candidate) => candidate.url === url);
+        return image ? [image.blob] : [];
+      });
+      if (images.length !== assigned.length) throw new Error(`作品 ${workIndex + 1} 有图片已失效`);
+      await saveContentDraftToCos(imageDraftFor(draft, status), images, {
+        onProgress: (completed, total) => setFeedback(`正在保存作品 ${workIndex + 1}/${selectedBatchDrafts.length}：图片 ${completed}/${total}`)
+      });
     }
-    const mediaUrls = generatedVideos.map((video) => video.url).filter(Boolean);
-    const item = {
-      id: `CP-${Date.now()}`,
-      title: selectedVideoTitle,
-      summary: draftVoiceover.slice(0, 80),
-      body: draftVoiceover,
-      platform: parsedVideoReference?.platform ?? "小红书",
-      platformBadge: "RED",
-      account: accounts.find((account) => account.id === targetAccount)?.name ?? "本地账号",
-      type: "短视频",
-      mediaCount: `${shotPlans.filter((shot) => shot.selected).length} 个镜头`,
-      mediaKind: kind,
-      mediaUrls,
-      pages: [],
-      referenceSources: parsedReference ? [{ title: parsedReference.title, url: parsedReference.url, platform: parsedReference.platform, media: parsedReference.media }] : [],
-      tags: trafficTags.slice(0, 5),
-      duplicateRate: 0,
-      duplicateLabel: "待检测",
-      lowFlowRisk: "低",
-      status,
-      localPath: `outputs/video/${Date.now()}_${selectedVideoTitle}`,
-      createdAt: now,
-      updatedAt: now,
-      prompts: shotPlans.map((item) => item.prompt),
-      negativePrompts: shotPlans.map((item) => item.negativePrompt),
-      checkAdvice: ["已从内容生产流程保存，等待进入审核检测"],
-      reviewNotes: [`${now} 保存到成品内容库`]
-    };
-    window.localStorage.setItem(FINISHED_CONTENT_STORAGE_KEY, JSON.stringify([item, ...current]));
-    setFeedback(`已保存到成品内容库：${item.title}`);
   };
 
   const confirmSaveFinishedImage = async () => {
     setFinishedSaving(true);
     try {
-      await saveFinishedContent("image", "需复查");
+      await saveFinishedImages("需复查");
       setFinishedPreviewOpen(false);
       window.location.href = "/content-library";
     } catch (error) {
-      const message = error instanceof DOMException && error.name === "QuotaExceededError"
-        ? "保存失败：图片数据太大，浏览器本地存储空间不足。请减少生成图片数量，或先删除成品内容库里的旧记录。"
-        : error instanceof Error ? `保存失败：${error.message}` : "保存失败，请重试。";
+      const message = error instanceof Error ? `保存失败：${error.message}` : "保存失败，请重试。";
       setFeedback(message);
       window.alert(message);
     } finally {
@@ -1989,7 +1797,29 @@ export default function ContentPage() {
   };
 
   const saveVideoToContentLibrary = async () => {
-    await saveFinishedContent("video", "需复查");
+    const videoDraft: ContentDraft = {
+      title: selectedVideoTitle,
+      summary: draftVoiceover.slice(0, 80),
+      body: draftVoiceover,
+      platform: parsedVideoReference?.platform ?? "小红书",
+      account: accounts.find((account) => account.id === targetAccount)?.name ?? "未命名账号",
+      type: "短视频",
+      mediaKind: "video",
+      pages: [],
+      referenceSources: referenceSnapshot(parsedVideoReference),
+      tags: trafficTags.slice(0, 5),
+      folder: null,
+      prompts: shotPlans.map((item) => item.prompt),
+      negativePrompts: shotPlans.map((item) => item.negativePrompt),
+      status: "需复查",
+      duplicateRate: 0,
+      duplicateLabel: "待检测",
+      lowFlowRisk: "低",
+      checkAdvice: ["已从视频生产流程保存"],
+      reviewNotes: [`${new Date().toISOString()} 保存到云端内容库`],
+      externalVideoUrls: generatedVideos.map((video) => video.url).filter((url) => /^https?:\/\//i.test(url))
+    };
+    await saveContentDraftToCos(videoDraft, []);
     setVideoFinishedPreviewOpen(false);
     window.location.href = "/content-library";
   };
@@ -2020,11 +1850,15 @@ export default function ContentPage() {
       // Mock preview still renders when no API key or local adapter is unavailable.
     }
     const variations = Math.max(1, Math.min(10, Number(generateCount) || 1));
-    const nextImages = imagePlanItems.flatMap((plan) => Array.from({ length: variations }, (_, index) => ({
-      id: `generated_${plan.page}_${Date.now()}_${index}`,
-      planPage: plan.page,
-      url: mockSvg(`P${plan.page}-${index + 1}`, index % 2 ? "#ecfeff" : "#fff7ed"),
-      provider: imageProvider
+    const nextImages = await Promise.all(imagePlanItems.flatMap((plan) => Array.from({ length: variations }, async (_, index) => {
+      const blob = await normalizeCosImageBlob(await imageUrlToBlob(mockSvg(`P${plan.page}-${index + 1}`, index % 2 ? "#ecfeff" : "#fff7ed")));
+      return {
+        id: `generated_${plan.page}_${Date.now()}_${index}`,
+        planPage: plan.page,
+        url: URL.createObjectURL(blob),
+        provider: imageProvider,
+        blob
+      };
     })));
     setGeneratedImages(nextImages);
     setImagePlanItems((items) => items.map((item) => ({ ...item, status: "done" as const })));

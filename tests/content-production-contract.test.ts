@@ -14,12 +14,12 @@ test("all image provider selectors expose nanobanan新", () => {
   );
 });
 
-test("persists keyword-library and image-draft state with versioned keys", () => {
+test("persists only the unrelated keyword library, not generated drafts", () => {
   assert.equal(source.includes("content-production-studio.keyword-library"), true);
-  assert.equal(source.includes("content-production-studio.image-draft"), true);
+  assert.equal(source.includes("content-production-studio.image-draft"), false);
+  assert.equal(source.includes("content-production-studio-xhs.generated-images"), false);
   assert.equal(source.includes("loadVersionedState"), true);
   assert.equal(source.includes("saveVersionedState"), true);
-  assert.equal(source.includes("if (!saveVersionedState"), true);
 });
 
 test("new and selected works do not receive preselected keywords", () => {
@@ -57,10 +57,18 @@ test("local saving is selection-based and writes through the browser file helper
   assert.equal(source.includes("已保存本地图文项目到"), false);
 });
 
-test("generated image bytes are persisted immediately instead of retaining provider URLs", () => {
+test("keeps generated image bytes in memory until COS save", () => {
   assert.equal(source.includes("materializeGeneratedImagePayload"), false);
-  assert.equal(source.includes("persistImageFile(blob, `generated_"), true);
-  assert.equal(source.includes("storageUrl"), true);
+  assert.equal(source.includes("persistImageFile(blob, `generated_"), false);
+  assert.equal(source.includes("blob: Blob"), true);
+  assert.equal(source.includes("URL.createObjectURL(blob)"), true);
+});
+
+test("saves final content through COS without a local fallback", () => {
+  assert.equal(source.includes("saveContentDraftToCos"), true);
+  assert.equal(source.includes("FINISHED_CONTENT_STORAGE_KEY"), false);
+  assert.equal(source.includes("window.localStorage.setItem(FINISHED_CONTENT_STORAGE_KEY"), false);
+  assert.equal(source.includes("QuotaExceededError"), false);
 });
 
 test("image-plan pages are generated one at a time", () => {
