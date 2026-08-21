@@ -65,6 +65,7 @@ export interface StoredContentManifest {
   schemaVersion: 1;
   id: string;
   ownerId: string;
+  legacySourceId?: string;
   title: string;
   summary: string;
   body: string;

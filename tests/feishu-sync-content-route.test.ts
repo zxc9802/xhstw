@@ -301,7 +301,7 @@ test("uploads selected images one at a time in attachment order", async (t) => {
   ]);
 });
 
-test("loads COS images from the member manifest and uploads them in saved order", async (t) => {
+test("loads COS images in saved order while keeping the selected publish target", async (t) => {
   installFeishuEnv(t);
   const originalFetch = globalThis.fetch;
   const gateway = new MemoryContentGateway();
@@ -381,6 +381,6 @@ test("loads COS images from the member manifest and uploads them in saved order"
   assert.deepEqual(uploadedBytes, [11, 22]);
   assert.deepEqual(recordFields?.图片或视频, [{ file_token: "token-11" }, { file_token: "token-22" }]);
   assert.equal(recordFields?.标题, "COS 顺序");
-  assert.equal(recordFields?.平台, "小红书");
-  assert.equal(recordFields?.账号, "账号");
+  assert.equal(recordFields?.平台, "TikTok");
+  assert.equal(recordFields?.账号, "过期账号");
 });

@@ -85,9 +85,17 @@ test("commits selected images and lists them only for the authenticated member",
     contentType: "image/png"
   });
 
-  const saved = await commitContent("member-a", intent.contentId, draft, intent.uploads, gateway, new Date("2026-08-21T06:01:00.000Z"));
+  const saved = await commitContent(
+    "member-a",
+    intent.contentId,
+    { ...draft, legacySourceId: "legacy-browser-row" },
+    intent.uploads,
+    gateway,
+    new Date("2026-08-21T06:01:00.000Z")
+  );
 
   assert.equal(saved.ownerId, "member-a");
+  assert.equal(saved.legacySourceId, "legacy-browser-row");
   assert.deepEqual((await listContents("member-a", gateway)).map((item) => item.id), [intent.contentId]);
   assert.deepEqual(await listContents("member-b", gateway), []);
   assert.equal(await getContentMedia("member-b", intent.contentId, intent.uploads[0].fileId, gateway), undefined);
