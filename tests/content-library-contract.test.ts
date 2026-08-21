@@ -4,20 +4,25 @@ import test from "node:test";
 
 const source = readFileSync("app/content-library/page.tsx", "utf8");
 
-test("loads only the signed-in member cloud library", () => {
+test("loads current-member COS content and read-only browser legacy content", () => {
   assert.equal(source.includes("listContentItems"), true);
-  assert.equal(source.includes("StoredContentManifest"), true);
+  assert.equal(source.includes("LEGACY_FINISHED_CONTENT_STORAGE_KEY"), true);
+  assert.equal(source.includes("parseLegacyContentItems"), true);
+  assert.equal(source.includes("mergeContentLibraryItems"), true);
+  assert.equal(source.includes("window.localStorage.getItem(LEGACY_FINISHED_CONTENT_STORAGE_KEY)"), true);
   assert.equal(source.includes("finishedContentsSeed"), false);
-  assert.equal(source.includes("FINISHED_CONTENT_STORAGE_KEY"), false);
-  assert.equal(source.includes("window.localStorage"), false);
+  assert.equal(source.includes("localStorage.setItem"), false);
+  assert.equal(source.includes("localStorage.removeItem"), false);
+  assert.equal(source.includes("localStorage.clear"), false);
 });
 
-test("reads private images through the app proxy and deletes through the API", () => {
-  assert.equal(source.includes("contentMediaUrl"), true);
+test("resolves legacy IndexedDB images and deletes only COS rows", () => {
+  assert.equal(source.includes("resolveImageRefs"), true);
   assert.equal(source.includes("deleteContentItem"), true);
+  assert.equal(source.includes('item.source === "cos"'), true);
+  assert.equal(source.includes("浏览器旧内容"), true);
   assert.equal(source.includes("persistImageFile"), false);
   assert.equal(source.includes("localPath"), false);
-  assert.equal(source.includes("已保存本地"), false);
 });
 
 test("keeps explicit local export for cloud content", () => {

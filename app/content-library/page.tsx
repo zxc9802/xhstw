@@ -5,8 +5,14 @@ import { Copy, Download, ExternalLink, Eye, ImageIcon, RefreshCw, Trash2, X } fr
 import { Button } from "@/components/ui/Button";
 import { Card, CardBody } from "@/components/ui/Card";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { contentMediaUrl, deleteContentItem, listContentItems } from "@/lib/content-storage/client";
-import type { StoredContentManifest } from "@/lib/content-storage/contracts";
+import { deleteContentItem, listContentItems } from "@/lib/content-storage/client";
+import {
+  LEGACY_FINISHED_CONTENT_STORAGE_KEY,
+  cloudContentItem,
+  mergeContentLibraryItems,
+  parseLegacyContentItems,
+  type ContentLibraryItem
+} from "@/lib/content-storage/library-items";
 import {
   directoryPickerFailure,
   imageExtension,
@@ -16,30 +22,23 @@ import {
   type BlobFile,
   type WritableDirectoryLike
 } from "@/lib/utils/browser-file-export";
+import { isStoredImageRef, resolveImageRefs } from "@/lib/utils/image-store";
 
 function dateText(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { hour12: false });
 }
 
-function statusClass(status: StoredContentManifest["status"]) {
+function statusClass(status: string) {
   if (status === "可发布") return "bg-emerald-50 text-emerald-700";
   if (status === "需复查") return "bg-amber-50 text-amber-700";
   return "bg-slate-100 text-slate-600";
 }
 
-function imageUrls(item: StoredContentManifest) {
-  return item.media.flatMap((media) => media.storage === "cos" ? [contentMediaUrl(item.id, media.fileId)] : []);
-}
-
-function videoUrls(item: StoredContentManifest) {
-  return item.media.flatMap((media) => media.storage === "external" ? [media.url] : []);
-}
-
-async function imageExportFiles(item: StoredContentManifest): Promise<BlobFile[]> {
+async function imageExportFiles(item: ContentLibraryItem, urls: string[]): Promise<BlobFile[]> {
   if (item.mediaKind !== "image") return [];
   const files: BlobFile[] = [];
-  for (const [index, url] of imageUrls(item).entries()) {
+  for (const [index, url] of urls.entries()) {
     const response = await fetch(url);
     if (!response.ok) throw new Error(`第 ${index + 1} 张图片读取失败`);
     const blob = await response.blob();
@@ -48,7 +47,7 @@ async function imageExportFiles(item: StoredContentManifest): Promise<BlobFile[]
   return files;
 }
 
-function downloadFallback(item: StoredContentManifest, files: BlobFile[]) {
+function downloadFallback(item: ContentLibraryItem, files: BlobFile[]) {
   for (const file of files) {
     const url = URL.createObjectURL(file.blob);
     const anchor = document.createElement("a");
@@ -60,11 +59,12 @@ function downloadFallback(item: StoredContentManifest, files: BlobFile[]) {
 }
 
 export default function ContentLibraryPage() {
-  const [items, setItems] = useState<StoredContentManifest[]>([]);
+  const [items, setItems] = useState<ContentLibraryItem[]>([]);
+  const [resolvedBrowserImages, setResolvedBrowserImages] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [keyword, setKeyword] = useState("");
-  const [selected, setSelected] = useState<StoredContentManifest | null>(null);
+  const [selected, setSelected] = useState<ContentLibraryItem | null>(null);
   const [previewImageUrl, setPreviewImageUrl] = useState("");
   const [exportingId, setExportingId] = useState("");
   const [deletingId, setDeletingId] = useState("");
@@ -73,11 +73,30 @@ export default function ContentLibraryPage() {
   const reload = useCallback(async () => {
     setLoading(true);
     setError("");
+    let browserItems: ContentLibraryItem[] = [];
+    let browserNotice = "";
     try {
-      setItems(await listContentItems());
+      const raw = window.localStorage.getItem(LEGACY_FINISHED_CONTENT_STORAGE_KEY);
+      browserItems = parseLegacyContentItems(raw);
+      if (raw && raw.trim() !== "[]" && !browserItems.length) browserNotice = "浏览器旧内容格式无法读取";
+    } catch {
+      browserNotice = "浏览器旧内容读取失败";
+    }
+
+    const resolvedRows = await Promise.all(browserItems.map(async (item) => {
+      const resolved = await resolveImageRefs(item.imageUrls).catch(() => item.imageUrls.filter((url) => !isStoredImageRef(url)));
+      return [item.id, resolved] as const;
+    }));
+    setResolvedBrowserImages(Object.fromEntries(resolvedRows));
+
+    let cloudItems: ContentLibraryItem[] = [];
+    try {
+      cloudItems = (await listContentItems()).map(cloudContentItem);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "内容加载失败");
+      setError(loadError instanceof Error ? loadError.message : "云端内容加载失败");
     } finally {
+      setItems(mergeContentLibraryItems(cloudItems, browserItems));
+      if (browserNotice) setNotice(browserNotice);
       setLoading(false);
     }
   }, []);
@@ -86,18 +105,28 @@ export default function ContentLibraryPage() {
     void reload();
   }, [reload]);
 
+  useEffect(() => () => {
+    Object.values(resolvedBrowserImages).flat().forEach((url) => {
+      if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+    });
+  }, [resolvedBrowserImages]);
+
   const visibleItems = useMemo(() => {
     const query = keyword.trim().toLowerCase();
     if (!query) return items;
     return items.filter((item) => [item.title, item.body, item.account, ...item.tags].some((value) => value.toLowerCase().includes(query)));
   }, [items, keyword]);
 
-  async function copyContent(item: StoredContentManifest) {
+  const displayImageUrls = (item: ContentLibraryItem) => item.source === "browser"
+    ? resolvedBrowserImages[item.id] ?? item.imageUrls.filter((url) => !isStoredImageRef(url))
+    : item.imageUrls;
+
+  async function copyContent(item: ContentLibraryItem) {
     await navigator.clipboard.writeText(`标题：${item.title}\n\n文案：\n${item.body}`);
     setNotice("标题和文案已复制");
   }
 
-  async function chooseLocalExportFolder(item: StoredContentManifest) {
+  async function chooseLocalExportFolder(item: ContentLibraryItem) {
     setExportingId(item.id);
     setNotice("");
     try {
@@ -106,7 +135,7 @@ export default function ContentLibraryPage() {
           name: "标题和文案.txt",
           blob: utf8TextBlob(`标题：${item.title}\n\n文案：\n${item.body}`)
         },
-        ...(await imageExportFiles(item))
+        ...(await imageExportFiles(item, displayImageUrls(item)))
       ];
       const pickerWindow = window as Window & { showDirectoryPicker?: () => Promise<WritableDirectoryLike> };
       if (!pickerWindow.showDirectoryPicker) {
@@ -129,7 +158,8 @@ export default function ContentLibraryPage() {
     }
   }
 
-  async function removeItem(item: StoredContentManifest) {
+  async function removeItem(item: ContentLibraryItem) {
+    if (item.source !== "cos") return;
     if (!window.confirm(`确定删除“${item.title}”吗？COS 中的文字和图片会一起删除。`)) return;
     setDeletingId(item.id);
     setNotice("");
@@ -149,7 +179,7 @@ export default function ContentLibraryPage() {
     <div className="space-y-6">
       <PageHeader
         title="内容库"
-        description="这里仅显示当前登录成员保存到腾讯云 COS 的内容。"
+        description="同时显示当前浏览器的旧内容和当前登录成员保存到腾讯云 COS 的内容；新增内容只存 COS。"
         action={
           <Button icon={<RefreshCw className="h-4 w-4" />} onClick={() => void reload()} disabled={loading}>
             刷新
@@ -165,7 +195,7 @@ export default function ContentLibraryPage() {
             placeholder="搜索标题、文案、账号或标签"
             className="h-10 w-full max-w-md rounded-md border border-line px-3 text-sm outline-none focus:border-orange-300"
           />
-          <div className="text-sm text-muted">共 {visibleItems.length} 条云端内容</div>
+          <div className="text-sm text-muted">共 {visibleItems.length} 条内容</div>
         </CardBody>
       </Card>
 
@@ -178,8 +208,8 @@ export default function ContentLibraryPage() {
       ) : null}
 
       {loading ? (
-        <div className="rounded-lg border border-line bg-white p-10 text-center text-sm text-muted">正在读取云端内容…</div>
-      ) : !error && visibleItems.length === 0 ? (
+        <div className="rounded-lg border border-line bg-white p-10 text-center text-sm text-muted">正在读取内容库…</div>
+      ) : visibleItems.length === 0 ? (
         <div className="rounded-lg border border-dashed border-line bg-white p-12 text-center">
           <ImageIcon className="mx-auto h-9 w-9 text-slate-300" />
           <p className="mt-3 font-medium text-ink">还没有保存的内容</p>
@@ -188,7 +218,7 @@ export default function ContentLibraryPage() {
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {visibleItems.map((item) => {
-            const images = imageUrls(item);
+            const images = displayImageUrls(item);
             return (
               <Card key={item.id} className="overflow-hidden">
                 <button
@@ -206,13 +236,16 @@ export default function ContentLibraryPage() {
                   <div>
                     <div className="flex items-start justify-between gap-3">
                       <h2 className="line-clamp-2 font-semibold text-ink">{item.title || "未命名内容"}</h2>
-                      <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs ${statusClass(item.status)}`}>{item.status}</span>
+                      <div className="flex shrink-0 flex-col items-end gap-1">
+                        <span className={`rounded-full px-2.5 py-1 text-xs ${statusClass(item.status)}`}>{item.status}</span>
+                        {item.source === "browser" ? <span className="rounded-full bg-violet-50 px-2.5 py-1 text-[11px] text-violet-700">浏览器旧内容</span> : null}
+                      </div>
                     </div>
                     <p className="mt-2 line-clamp-2 text-sm leading-6 text-muted">{item.summary || item.body}</p>
                   </div>
                   <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
                     <span>{item.account || "未指定账号"}</span>
-                    <span>{item.mediaKind === "image" ? `${images.length} 张图` : `${videoUrls(item).length} 个视频`}</span>
+                    <span>{item.mediaKind === "image" ? `${images.length} 张图` : `${item.videoUrls.length} 个视频`}</span>
                     <span>{dateText(item.createdAt)}</span>
                   </div>
                   <div className="flex flex-wrap gap-2 border-t border-line pt-4">
@@ -220,9 +253,11 @@ export default function ContentLibraryPage() {
                     <Button icon={<Download className="h-4 w-4" />} onClick={() => void chooseLocalExportFolder(item)} disabled={exportingId === item.id}>
                       {exportingId === item.id ? "导出中…" : "导出到本地"}
                     </Button>
-                    <Button variant="danger" icon={<Trash2 className="h-4 w-4" />} onClick={() => void removeItem(item)} disabled={deletingId === item.id}>
-                      删除
-                    </Button>
+                    {item.source === "cos" ? (
+                      <Button variant="danger" icon={<Trash2 className="h-4 w-4" />} onClick={() => void removeItem(item)} disabled={deletingId === item.id}>
+                        删除
+                      </Button>
+                    ) : null}
                   </div>
                 </CardBody>
               </Card>
@@ -243,16 +278,16 @@ export default function ContentLibraryPage() {
                 <h3 className="text-xl font-semibold text-ink">{selected.title}</h3>
                 <p className="mt-2 whitespace-pre-wrap text-sm leading-7 text-slate-700">{selected.body}</p>
               </div>
-              {imageUrls(selected).length ? (
+              {displayImageUrls(selected).length ? (
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                  {imageUrls(selected).map((url) => (
+                  {displayImageUrls(selected).map((url) => (
                     <button key={url} type="button" onClick={() => setPreviewImageUrl(url)} className="overflow-hidden rounded-lg bg-slate-100">
                       <img src={url} alt={selected.title} className="aspect-square h-full w-full object-cover" />
                     </button>
                   ))}
                 </div>
               ) : null}
-              {videoUrls(selected).map((url) => (
+              {selected.videoUrls.map((url) => (
                 <a key={url} href={url} target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm text-blue-700 hover:bg-blue-50">
                   <ExternalLink className="h-4 w-4" />打开视频
                 </a>
@@ -260,7 +295,7 @@ export default function ContentLibraryPage() {
               <div className="flex flex-wrap gap-2">
                 <Button icon={<Copy className="h-4 w-4" />} onClick={() => void copyContent(selected)}>复制标题和文案</Button>
                 <Button icon={<Download className="h-4 w-4" />} onClick={() => void chooseLocalExportFolder(selected)}>导出到本地</Button>
-                <Button variant="danger" icon={<Trash2 className="h-4 w-4" />} onClick={() => void removeItem(selected)}>删除云端内容</Button>
+                {selected.source === "cos" ? <Button variant="danger" icon={<Trash2 className="h-4 w-4" />} onClick={() => void removeItem(selected)}>删除云端内容</Button> : null}
               </div>
             </div>
           </section>
