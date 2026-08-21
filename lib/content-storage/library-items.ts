@@ -1,5 +1,5 @@
 import { contentMediaUrl } from "./client";
-import type { StoredContentManifest } from "./contracts";
+import type { ContentDraft, StoredContentManifest } from "./contracts";
 
 export const LEGACY_FINISHED_CONTENT_STORAGE_KEY = "content-production-studio-xhs.finished-content";
 
@@ -19,6 +19,7 @@ export type ContentLibraryItem = {
   status: string;
   createdAt: string;
   updatedAt: string;
+  manifest?: StoredContentManifest;
 };
 
 function text(value: unknown, fallback = "") {
@@ -52,7 +53,36 @@ export function cloudContentItem(item: StoredContentManifest): ContentLibraryIte
     tags: item.tags,
     status: item.status,
     createdAt: item.createdAt,
-    updatedAt: item.updatedAt
+    updatedAt: item.updatedAt,
+    manifest: item
+  };
+}
+
+export function editableContentDraft(
+  manifest: StoredContentManifest,
+  changes: Pick<ContentDraft, "title" | "body" | "tags">
+): ContentDraft {
+  return {
+    title: changes.title,
+    summary: manifest.summary,
+    body: changes.body,
+    platform: manifest.platform,
+    account: manifest.account,
+    type: manifest.type,
+    mediaKind: manifest.mediaKind,
+    pages: manifest.pages,
+    referenceSources: manifest.referenceSources,
+    tags: changes.tags,
+    folder: manifest.folder,
+    prompts: manifest.prompts,
+    negativePrompts: manifest.negativePrompts,
+    status: manifest.status,
+    duplicateRate: manifest.duplicateRate,
+    duplicateLabel: manifest.duplicateLabel,
+    lowFlowRisk: manifest.lowFlowRisk,
+    checkAdvice: manifest.checkAdvice,
+    reviewNotes: manifest.reviewNotes,
+    externalVideoUrls: manifest.media.flatMap((media) => media.storage === "external" ? [media.url] : [])
   };
 }
 

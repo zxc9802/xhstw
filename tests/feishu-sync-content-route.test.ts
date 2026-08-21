@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
+import { NextRequest } from "next/server";
 import { POST } from "../app/api/feishu/sync-content/route";
+import { setContentStorageGatewayForTests } from "../lib/content-storage/cos";
+import type { ContentStorageGateway, StoredObject } from "../lib/content-storage/gateway";
+import { createMainAppSessionCookie, getMainAppSessionCookieName } from "../lib/main-app-sso";
 
 const FEISHU_ENV_KEYS = [
   "FEISHU_APP_ID",
@@ -31,6 +35,25 @@ function jsonResponse(body: unknown, status = 200) {
     status,
     headers: { "Content-Type": "application/json" }
   });
+}
+
+class MemoryContentGateway implements ContentStorageGateway {
+  objects = new Map<string, StoredObject>();
+  async createPutUrl(key: string) { return `https://upload.test/${encodeURIComponent(key)}`; }
+  async headObject(key: string) {
+    const value = this.objects.get(key);
+    return value ? { contentType: value.contentType, size: value.bytes.byteLength } : undefined;
+  }
+  async putJson(key: string, value: unknown) {
+    this.objects.set(key, { bytes: new TextEncoder().encode(JSON.stringify(value)), contentType: "application/json" });
+  }
+  async getJson(key: string) {
+    const value = this.objects.get(key);
+    return value ? JSON.parse(new TextDecoder().decode(value.bytes)) : undefined;
+  }
+  async listKeys(prefix: string) { return [...this.objects.keys()].filter((key) => key.startsWith(prefix)); }
+  async getObject(key: string) { return this.objects.get(key); }
+  async deleteKeys(keys: string[]) { keys.forEach((key) => this.objects.delete(key)); }
 }
 
 test("maps an upload into the current Feishu content fields", async (t) => {
@@ -212,24 +235,14 @@ test("names selected images with JPG filenames", async (t) => {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       title: "按选择顺序上传",
-      images: Array.from({ length: 4 }, () => "data:image/png;base64,AA==")
+      images: Array.from({ length: 10 }, () => "data:image/png;base64,AA==")
     })
   }));
 
   assert.equal(response.status, 200);
-  assert.deepEqual(uploadedFileNames, ["1.jpg", "2.jpg", "3.jpg", "4.jpg"]);
-  assert.deepEqual(uploadParentTypes, [
-    "bitable_image",
-    "bitable_image",
-    "bitable_image",
-    "bitable_image"
-  ]);
-  assert.deepEqual(recordFields?.图片或视频, [
-    { file_token: "file-token-1.jpg" },
-    { file_token: "file-token-2.jpg" },
-    { file_token: "file-token-3.jpg" },
-    { file_token: "file-token-4.jpg" }
-  ]);
+  assert.deepEqual(uploadedFileNames, Array.from({ length: 10 }, (_, index) => `${index + 1}.jpg`));
+  assert.deepEqual(uploadParentTypes, Array.from({ length: 10 }, () => "bitable_image"));
+  assert.deepEqual(recordFields?.图片或视频, Array.from({ length: 10 }, (_, index) => ({ file_token: `file-token-${index + 1}.jpg` })));
 });
 
 test("uploads selected images one at a time in attachment order", async (t) => {
@@ -286,4 +299,88 @@ test("uploads selected images one at a time in attachment order", async (t) => {
     { file_token: "file-token-3.jpg" },
     { file_token: "file-token-4.jpg" }
   ]);
+});
+
+test("loads COS images from the member manifest and uploads them in saved order", async (t) => {
+  installFeishuEnv(t);
+  const originalFetch = globalThis.fetch;
+  const gateway = new MemoryContentGateway();
+  setContentStorageGatewayForTests(gateway);
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    setContentStorageGatewayForTests(undefined);
+  });
+
+  process.env.APP_SESSION_SECRET = "feishu-cos-order-test";
+  const ownerId = "member-a";
+  const contentId = "20260821T060000000Z-111111111111";
+  const prefix = `users/${ownerId}/contents/${contentId}`;
+  const firstKey = `${prefix}/images/001-first.png`;
+  const secondKey = `${prefix}/images/002-second.png`;
+  await gateway.putJson(`${prefix}/manifest.json`, {
+    schemaVersion: 1,
+    id: contentId,
+    ownerId,
+    title: "COS 顺序",
+    summary: "",
+    body: "正文",
+    platform: "小红书",
+    account: "账号",
+    type: "图文",
+    mediaKind: "image",
+    media: [
+      { storage: "cos", fileId: "001-first.png", key: firstKey, contentType: "image/png", size: 1 },
+      { storage: "cos", fileId: "002-second.png", key: secondKey, contentType: "image/png", size: 1 }
+    ],
+    pages: [], referenceSources: [], tags: [], folder: null, prompts: [], negativePrompts: [],
+    status: "需复查", systemState: "active", duplicateRate: 0, duplicateLabel: "待检测",
+    lowFlowRisk: "低", checkAdvice: [], reviewNotes: [],
+    createdAt: "2026-08-21T06:00:00.000Z", updatedAt: "2026-08-21T06:00:00.000Z"
+  });
+  gateway.objects.set(firstKey, { bytes: new Uint8Array([11]), contentType: "image/png" });
+  gateway.objects.set(secondKey, { bytes: new Uint8Array([22]), contentType: "image/png" });
+
+  const uploadedBytes: number[] = [];
+  let recordFields: Record<string, unknown> | undefined;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (url.endsWith("/auth/v3/tenant_access_token/internal")) return jsonResponse({ tenant_access_token: "tenant-token" });
+    if (url.endsWith("/fields")) return jsonResponse({ data: { items: [
+      { field_name: "标题", type: 1 },
+      { field_name: "平台", type: 1 },
+      { field_name: "账号", type: 1 },
+      { field_name: "图片或视频", type: 17 }
+    ] } });
+    if (url.endsWith("/drive/v1/medias/upload_all")) {
+      const file = (init?.body as FormData).get("file") as Blob;
+      uploadedBytes.push(new Uint8Array(await file.arrayBuffer())[0]);
+      return jsonResponse({ data: { file_token: `token-${uploadedBytes.at(-1)}` } });
+    }
+    if (url.endsWith("/records")) {
+      recordFields = (JSON.parse(String(init?.body)) as { fields: Record<string, unknown> }).fields;
+      return jsonResponse({ data: { record: { record_id: "record-cos-order" } } });
+    }
+    throw new Error(`Unexpected Feishu request: ${url}`);
+  }) as typeof fetch;
+
+  const cookie = await createMainAppSessionCookie({
+    token: "token",
+    user: { id: ownerId, account: "member-a@example.com", nickname: "member-a", role: "member" },
+    expiresAt: Date.now() + 60_000
+  });
+  const response = await POST(new NextRequest("http://localhost/api/feishu/sync-content", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: `${getMainAppSessionCookieName()}=${cookie}`
+    },
+    body: JSON.stringify({ contentId, platform: "TikTok", accountName: "过期账号" })
+  }));
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(uploadedBytes, [11, 22]);
+  assert.deepEqual(recordFields?.图片或视频, [{ file_token: "token-11" }, { file_token: "token-22" }]);
+  assert.equal(recordFields?.标题, "COS 顺序");
+  assert.equal(recordFields?.平台, "小红书");
+  assert.equal(recordFields?.账号, "账号");
 });

@@ -6,6 +6,8 @@ import { setContentStorageGatewayForTests } from "../lib/content-storage/cos";
 import type { ContentStorageGateway, StoredObject } from "../lib/content-storage/gateway";
 import { POST as CREATE_INTENT } from "../app/api/content-storage/upload-intents/route";
 import { POST as COMMIT } from "../app/api/content-storage/items/[contentId]/commit/route";
+import { POST as CREATE_REPLACEMENT_INTENT } from "../app/api/content-storage/items/[contentId]/upload-intents/route";
+import { PUT as REPLACE } from "../app/api/content-storage/items/[contentId]/route";
 import { GET as LIST } from "../app/api/content-storage/items/route";
 import { GET as MEDIA } from "../app/api/content-storage/items/[contentId]/media/[fileId]/route";
 
@@ -86,6 +88,27 @@ test("route lifecycle is authenticated and member isolated", async (t) => {
     params: Promise.resolve({ contentId: intentPayload.data.contentId, fileId: upload.fileId })
   });
   assert.equal(denied.status, 404);
+
+  const replacementIntentResponse = await CREATE_REPLACEMENT_INTENT(await request("member-a", `https://app.test/api/content-storage/items/${intentPayload.data.contentId}/upload-intents`, {
+    method: "POST",
+    body: JSON.stringify({ images: [
+      { contentType: "image/webp", size: 2 },
+      { contentType: "image/png", size: 3 }
+    ] })
+  }), { params: Promise.resolve({ contentId: intentPayload.data.contentId }) });
+  assert.equal(replacementIntentResponse.status, 200);
+  const replacementIntent = await replacementIntentResponse.json();
+  replacementIntent.data.uploads.forEach((item: { key: string; size: number; contentType: string }) => {
+    gateway.objects.set(item.key, { bytes: new Uint8Array(item.size), contentType: item.contentType });
+  });
+  const replaceResponse = await REPLACE(await request("member-a", `https://app.test/api/content-storage/items/${intentPayload.data.contentId}`, {
+    method: "PUT",
+    body: JSON.stringify({ content: { ...content, title: "调整后" }, uploads: replacementIntent.data.uploads })
+  }), { params: Promise.resolve({ contentId: intentPayload.data.contentId }) });
+  assert.equal(replaceResponse.status, 200);
+  const replaced = await replaceResponse.json();
+  assert.equal(replaced.data.title, "调整后");
+  assert.deepEqual(replaced.data.media.map((item: { contentType: string }) => item.contentType), ["image/webp", "image/png"]);
 });
 
 test("list route rejects requests without the SSO cookie", async () => {

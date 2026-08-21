@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   cloudContentItem,
+  editableContentDraft,
   mergeContentLibraryItems,
   parseLegacyContentItems
 } from "../lib/content-storage/library-items";
@@ -81,4 +82,31 @@ test("ignores malformed or incompatible legacy payloads", () => {
   assert.deepEqual(parseLegacyContentItems("not-json"), []);
   assert.deepEqual(parseLegacyContentItems(JSON.stringify({ id: "not-an-array" })), []);
   assert.deepEqual(parseLegacyContentItems(JSON.stringify([{ title: "missing id" }])), []);
+});
+
+test("builds an editable draft without losing stored metadata", () => {
+  const manifest = cloudContentItem({
+    schemaVersion: 1,
+    id: "same-id",
+    ownerId: "member-1",
+    title: "原标题",
+    summary: "原摘要",
+    body: "原正文",
+    platform: "小红书",
+    account: "账号",
+    type: "图文",
+    mediaKind: "image",
+    media: [{ storage: "external", fileId: "video-1", mediaType: "video", url: "https://example.com/video.mp4" }],
+    pages: [], referenceSources: [], tags: ["原标签"], folder: "文件夹", prompts: ["提示词"], negativePrompts: [],
+    status: "可发布", systemState: "active", duplicateRate: 1, duplicateLabel: "低重复", lowFlowRisk: "低",
+    checkAdvice: ["建议"], reviewNotes: ["备注"],
+    createdAt: "2026-08-01T10:00:00.000Z", updatedAt: "2026-08-01T10:00:00.000Z"
+  }).manifest!;
+
+  const draft = editableContentDraft(manifest, { title: "新标题", body: "新正文", tags: ["新标签"] });
+
+  assert.equal(draft.title, "新标题");
+  assert.equal(draft.summary, "原摘要");
+  assert.deepEqual(draft.prompts, ["提示词"]);
+  assert.deepEqual(draft.externalVideoUrls, ["https://example.com/video.mp4"]);
 });

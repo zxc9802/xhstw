@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ContentDraft } from "../lib/content-storage/contracts";
-import { saveContentDraft } from "../lib/content-storage/client";
+import { replaceContentDraft, saveContentDraft } from "../lib/content-storage/client";
 
 const draft: ContentDraft = {
   title: "成品", summary: "摘要", body: "正文", platform: "小红书", account: "账号",
@@ -62,4 +62,42 @@ test("does not commit when a direct COS upload fails", async () => {
   };
   await assert.rejects(() => saveContentDraft(draft, [new Blob(["x"], { type: "image/png" })], { fetcher: fetcher as typeof fetch }), /上传失败/);
   assert.equal(urls.some((url) => url.endsWith("/commit")), false);
+});
+
+test("replaces an existing item with image bytes in the caller order", async () => {
+  const calls: Array<{ url: string; method: string; body: unknown }> = [];
+  const contentId = "20260821T060000000Z-111111111111";
+  const fetcher = async (input: RequestInfo | URL, init: RequestInit = {}) => {
+    const url = String(input);
+    const method = init.method ?? "GET";
+    calls.push({ url, method, body: init.body });
+    if (url.endsWith("/upload-intents")) {
+      return Response.json({ ok: true, data: {
+        contentId,
+        uploads: [
+          { fileId: "001-aaaaaaaaaaaa.webp", key: "key-a", contentType: "image/webp", size: 1, uploadUrl: "https://cos.test/a" },
+          { fileId: "002-bbbbbbbbbbbb.png", key: "key-b", contentType: "image/png", size: 2, uploadUrl: "https://cos.test/b" }
+        ]
+      } });
+    }
+    if (url.startsWith("https://cos.test/")) return new Response(null, { status: 200 });
+    if (url === `/api/content-storage/items/${contentId}` && method === "PUT") {
+      return Response.json({ ok: true, data: { id: contentId } });
+    }
+    throw new Error(`unexpected ${method} ${url}`);
+  };
+
+  await replaceContentDraft(contentId, draft, [
+    new Blob(["a"], { type: "image/webp" }),
+    new Blob(["bb"], { type: "image/png" })
+  ], { fetcher: fetcher as typeof fetch });
+
+  assert.deepEqual(calls.map((call) => [call.method, call.url]), [
+    ["POST", `/api/content-storage/items/${contentId}/upload-intents`],
+    ["PUT", "https://cos.test/a"],
+    ["PUT", "https://cos.test/b"],
+    ["PUT", `/api/content-storage/items/${contentId}`]
+  ]);
+  const replacementBody = JSON.parse(String(calls.at(-1)?.body)) as { uploads: Array<{ fileId: string }> };
+  assert.deepEqual(replacementBody.uploads.map((upload) => upload.fileId), ["001-aaaaaaaaaaaa.webp", "002-bbbbbbbbbbbb.png"]);
 });

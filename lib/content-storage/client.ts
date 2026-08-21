@@ -40,6 +40,36 @@ export async function saveContentDraft(
   }));
 }
 
+export async function replaceContentDraft(
+  contentId: string,
+  content: ContentDraft,
+  images: Blob[],
+  options: { fetcher?: Fetcher; onProgress?: (completed: number, total: number) => void } = {}
+) {
+  const fetcher = options.fetcher ?? fetch;
+  const itemUrl = `/api/content-storage/items/${encodeURIComponent(contentId)}`;
+  const intent = await apiData<UploadPlan>(await fetcher(`${itemUrl}/upload-intents`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ images: images.map((image) => ({ contentType: image.type, size: image.size })) })
+  }));
+  if (intent.contentId !== contentId || intent.uploads.length !== images.length) throw new Error("上传地址数量不一致");
+  for (const [index, upload] of intent.uploads.entries()) {
+    const response = await fetcher(upload.uploadUrl, {
+      method: "PUT",
+      headers: { "Content-Type": upload.contentType },
+      body: images[index]
+    });
+    if (!response.ok) throw new Error(`第 ${index + 1} 张图片上传失败`);
+    options.onProgress?.(index + 1, images.length);
+  }
+  return apiData<StoredContentManifest>(await fetcher(itemUrl, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content, uploads: intent.uploads })
+  }));
+}
+
 export async function listContentItems(fetcher: Fetcher = fetch) {
   return apiData<StoredContentManifest[]>(await fetcher("/api/content-storage/items"));
 }

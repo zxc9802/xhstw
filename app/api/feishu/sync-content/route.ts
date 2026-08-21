@@ -1,10 +1,15 @@
 import { ok, readJson } from "@/lib/utils/api";
 import { resolveFeishuContentFieldNames, resolveFeishuTagFieldValue } from "@/lib/adapters/feishu-content-fields";
 import { buildFeishuBaseUrl } from "@/lib/adapters/feishu-target";
+import { requireContentStorageOwner } from "@/lib/content-storage/auth";
+import { getContentStorageGateway } from "@/lib/content-storage/cos";
+import type { StoredObject } from "@/lib/content-storage/gateway";
+import { getContent } from "@/lib/content-storage/service";
 import { getFeishuUploadDateValue } from "@/lib/utils/feishu-upload-date";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 type SyncPayload = {
+  contentId?: string;
   platform?: string;
   accountName?: string;
   images?: string[];
@@ -68,8 +73,16 @@ function parseDataUrl(url: string) {
   return { mime, buffer: Buffer.from(match[2], "base64") };
 }
 
-async function imageToBlob(url: string, index: number) {
-  const parsed = parseDataUrl(url);
+async function imageToBlob(image: string | StoredObject, index: number) {
+  if (typeof image !== "string") {
+    const bytes = image.bytes.buffer.slice(image.bytes.byteOffset, image.bytes.byteOffset + image.bytes.byteLength) as ArrayBuffer;
+    return {
+      blob: new Blob([bytes], { type: image.contentType }),
+      fileName: `${index + 1}.jpg`
+    };
+  }
+
+  const parsed = parseDataUrl(image);
   if (parsed) {
     return {
       blob: new Blob([parsed.buffer], { type: parsed.mime }),
@@ -77,7 +90,7 @@ async function imageToBlob(url: string, index: number) {
     };
   }
 
-  const response = await fetch(url);
+  const response = await fetch(image);
   if (!response.ok) throw new Error(`图片下载失败：HTTP ${response.status}`);
   const arrayBuffer = await response.arrayBuffer();
   const contentType = response.headers.get("content-type") || "image/jpeg";
@@ -87,8 +100,8 @@ async function imageToBlob(url: string, index: number) {
   };
 }
 
-async function uploadImageToFeishu(imageUrl: string, index: number, appToken: string, token: string) {
-  const { blob, fileName } = await imageToBlob(imageUrl, index);
+async function uploadImageToFeishu(image: string | StoredObject, index: number, appToken: string, token: string) {
+  const { blob, fileName } = await imageToBlob(image, index);
   const form = new FormData();
   form.append("file_name", fileName);
   form.append("parent_type", "bitable_image");
@@ -113,7 +126,30 @@ async function uploadImageToFeishu(imageUrl: string, index: number, appToken: st
 export async function POST(request: Request) {
   try {
     const uploadedAt = Date.now();
-    const payload = await readJson(request) as SyncPayload;
+    const requestedPayload = await readJson(request) as SyncPayload;
+    let payload = requestedPayload;
+    let images: Array<string | StoredObject> = (requestedPayload.images ?? []).filter(Boolean);
+    if (requestedPayload.contentId) {
+      const ownerId = await requireContentStorageOwner(request instanceof NextRequest ? request : new NextRequest(request));
+      const gateway = getContentStorageGateway();
+      const manifest = await getContent(ownerId, requestedPayload.contentId, gateway);
+      if (!manifest) throw new Error("内容不存在");
+      images = [];
+      for (const media of manifest.media) {
+        if (media.storage !== "cos") continue;
+        const object = await gateway.getObject(media.key);
+        if (!object) throw new Error(`COS 图片不存在：${media.fileId}`);
+        images.push(object);
+      }
+      payload = {
+        ...requestedPayload,
+        platform: manifest.platform,
+        accountName: manifest.account,
+        title: manifest.title,
+        body: manifest.body,
+        tags: manifest.tags
+      };
+    }
     const appToken = parseAppToken(process.env.FEISHU_BASE_URL);
     if (!appToken) throw new Error("缺少 FEISHU_BASE_URL 或 FEISHU_APP_TOKEN");
 
@@ -129,14 +165,14 @@ export async function POST(request: Request) {
     const uploadWarnings: string[] = [];
     let attachmentValues: Array<{ file_token: string }> = [];
 
-    if (payload.images?.length && !attachmentFieldName) {
+    if (images.length && !attachmentFieldName) {
       uploadWarnings.push("飞书表中未找到附件字段：创作内容、图片或视频、图片、平台图片");
     }
 
-    if (attachmentFieldName && payload.images?.length) {
-      for (const [index, url] of payload.images.slice(0, 9).entries()) {
+    if (attachmentFieldName && images.length) {
+      for (const [index, image] of images.entries()) {
         try {
-          const fileToken = await uploadImageToFeishu(url, index, appToken, token);
+          const fileToken = await uploadImageToFeishu(image, index, appToken, token);
           attachmentValues.push({ file_token: fileToken });
         } catch (error) {
           uploadWarnings.push(error instanceof Error ? error.message : "图片上传飞书失败");
@@ -144,7 +180,7 @@ export async function POST(request: Request) {
       }
     }
 
-    if (attachmentFieldName && payload.images?.length && !attachmentValues.length) {
+    if (attachmentFieldName && images.length && !attachmentValues.length) {
       throw new Error(uploadWarnings[0] ?? "图片上传飞书失败");
     }
 

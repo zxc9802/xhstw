@@ -25,6 +25,15 @@ test("resolves legacy IndexedDB images and deletes only COS rows", () => {
   assert.equal(source.includes("localPath"), false);
 });
 
+test("restores COS image upload, drag ordering, and Feishu sync", () => {
+  assert.equal(source.includes("replaceContentDraft"), true);
+  assert.equal(source.includes("reorderImageUrls"), true);
+  assert.equal(source.includes("添加本地图片"), true);
+  assert.equal(source.includes("拖动图片可调整顺序"), true);
+  assert.equal(source.includes("同步到飞书"), true);
+  assert.equal(source.includes("contentId: item.id"), true);
+});
+
 test("keeps explicit local export for cloud content", () => {
   assert.equal(source.includes("导出到本地"), true);
   assert.equal(source.includes("writeBlobFiles"), true);

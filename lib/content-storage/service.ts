@@ -38,6 +38,29 @@ export async function createUploadIntent(
   };
 }
 
+export async function createReplacementUploadIntent(
+  ownerId: string,
+  contentId: string,
+  input: unknown,
+  gateway: ContentStorageGateway,
+  options: IntentOptions = {}
+) {
+  if (!await getContent(ownerId, contentId, gateway)) throw new Error("内容不存在");
+  const images = parseImageDescriptors(input);
+  const ids = [...(options.ids ?? [])];
+  const objects = images.map((image, index) => {
+    const fileId = mediaFileId(index, image.contentType, ids.shift() ?? randomUUID());
+    return { ...image, fileId, key: imageObjectKey(ownerId, contentId, fileId) };
+  });
+  return {
+    contentId,
+    uploads: await Promise.all(objects.map(async (object) => ({
+      ...object,
+      uploadUrl: await gateway.createPutUrl(object.key, object.contentType)
+    })))
+  };
+}
+
 async function uploadedMedia(
   ownerId: string,
   contentId: string,
@@ -92,6 +115,41 @@ export async function commitContent(
     updatedAt: timestamp
   };
   await gateway.putJson(manifestObjectKey(ownerId, contentId), manifest);
+  return manifest;
+}
+
+export async function replaceContent(
+  ownerId: string,
+  contentId: string,
+  draft: ContentDraft,
+  files: UploadedFile[],
+  gateway: ContentStorageGateway,
+  now = new Date()
+) {
+  const current = await getContent(ownerId, contentId, gateway);
+  if (!current) throw new Error("内容不存在");
+  const media = await uploadedMedia(ownerId, contentId, files, gateway);
+  const { externalVideoUrls, ...content } = draft;
+  const manifest: StoredContentManifest = {
+    schemaVersion: 1,
+    id: contentId,
+    ownerId,
+    ...content,
+    media: [...media, ...externalVideoMedia(externalVideoUrls)],
+    systemState: "active",
+    createdAt: current.createdAt,
+    updatedAt: now.toISOString()
+  };
+  await gateway.putJson(manifestObjectKey(ownerId, contentId), manifest);
+  const nextKeys = new Set(media.flatMap((item) => item.storage === "cos" ? [item.key] : []));
+  const staleKeys = current.media.flatMap((item) => item.storage === "cos" && !nextKeys.has(item.key) ? [item.key] : []);
+  if (staleKeys.length) {
+    try {
+      await gateway.deleteKeys(staleKeys);
+    } catch {
+      // The new manifest is already durable; orphan cleanup must not turn a successful save into a client-visible failure.
+    }
+  }
   return manifest;
 }
 
