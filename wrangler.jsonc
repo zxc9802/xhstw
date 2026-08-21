@@ -7,6 +7,10 @@
 		"nodejs_compat",
 		"global_fetch_strictly_public"
 	],
+	"vars": {
+		"TENCENT_COS_BUCKET": "xshcp-1410143389",
+		"TENCENT_COS_REGION": "ap-singapore"
+	},
 	"assets": {
 		"directory": ".open-next/assets",
 		"binding": "ASSETS"
