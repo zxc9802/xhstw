@@ -10,10 +10,10 @@ import { PlatformBadge } from "@/components/ui/PlatformBadge";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { deleteContentItem, listContentItems, replaceContentDraft, saveContentDraft } from "@/lib/content-storage/client";
 import { CONTENT_IMAGE_MAX_COUNT, CONTENT_IMAGE_TYPES } from "@/lib/content-storage/contracts";
+import { deleteContentLibraryStorage } from "@/lib/content-storage/delete-library-item";
 import {
   LEGACY_FINISHED_CONTENT_STORAGE_KEY,
   cloudContentItem,
-  deleteLegacyContentItem,
   editableContentDraft,
   legacyContentDraft,
   mergeContentLibraryItems,
@@ -316,33 +316,24 @@ export default function ContentLibraryPage() {
     if (!window.confirm(`确定删除“${item.title}”吗？${storedData}会一起删除，且无法恢复。`)) return;
     setDeletingId(item.id);
     setNotice("");
-    let browserCleanupFailed = false;
     try {
-      const legacyId = item.source === "browser" ? item.id : item.legacySourceId;
+      const { legacyId, browserCleanupFailed } = await deleteContentLibraryStorage(item, {
+        deleteCosContent: deleteContentItem,
+        getLegacyContent: () => window.localStorage.getItem(LEGACY_FINISHED_CONTENT_STORAGE_KEY),
+        setLegacyContent: (value) => window.localStorage.setItem(LEGACY_FINISHED_CONTENT_STORAGE_KEY, value),
+        deleteLegacyImage: deleteImageRef
+      });
       if (legacyId) {
-        const raw = window.localStorage.getItem(LEGACY_FINISHED_CONTENT_STORAGE_KEY);
-        const legacyExists = item.source === "browser"
-          || parseLegacyContentItems(raw).some((candidate) => candidate.id === legacyId);
-        if (legacyExists) {
-          const deletion = deleteLegacyContentItem(
-            raw,
-            legacyId
-          );
-          window.localStorage.setItem(LEGACY_FINISHED_CONTENT_STORAGE_KEY, deletion.serialized);
-          const cleanupResults = await Promise.allSettled(deletion.imageRefs.map((url) => deleteImageRef(url)));
-          browserCleanupFailed = cleanupResults.some((result) => result.status === "rejected");
-          setResolvedBrowserImages((current) => {
-            const next = { ...current };
-            current[legacyId]?.forEach((url) => {
-              if (url.startsWith("blob:")) URL.revokeObjectURL(url);
-            });
-            delete next[legacyId];
-            resolvedBrowserImagesRef.current = next;
-            return next;
+        setResolvedBrowserImages((current) => {
+          const next = { ...current };
+          current[legacyId]?.forEach((url) => {
+            if (url.startsWith("blob:")) URL.revokeObjectURL(url);
           });
-        }
+          delete next[legacyId];
+          resolvedBrowserImagesRef.current = next;
+          return next;
+        });
       }
-      if (item.source === "cos") await deleteContentItem(item.id);
       setItems((current) => current.filter((candidate) => candidate.id !== item.id));
       setSelected((current) => current?.id === item.id ? null : current);
       setEditingItem((current) => current?.id === item.id ? null : current);

@@ -19,13 +19,12 @@ test("loads current-member COS content and browser legacy content without writin
 test("deletes COS and browser rows from cards, table rows, and details", () => {
   assert.equal(source.includes("resolveImageRefs"), true);
   assert.equal(source.includes("deleteContentItem"), true);
-  assert.equal(source.includes("deleteLegacyContentItem"), true);
+  assert.equal(source.includes("deleteContentLibraryStorage"), true);
   assert.equal(source.includes("deleteImageRef"), true);
   assert.equal(source.includes("window.localStorage.setItem(LEGACY_FINISHED_CONTENT_STORAGE_KEY"), true);
-  assert.equal(source.includes('const legacyId = item.source === "browser" ? item.id : item.legacySourceId;'), true);
+  assert.equal(source.includes("deleteCosContent: deleteContentItem"), true);
   assert.equal(source.includes("const resolvedBrowserImagesRef = useRef<Record<string, string[]>>({});"), true);
   assert.equal(source.includes("}, [resolvedBrowserImages]);"), false);
-  assert.equal(source.includes('result.status === "rejected"'), true);
   assert.equal(source.includes("部分浏览器本地图片清理失败"), true);
   assert.equal(source.includes('item.source === "cos" ? <Button variant="danger"'), false);
   assert.equal(source.match(/void removeItem\(/g)?.length, 3);
