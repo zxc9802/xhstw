@@ -43,7 +43,7 @@
         "https://*.iesdouyin.com/*",
         "https://www.tiktok.com/*"
       ],
-      "js": ["shared/collector.js", "shared/page-extract.js", "library2-bar.js"],
+      "js": ["shared/collector.js", "shared/page-extract.js", "shared/library2-live.js", "library2-bar.js"],
       "run_at": "document_idle"
     }
   ],

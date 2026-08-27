@@ -1,6 +1,7 @@
 (function () {
   const HOST_ID = "studio-library2-bar-host";
   const extract = globalThis.StudioPageExtract;
+  const live = globalThis.Library2Live;
   if (!extract) return;
 
   let lastHref = "";
@@ -45,7 +46,9 @@
       });
     }
     const count = Array.isArray(note.imageUrls) ? note.imageUrls.length : 0;
-    setStatus(`${note.platform} · ${count} 张图${note.body ? " · 已识别文案" : ""}`, "info");
+    setStatus(note.isLive
+      ? `${note.platform} · ${count} 组 Live${note.body ? " · 已识别文案" : ""}`
+      : `${note.platform} · ${count} 张图${note.body ? " · 已识别文案" : ""}`, "info");
   }
 
   async function uploadCurrent() {
@@ -59,6 +62,18 @@
     uploading = true;
     try {
       let imageUrls = note.imageUrls;
+      let livePhotos = [];
+      if (note.platform === "小红书" && note.isLive) {
+        if (!live || typeof live.collectXhsLivePhotos !== "function") throw new Error("Live 读取模块未加载");
+        setStatus("正在逐组读取小红书 Live…", "info");
+        const pairs = await live.collectXhsLivePhotos(document);
+        imageUrls = pairs.map((pair) => pair.coverUrl);
+        livePhotos = pairs.map((pair, coverIndex) => ({
+          order: pair.order,
+          coverIndex,
+          videoSource: pair.videoSource
+        }));
+      }
       if (note.platform === "抖音" && typeof extract.collectDouyinCarouselImages === "function") {
         setStatus("正在逐张读取当前抖音图文…", "info");
         imageUrls = await extract.collectDouyinCarouselImages(document, href, note);
@@ -71,7 +86,8 @@
           sourceUrl: note.sourceUrl,
           title: note.title,
           body: note.body,
-          imageUrls
+          imageUrls,
+          livePhotos
         }
       });
       if (!response || response.ok !== true) {

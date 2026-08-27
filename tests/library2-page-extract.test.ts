@@ -17,6 +17,7 @@ const extract = require("../browser-extension/shared/page-extract.js") as {
     title?: string;
     body?: string;
     imageUrls?: string[];
+    isLive?: boolean;
   };
 };
 const media = require("../browser-extension/shared/library2-media.js") as {
@@ -105,6 +106,20 @@ test("extracts image posts from Xiaohongshu, Douyin, and TikTok photo pages", ()
 
   const video = extract.extract(fixture("tiktok-photo.html"), "https://www.tiktok.com/@user/video/1");
   assert.equal(video.ok, false);
+});
+
+test("marks a Xiaohongshu Live detail without changing its static image list", () => {
+  globalThis.XhsPageCollector = collector;
+  const result = extract.extract(fixture("xhs-live-detail.html"), "https://www.xiaohongshu.com/explore/6a8f682f000000002503f464");
+
+  assert.equal(result.ok, true);
+  assert.equal(result.platform, "小红书");
+  assert.equal(result.isLive, true);
+  assert.deepEqual(result.imageUrls, [
+    "https://sns-webpic-qc.xhscdn.com/live-1.jpg",
+    "https://sns-webpic-qc.xhscdn.com/live-2.jpg",
+    "https://sns-webpic-qc.xhscdn.com/live-3.jpg"
+  ]);
 });
 
 test("hides the upload bar on search, feed, and list pages until a note is opened", () => {
