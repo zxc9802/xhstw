@@ -1,4 +1,4 @@
-importScripts("shared/protocol.js", "shared/collector.js", "shared/task-state.js", "shared/media-transfer.js", "shared/library2-media.js", "shared/library2-session.js");
+importScripts("shared/protocol.js", "shared/collector.js", "shared/task-state.js", "shared/media-transfer.js", "shared/library2-media.js", "shared/library2-session.js", "shared/library2-upload.js");
 
 const DETAIL_DELAY_MS = 4_000;
 const QUERY_DELAY_MS = 15_000;
@@ -18,6 +18,7 @@ const taskState = globalThis.XhsTaskState;
 const mediaTransfer = globalThis.XhsMediaTransfer;
 const library2Media = globalThis.Library2Media;
 const library2Session = globalThis.Library2Session;
+const library2Upload = globalThis.Library2Upload;
 const LIBRARY2_SESSIONS_STORAGE_KEY = "library2SessionsV2";
 let active = null;
 let recoveryPromise = null;
@@ -615,14 +616,13 @@ async function uploadLibrary2(payload) {
   if (!intent || !Array.isArray(intent.uploads) || intent.uploads.length !== images.length) {
     return { ok: false, message: "上传地址数量不一致" };
   }
-  for (const [index, upload] of intent.uploads.entries()) {
-    const response = await fetch(new URL(upload.uploadUrl, appOrigin).toString(), {
+  await library2Upload.uploadLibraryImages(intent.uploads, (upload, index) => (
+    fetch(new URL(upload.uploadUrl, appOrigin).toString(), {
       method: "PUT",
       headers: { "Content-Type": upload.contentType },
       body: images[index].bytes
-    });
-    if (!response.ok) return { ok: false, message: `第 ${index + 1} 张图片上传失败` };
-  }
+    })
+  ));
   const platform = payload && ["小红书", "抖音", "TikTok"].includes(payload.platform) ? payload.platform : "小红书";
   await library2Api(`${appOrigin}/api/library2/items/${encodeURIComponent(intent.contentId)}/commit`, {
     method: "POST",
