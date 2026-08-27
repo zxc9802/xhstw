@@ -28,6 +28,14 @@ test("library 2 can delete images and copy independently", () => {
   assert.equal(page.includes("上传到爆款选题库2"), true);
 });
 
+test("library 2 previews a Live pair while deleting cover and video together", () => {
+  assert.equal(page.includes("livePhotos"), true);
+  assert.equal(page.includes(">LIVE<"), true);
+  assert.equal(page.includes("<video"), true);
+  assert.equal(page.includes("poster="), true);
+  assert.equal(page.includes("静态封面和对应视频会一起删除"), true);
+});
+
 test("describes library 2 as the current account library instead of local-only storage", () => {
   assert.equal(page.includes("保存到当前登录账号的爆款选题库2"), true);
   assert.equal(page.includes("本机 outputs/content-storage"), false);

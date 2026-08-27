@@ -30,7 +30,7 @@ export default function ContentLibrary2Page() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busyKey, setBusyKey] = useState("");
-  const [previewUrl, setPreviewUrl] = useState("");
+  const [preview, setPreview] = useState<{ kind: "image" | "video"; url: string; poster?: string } | null>(null);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [platform, setPlatform] = useState<Library2Platform>("小红书");
@@ -83,7 +83,11 @@ export default function ContentLibrary2Page() {
   }
 
   async function removeImage(item: Library2Item, fileId: string) {
-    if (!window.confirm("确定删除这张图片吗？文案和其他图片会保留。")) return;
+    const isLive = item.livePhotos?.some((pair) => pair.coverFileId === fileId);
+    const message = isLive
+      ? "确定删除这组 Live 吗？静态封面和对应视频会一起删除。"
+      : "确定删除这张图片吗？文案和其他图片会保留。";
+    if (!window.confirm(message)) return;
     setBusyKey(`${item.id}:${fileId}`);
     setNotice("");
     try {
@@ -214,11 +218,19 @@ export default function ContentLibrary2Page() {
                     <div className="grid grid-cols-3 gap-1 border-t border-line bg-slate-50 p-2">
                       {item.images.map((image, index) => {
                         const url = library2MediaUrl(item.id, image.fileId);
+                        const live = item.livePhotos?.find((pair) => pair.coverFileId === image.fileId);
                         return (
                           <div key={image.fileId} className="relative overflow-hidden rounded-md bg-white">
-                            <button type="button" onClick={() => setPreviewUrl(url)} className="block w-full">
+                            <button
+                              type="button"
+                              onClick={() => setPreview(live
+                                ? { kind: "video", url: library2MediaUrl(item.id, live.videoFileId), poster: url }
+                                : { kind: "image", url })}
+                              className="block w-full"
+                            >
                               <img src={url} alt={`${item.title} ${index + 1}`} className="aspect-[3/4] w-full object-cover" />
                             </button>
+                            {live ? <span className="absolute left-1 top-1 rounded bg-black/75 px-1.5 py-0.5 text-[10px] font-semibold text-white">LIVE</span> : null}
                             <button
                               type="button"
                               title="删除图片"
@@ -253,9 +265,20 @@ export default function ContentLibrary2Page() {
         </CardBody>
       </Card>
 
-      {previewUrl ? (
-        <div className="fixed inset-0 z-[80] grid place-items-center bg-slate-900/70 p-6" onClick={() => setPreviewUrl("")}>
-          <img src={previewUrl} alt="预览" className="max-h-full max-w-full rounded-lg object-contain" />
+      {preview ? (
+        <div className="fixed inset-0 z-[80] grid place-items-center bg-slate-900/70 p-6" onClick={() => setPreview(null)}>
+          {preview.kind === "video" ? (
+            <video
+              src={preview.url}
+              poster={preview.poster}
+              controls
+              autoPlay
+              onClick={(event) => event.stopPropagation()}
+              className="max-h-full max-w-full rounded-lg object-contain"
+            />
+          ) : (
+            <img src={preview.url} alt="预览" className="max-h-full max-w-full rounded-lg object-contain" />
+          )}
         </div>
       ) : null}
     </div>

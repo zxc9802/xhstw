@@ -18,6 +18,14 @@ const item: Library2Item = {
     contentType: "image/png",
     size: 4
   }],
+  livePhotos: [{
+    order: 0,
+    coverFileId: "001-aaaaaaaaaaaa.png",
+    videoFileId: "001-bbbbbbbbbbbb.mp4",
+    key: "users/local-dev/library2/20260825T080000000Z-111111111111/live/001-bbbbbbbbbbbb.mp4",
+    contentType: "video/mp4",
+    size: 12
+  }],
   createdAt: "2026-08-25T08:00:00.000Z",
   updatedAt: "2026-08-25T09:00:00.000Z"
 };
@@ -40,4 +48,6 @@ test("library2 prefill carries title, copy, platform and stored images", () => {
   assert.equal(payload.platform, "抖音");
   assert.equal(payload.url, item.sourceUrl);
   assert.equal(payload.media[0]?.url, `/api/library2/items/${item.id}/media/001-aaaaaaaaaaaa.png`);
+  assert.equal(payload.media.length, item.images.length);
+  assert.equal(payload.media.some((media) => media.url.endsWith(".mp4")), false);
 });
