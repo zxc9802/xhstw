@@ -552,7 +552,12 @@ test("plugin bar and background upload to library2 without touching the collect 
   assert.match(background, /chrome\.tabs\.query/);
   assert.match(background, /MEDIA_DOWNLOAD_BATCH_SIZE\s*=\s*4/);
   assert.match(background, /Promise\.all/);
+  assert.match(background, /shared\/library2-live\.js/);
+  assert.match(background, /readBlobFromTab/);
   assert.match(background, /\/api\/library2\/upload-intents/);
+  assert.match(bar, /chrome\.runtime\.onConnect/);
+  assert.match(bar, /library2-live-blob/);
+  assert.match(bar, /streamBlob/);
   assert.match(background, /http:\/\/127\.0\.0\.1:3000/);
   assert.doesNotMatch(background, /\/api\/content-storage\//);
 });

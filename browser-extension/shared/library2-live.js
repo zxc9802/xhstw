@@ -4,6 +4,8 @@
   else root.Library2Live = api;
 })(globalThis, function (root) {
   const MAX_LIVE_PHOTOS = 20;
+  const BLOB_CHUNK_BYTES = 192 * 1024;
+  const LIVE_VIDEO_MAX_BYTES = 100 * 1024 * 1024;
   const NEXT_SELECTOR = ".swiper-button-next, button[aria-label*='下一'], [class*='arrow'][class*='right']";
   const PREVIOUS_SELECTOR = ".swiper-button-prev, button[aria-label*='上一'], [class*='arrow'][class*='left']";
 
@@ -163,5 +165,135 @@
     return pairs;
   }
 
-  return Object.freeze({ collectXhsLivePhotos });
+  function encodeBase64(bytes) {
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+      binary += String.fromCharCode(...bytes.subarray(offset, Math.min(bytes.length, offset + 0x8000)));
+    }
+    return btoa(binary);
+  }
+
+  function decodeBase64(value) {
+    const binary = atob(value);
+    return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  }
+
+  function sniffMp4(bytes) {
+    if (!bytes || bytes.length < 12) return false;
+    for (let offset = 4; offset <= Math.min(bytes.length - 4, 28); offset += 1) {
+      if (bytes[offset] === 0x66 && bytes[offset + 1] === 0x74
+        && bytes[offset + 2] === 0x79 && bytes[offset + 3] === 0x70) return true;
+    }
+    return false;
+  }
+
+  async function streamBlob(port, blobUrl, options = {}) {
+    if (typeof blobUrl !== "string" || !blobUrl.startsWith("blob:https://www.xiaohongshu.com/")) {
+      throw new Error("页面 Live 视频地址无效");
+    }
+    const fetchImpl = options.fetchImpl || root.fetch;
+    const chunkBytes = Math.max(1, Number(options.chunkBytes) || BLOB_CHUNK_BYTES);
+    let byteLength = 0;
+    let chunkIndex = 0;
+    let carry = new Uint8Array(0);
+    try {
+      const response = await fetchImpl(blobUrl);
+      if (!response.ok || !response.body) throw new Error("页面 Live 视频读取失败");
+      const contentType = String(response.headers.get("content-type") || "video/mp4").split(";", 1)[0].trim().toLowerCase();
+      port.postMessage({ type: "start", contentType });
+      const reader = response.body.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const joined = new Uint8Array(carry.length + value.length);
+          joined.set(carry);
+          joined.set(value, carry.length);
+          let offset = 0;
+          while (joined.length - offset >= chunkBytes) {
+            const chunk = joined.slice(offset, offset + chunkBytes);
+            byteLength += chunk.byteLength;
+            if (byteLength > LIVE_VIDEO_MAX_BYTES) throw new Error("单个 Live 视频不能超过 100 MB");
+            port.postMessage({ type: "chunk", chunkIndex, data: encodeBase64(chunk), byteLength: chunk.byteLength });
+            chunkIndex += 1;
+            offset += chunkBytes;
+          }
+          carry = joined.slice(offset);
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      if (carry.length) {
+        byteLength += carry.byteLength;
+        if (byteLength > LIVE_VIDEO_MAX_BYTES) throw new Error("单个 Live 视频不能超过 100 MB");
+        port.postMessage({ type: "chunk", chunkIndex, data: encodeBase64(carry), byteLength: carry.byteLength });
+        chunkIndex += 1;
+      }
+      port.postMessage({ type: "complete", byteLength, chunkCount: chunkIndex, contentType });
+      return { byteLength, chunkCount: chunkIndex };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "页面 Live 视频读取失败";
+      port.postMessage({ type: "error", message });
+      throw error;
+    }
+  }
+
+  function readBlobFromTab(connect, tabId, blobUrl, options = {}) {
+    return new Promise((resolve, reject) => {
+      const port = connect(tabId, { name: "library2-live-blob" });
+      const chunks = [];
+      let expectedChunkIndex = 0;
+      let byteLength = 0;
+      let contentType = "";
+      let settled = false;
+      const finish = (error, value) => {
+        if (settled) return;
+        settled = true;
+        root.clearTimeout(timer);
+        try { port.disconnect(); } catch (_) {}
+        if (error) reject(error);
+        else resolve(value);
+      };
+      const timer = root.setTimeout(() => finish(new Error("页面 Live 视频读取超时")), Number(options.timeoutMs) || 30_000);
+      port.onMessage.addListener((message) => {
+        try {
+          if (!message || typeof message !== "object") throw new Error("页面 Live 视频分块无效");
+          if (message.type === "start") {
+            contentType = String(message.contentType || "").split(";", 1)[0].trim().toLowerCase();
+            return;
+          }
+          if (message.type === "chunk") {
+            if (message.chunkIndex !== expectedChunkIndex || typeof message.data !== "string") throw new Error("页面 Live 视频分块顺序无效");
+            const chunk = decodeBase64(message.data);
+            if (chunk.byteLength !== message.byteLength) throw new Error("页面 Live 视频分块大小无效");
+            byteLength += chunk.byteLength;
+            if (byteLength > LIVE_VIDEO_MAX_BYTES) throw new Error("单个 Live 视频不能超过 100 MB");
+            chunks.push(chunk);
+            expectedChunkIndex += 1;
+            return;
+          }
+          if (message.type === "error") throw new Error(String(message.message || "页面 Live 视频读取失败"));
+          if (message.type !== "complete" || message.chunkCount !== expectedChunkIndex || message.byteLength !== byteLength) {
+            throw new Error("页面 Live 视频完成信息无效");
+          }
+          const bytes = new Uint8Array(byteLength);
+          let offset = 0;
+          for (const chunk of chunks) {
+            bytes.set(chunk, offset);
+            offset += chunk.byteLength;
+          }
+          if (contentType !== "video/mp4" || !sniffMp4(bytes)) throw new Error("Live 视频格式无效");
+          finish(null, { bytes, contentType: "video/mp4", size: byteLength });
+        } catch (error) {
+          finish(error instanceof Error ? error : new Error("页面 Live 视频读取失败"));
+        }
+      });
+      port.onDisconnect.addListener(() => {
+        if (!settled) finish(new Error("页面 Live 视频连接已断开"));
+      });
+      port.postMessage({ type: "read", url: blobUrl });
+    });
+  }
+
+  return Object.freeze({ BLOB_CHUNK_BYTES, collectXhsLivePhotos, readBlobFromTab, streamBlob });
 });

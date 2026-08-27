@@ -1,4 +1,4 @@
-importScripts("shared/protocol.js", "shared/collector.js", "shared/task-state.js", "shared/media-transfer.js", "shared/library2-media.js", "shared/library2-session.js", "shared/library2-upload.js");
+importScripts("shared/protocol.js", "shared/collector.js", "shared/task-state.js", "shared/media-transfer.js", "shared/library2-media.js", "shared/library2-session.js", "shared/library2-upload.js", "shared/library2-live.js");
 
 const DETAIL_DELAY_MS = 4_000;
 const QUERY_DELAY_MS = 15_000;
@@ -19,6 +19,7 @@ const mediaTransfer = globalThis.XhsMediaTransfer;
 const library2Media = globalThis.Library2Media;
 const library2Session = globalThis.Library2Session;
 const library2Upload = globalThis.Library2Upload;
+const library2Live = globalThis.Library2Live;
 const LIBRARY2_SESSIONS_STORAGE_KEY = "library2SessionsV2";
 let active = null;
 let recoveryPromise = null;
@@ -560,6 +561,20 @@ async function library2Api(url, init) {
     throw new Error((payload && payload.message) || `请求失败（${response.status}）`);
   }
   return payload.data;
+}
+
+function downloadLibrary2LiveVideo(videoSource, senderTabId) {
+  if (videoSource && videoSource.kind === "remote") {
+    return library2Media.downloadVideo(videoSource.url);
+  }
+  if (videoSource && videoSource.kind === "blob" && Number.isInteger(senderTabId)) {
+    return library2Live.readBlobFromTab(
+      (tabId, info) => chrome.tabs.connect(tabId, info),
+      senderTabId,
+      videoSource.url
+    );
+  }
+  throw new Error("Live 视频来源无效");
 }
 
 async function uploadLibrary2(payload) {

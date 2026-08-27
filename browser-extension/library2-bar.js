@@ -4,6 +4,16 @@
   const live = globalThis.Library2Live;
   if (!extract) return;
 
+  chrome.runtime.onConnect.addListener((port) => {
+    if (!live || port.name !== "library2-live-blob") return;
+    let handled = false;
+    port.onMessage.addListener((message) => {
+      if (handled || !message || message.type !== "read" || typeof message.url !== "string") return;
+      handled = true;
+      void live.streamBlob(port, message.url).catch(() => {});
+    });
+  });
+
   let lastHref = "";
   let lastKind = "";
   let uploading = false;
