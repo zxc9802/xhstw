@@ -156,3 +156,62 @@ test("rejects unauthenticated library2 reads with JSON instead of a session cook
   assert.equal(payload.ok, false);
   assert.match(payload.message, /登录/);
 });
+
+test("uploads, commits, and serves a paired Live MP4", async (t) => {
+  const liveRoutePath = "../app/api/library2/items/[contentId]/live/[fileId]/upload/route";
+  const { PUT: UPLOAD_LIVE } = await import(liveRoutePath).catch(() => ({ PUT: undefined }));
+  assert.equal(typeof UPLOAD_LIVE, "function", "Live MP4 upload route must exist");
+
+  const gateway = new MemoryGateway();
+  setContentStorageGatewayForTests(gateway);
+  t.after(() => setContentStorageGatewayForTests(undefined));
+  const intentResponse = await CREATE_INTENT(bearerRequest("member-a", "https://app.test/api/library2/upload-intents", {
+    method: "POST",
+    body: JSON.stringify({
+      images: [{ contentType: "image/jpeg", size: 4 }],
+      livePhotos: [{ order: 0, coverIndex: 0, contentType: "video/mp4", size: 12 }]
+    })
+  }));
+  const intent = (await intentResponse.json()).data as {
+    contentId: string;
+    uploads: Array<{ fileId: string; uploadUrl: string; contentType: string }>;
+    liveUploads: Array<{ fileId: string; uploadUrl: string; contentType: string }>;
+  };
+  await UPLOAD(new NextRequest(`https://app.test${intent.uploads[0]!.uploadUrl}`, {
+    method: "PUT",
+    headers: { "Content-Type": "image/jpeg", "Content-Length": "4" },
+    body: new Uint8Array([0xff, 0xd8, 0xff, 0xd9])
+  }), { params: Promise.resolve({ contentId: intent.contentId, fileId: intent.uploads[0]!.fileId }) });
+
+  const mp4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+  const liveUpload = await UPLOAD_LIVE(new NextRequest(`https://app.test${intent.liveUploads[0]!.uploadUrl}`, {
+    method: "PUT",
+    headers: { "Content-Type": "video/mp4", "Content-Length": String(mp4.byteLength) },
+    body: mp4
+  }), { params: Promise.resolve({ contentId: intent.contentId, fileId: intent.liveUploads[0]!.fileId }) });
+  assert.equal(liveUpload.status, 200);
+
+  const commit = await COMMIT(bearerRequest("member-a", `https://app.test/api/library2/items/${intent.contentId}/commit`, {
+    method: "POST",
+    body: JSON.stringify({
+      content: { title: "Live", body: "配对", platform: "小红书", sourceUrl: "" },
+      uploads: intent.uploads,
+      liveUploads: intent.liveUploads
+    })
+  }), { params: Promise.resolve({ contentId: intent.contentId }) });
+  assert.equal(commit.status, 200);
+  assert.equal((await commit.json()).data.livePhotos.length, 1);
+
+  const media = await MEDIA(await cookieRequest("member-a", `https://app.test/api/library2/items/${intent.contentId}/media/${intent.liveUploads[0]!.fileId}`), {
+    params: Promise.resolve({ contentId: intent.contentId, fileId: intent.liveUploads[0]!.fileId })
+  });
+  assert.equal(media.status, 200);
+  assert.equal(media.headers.get("content-type"), "video/mp4");
+
+  const invalid = await UPLOAD_LIVE(new NextRequest(`https://app.test${intent.liveUploads[0]!.uploadUrl}`, {
+    method: "PUT",
+    headers: { "Content-Type": "video/mp4", "Content-Length": "12" },
+    body: new Uint8Array(12)
+  }), { params: Promise.resolve({ contentId: intent.contentId, fileId: intent.liveUploads[0]!.fileId }) });
+  assert.equal(invalid.status, 400);
+});

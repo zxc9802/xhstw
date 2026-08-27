@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import type { UploadIntentObject } from "@/lib/content-storage/contracts";
+import type { Library2LiveUploadObject } from "@/lib/content-library-2/contracts";
 import { library2Route, readJson } from "@/lib/content-library-2/route";
 import { commitLibrary2Item } from "@/lib/content-library-2/service";
 
@@ -14,8 +15,10 @@ export async function POST(
     const body = await readJson(request) as {
       content?: unknown;
       uploads?: Array<UploadIntentObject & { uploadUrl?: string }>;
+      liveUploads?: Array<Library2LiveUploadObject & { uploadUrl?: string }>;
     };
     if (!body.content || !Array.isArray(body.uploads)) throw new Error("图文内容无效");
-    return commitLibrary2Item(ownerId, contentId, body.content, body.uploads, gateway);
+    if (body.liveUploads !== undefined && !Array.isArray(body.liveUploads)) throw new Error("Live 列表无效");
+    return commitLibrary2Item(ownerId, contentId, body.content, body.uploads, body.liveUploads ?? [], gateway);
   });
 }

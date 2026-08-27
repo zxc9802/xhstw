@@ -54,6 +54,7 @@ export async function PUT(
       contentId,
       fileId
     );
+    if (descriptor.mediaKind !== "image") throw new Error("上传令牌无效");
     const contentType = request.headers.get("Content-Type")?.split(";", 1)[0]?.trim() ?? "";
     if (contentType !== descriptor.contentType) throw new Error("图片信息不一致");
     const bytes = await readImageBytes(request, descriptor.size);

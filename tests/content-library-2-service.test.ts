@@ -8,6 +8,7 @@ import {
   createLibrary2UploadIntent,
   deleteLibrary2Image,
   deleteLibrary2Item,
+  getLibrary2Media,
   listLibrary2Items
 } from "../lib/content-library-2/service";
 import { library2ManifestKey, userLibrary2Prefix } from "../lib/content-library-2/contracts";
@@ -62,7 +63,7 @@ test("stores library2 items on a prefix isolated from the finished-content libra
     body: "白天出门记得补涂。",
     platform: "小红书",
     sourceUrl: "https://www.xiaohongshu.com/explore/aaaaaaaaaaaaaaaa"
-  }, intent.uploads, gateway);
+  }, intent.uploads, [], gateway);
 
   assert.equal(saved.library, "manual");
   assert.equal((await listLibrary2Items("member-a", gateway)).length, 1);
@@ -94,7 +95,7 @@ test("can delete one image or only the copy while keeping the rest of the item",
     body: "先删图再删文。",
     platform: "抖音",
     sourceUrl: "https://www.douyin.com/note/123"
-  }, intent.uploads, gateway);
+  }, intent.uploads, [], gateway);
 
   const afterImage = await deleteLibrary2Image("member-a", intent.contentId, intent.uploads[0]!.fileId, gateway);
   assert.equal(afterImage.images.length, 1);
@@ -188,4 +189,54 @@ test("keeps old image-only manifests readable without a Live migration", async (
   const [item] = await listLibrary2Items("member-a", gateway);
   assert.equal(item?.title, "旧图文");
   assert.equal(item?.livePhotos, undefined);
+});
+
+test("commits Live pairs only after every object exists and deletes a pair with its cover", async () => {
+  const gateway = new MemoryGateway();
+  const intent = await createLibrary2UploadIntent("member-a", {
+    images: [
+      { contentType: "image/jpeg", size: 4 },
+      { contentType: "image/jpeg", size: 5 }
+    ],
+    livePhotos: [
+      { order: 0, coverIndex: 0, contentType: "video/mp4", size: 12 },
+      { order: 1, coverIndex: 1, contentType: "video/mp4", size: 12 }
+    ]
+  }, gateway);
+  for (const upload of intent.uploads) {
+    gateway.objects.set(upload.key, { bytes: new Uint8Array(upload.size), contentType: upload.contentType });
+  }
+  gateway.objects.set(intent.liveUploads[0]!.key, { bytes: new Uint8Array(12), contentType: "video/mp4" });
+  const draft = {
+    title: "完整 Live",
+    body: "两组 Live",
+    platform: "小红书",
+    sourceUrl: "https://www.xiaohongshu.com/explore/6a8f682f000000002503f464"
+  };
+
+  await assert.rejects(
+    commitLibrary2Item("member-a", intent.contentId, draft, intent.uploads, intent.liveUploads, gateway),
+    /第 2 个 Live 视频尚未上传/
+  );
+  assert.equal(await gateway.getJson(library2ManifestKey("member-a", intent.contentId)), undefined);
+
+  gateway.objects.set(intent.liveUploads[1]!.key, { bytes: new Uint8Array(12), contentType: "video/mp4" });
+  const saved = await commitLibrary2Item("member-a", intent.contentId, draft, intent.uploads, intent.liveUploads, gateway);
+  assert.deepEqual(saved.livePhotos?.map((pair) => [pair.order, pair.coverFileId, pair.videoFileId]), [
+    [0, intent.uploads[0]!.fileId, intent.liveUploads[0]!.fileId],
+    [1, intent.uploads[1]!.fileId, intent.liveUploads[1]!.fileId]
+  ]);
+  assert.equal((await getLibrary2Media("member-a", intent.contentId, intent.liveUploads[0]!.fileId, gateway))?.contentType, "video/mp4");
+  assert.equal(await getLibrary2Media("member-b", intent.contentId, intent.liveUploads[0]!.fileId, gateway), undefined);
+
+  const afterDelete = await deleteLibrary2Image("member-a", intent.contentId, intent.uploads[0]!.fileId, gateway);
+  assert.equal(afterDelete.images.length, 1);
+  assert.deepEqual(afterDelete.livePhotos?.map((pair) => pair.coverFileId), [intent.uploads[1]!.fileId]);
+  assert.equal(gateway.objects.has(intent.uploads[0]!.key), false);
+  assert.equal(gateway.objects.has(intent.liveUploads[0]!.key), false);
+
+  await deleteLibrary2Item("member-a", intent.contentId, gateway);
+  assert.equal(gateway.objects.has(intent.uploads[1]!.key), false);
+  assert.equal(gateway.objects.has(intent.liveUploads[1]!.key), false);
+  assert.equal(await gateway.getJson(library2ManifestKey("member-a", intent.contentId)), undefined);
 });

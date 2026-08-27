@@ -15,16 +15,19 @@ import {
   userLibrary2Prefix,
   validateLibrary2ContentId,
   validateLibrary2FileId,
+  validateLibrary2LiveFileId,
   type Library2Draft,
   type Library2Image,
   type Library2Item,
   type Library2LiveUploadObject,
+  type Library2LivePhoto,
   type Library2UploadObject
 } from "./contracts";
 import { createLibrary2LiveUploadCapability, createLibrary2UploadCapability } from "./upload-capability";
 
 type IntentOptions = { now?: Date; ids?: string[] };
 type UploadedFile = UploadIntentObject & { uploadUrl?: string };
+type UploadedLiveFile = Library2LiveUploadObject & { uploadUrl?: string };
 
 function uploadUrl(contentId: string, fileId: string, token: string) {
   const path = `/api/library2/items/${encodeURIComponent(contentId)}/media/${encodeURIComponent(fileId)}/upload`;
@@ -105,17 +108,53 @@ async function uploadedImages(
   return images;
 }
 
+async function uploadedLivePhotos(
+  ownerId: string,
+  contentId: string,
+  files: UploadedLiveFile[],
+  images: Library2Image[],
+  gateway: ContentStorageGateway
+): Promise<Library2LivePhoto[]> {
+  const coverIds = new Set(images.map((image) => image.fileId));
+  const usedCovers = new Set<string>();
+  const livePhotos: Library2LivePhoto[] = [];
+  for (const [index, file] of files.entries()) {
+    validateLibrary2LiveFileId(file.fileId);
+    const key = library2LiveKey(ownerId, contentId, file.fileId);
+    if (file.key !== key) throw new Error("Live 视频对象路径无效");
+    if (file.order !== index) throw new Error("Live 顺序无效");
+    if (!coverIds.has(file.coverFileId) || usedCovers.has(file.coverFileId)) throw new Error("Live 封面无效");
+    const head = await gateway.headObject(key);
+    if (!head) throw new Error(`第 ${index + 1} 个 Live 视频尚未上传`);
+    if (head.contentType !== "video/mp4" || file.contentType !== "video/mp4" || head.size !== file.size) {
+      throw new Error(`第 ${index + 1} 个 Live 视频信息不一致`);
+    }
+    usedCovers.add(file.coverFileId);
+    livePhotos.push({
+      order: file.order,
+      coverFileId: file.coverFileId,
+      videoFileId: file.fileId,
+      key,
+      contentType: "video/mp4",
+      size: file.size
+    });
+  }
+  return livePhotos;
+}
+
 export async function commitLibrary2Item(
   ownerId: string,
   contentId: string,
   draftInput: unknown,
   files: UploadedFile[],
+  liveFiles: UploadedLiveFile[],
   gateway: ContentStorageGateway,
   now = new Date()
 ) {
   validateLibrary2ContentId(contentId);
   const draft = parseLibrary2Draft(draftInput);
   const images = await uploadedImages(ownerId, contentId, files, gateway);
+  const livePhotos = await uploadedLivePhotos(ownerId, contentId, liveFiles, images, gateway);
   if (!images.length && !draft.body) throw new Error("图片和文案不能同时为空");
   const timestamp = now.toISOString();
   const item: Library2Item = {
@@ -125,6 +164,7 @@ export async function commitLibrary2Item(
     library: LIBRARY2_NAME,
     ...draft,
     images,
+    ...(livePhotos.length ? { livePhotos } : {}),
     createdAt: timestamp,
     updatedAt: timestamp
   };
@@ -165,7 +205,9 @@ export async function getLibrary2Media(
 ) {
   const item = await getLibrary2Item(ownerId, contentId, gateway);
   const image = item?.images.find((candidate) => candidate.fileId === fileId);
-  return image ? gateway.getObject(image.key) : undefined;
+  if (image) return gateway.getObject(image.key);
+  const live = item?.livePhotos?.find((candidate) => candidate.videoFileId === fileId);
+  return live ? gateway.getObject(live.key) : undefined;
 }
 
 export async function deleteLibrary2Image(
@@ -180,14 +222,17 @@ export async function deleteLibrary2Image(
   if (!item) throw new Error("内容不存在");
   const image = item.images.find((candidate) => candidate.fileId === fileId);
   if (!image) throw new Error("图片不存在");
+  const live = item.livePhotos?.find((candidate) => candidate.coverFileId === fileId);
+  const remainingLive = item.livePhotos?.filter((candidate) => candidate.coverFileId !== fileId) ?? [];
   const next: Library2Item = {
     ...item,
     images: item.images.filter((candidate) => candidate.fileId !== fileId),
+    ...(item.livePhotos ? { livePhotos: remainingLive } : {}),
     updatedAt: now.toISOString()
   };
   await gateway.putJson(library2ManifestKey(ownerId, contentId), next);
   try {
-    await gateway.deleteKeys([image.key]);
+    await gateway.deleteKeys([image.key, ...(live ? [live.key] : [])]);
   } catch {
     // The updated manifest is already durable.
   }
@@ -220,6 +265,7 @@ export async function deleteLibrary2Item(
   if (!item) return;
   await gateway.deleteKeys([
     ...item.images.map((image) => image.key),
+    ...(item.livePhotos ?? []).map((live) => live.key),
     library2ManifestKey(ownerId, contentId)
   ]);
 }
