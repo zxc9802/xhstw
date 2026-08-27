@@ -1,10 +1,14 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { CONTENT_UPLOAD_INTENT_TTL_MS, parseImageDescriptors, type ImageDescriptor } from "@/lib/content-storage/contracts";
+import { parseLibrary2LiveDescriptors, type Library2LiveDescriptor } from "./contracts";
 
-type CapabilityPayload = ImageDescriptor & {
+type CapabilityPayload = {
   version: 1;
   kind: "library2-upload";
+  mediaKind: "image" | "live";
   ownerId: string;
+  contentType: string;
+  size: number;
   expiresAt: number;
 };
 
@@ -31,9 +35,30 @@ export function createLibrary2UploadCapability(
   const payload = Buffer.from(JSON.stringify({
     version: 1,
     kind: "library2-upload",
+    mediaKind: "image",
     ownerId,
     contentType: image.contentType,
     size: image.size,
+    expiresAt: now + CONTENT_UPLOAD_INTENT_TTL_MS
+  } satisfies CapabilityPayload)).toString("base64url");
+  return `${payload}.${signature(payload, contentId, fileId)}`;
+}
+
+export function createLibrary2LiveUploadCapability(
+  ownerId: string,
+  contentId: string,
+  fileId: string,
+  descriptor: Library2LiveDescriptor,
+  now = Date.now()
+) {
+  const [live] = parseLibrary2LiveDescriptors([{ ...descriptor, order: 0 }]);
+  const payload = Buffer.from(JSON.stringify({
+    version: 1,
+    kind: "library2-upload",
+    mediaKind: "live",
+    ownerId,
+    contentType: live.contentType,
+    size: live.size,
     expiresAt: now + CONTENT_UPLOAD_INTENT_TTL_MS
   } satisfies CapabilityPayload)).toString("base64url");
   return `${payload}.${signature(payload, contentId, fileId)}`;
@@ -44,7 +69,7 @@ export function verifyLibrary2UploadCapability(
   contentId: string,
   fileId: string,
   now = Date.now()
-): ImageDescriptor & { ownerId: string } {
+): (ImageDescriptor & { ownerId: string; mediaKind: "image" }) | (Pick<Library2LiveDescriptor, "contentType" | "size"> & { ownerId: string; mediaKind: "live" }) {
   try {
     if (!token) throw new Error();
     const parts = token.split(".");
@@ -60,6 +85,7 @@ export function verifyLibrary2UploadCapability(
     if (
       value.version !== 1
       || value.kind !== "library2-upload"
+      || (value.mediaKind !== "image" && value.mediaKind !== "live")
       || typeof value.ownerId !== "string"
       || !value.ownerId.trim()
       || !Number.isInteger(value.expiresAt)
@@ -67,9 +93,29 @@ export function verifyLibrary2UploadCapability(
     ) {
       throw new Error();
     }
-    const [image] = parseImageDescriptors([{ contentType: value.contentType, size: value.size }]);
-    return { ...image, ownerId: value.ownerId };
+    if (value.mediaKind === "image") {
+      const [image] = parseImageDescriptors([{ contentType: value.contentType, size: value.size }]);
+      return { ...image, ownerId: value.ownerId, mediaKind: "image" };
+    }
+    const [live] = parseLibrary2LiveDescriptors([{
+      order: 0,
+      coverIndex: 0,
+      contentType: value.contentType,
+      size: value.size
+    }]);
+    return { contentType: live.contentType, size: live.size, ownerId: value.ownerId, mediaKind: "live" };
   } catch {
     throw new Error("上传令牌无效");
   }
+}
+
+export function verifyLibrary2LiveUploadCapability(
+  token: string | null,
+  contentId: string,
+  fileId: string,
+  now = Date.now()
+) {
+  const descriptor = verifyLibrary2UploadCapability(token, contentId, fileId, now);
+  if (descriptor.mediaKind !== "live") throw new Error("上传令牌无效");
+  return descriptor;
 }

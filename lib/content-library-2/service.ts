@@ -4,20 +4,24 @@ import type { UploadIntentObject } from "@/lib/content-storage/contracts";
 import {
   createLibrary2FileId,
   createLibrary2Id,
+  createLibrary2LiveFileId,
   library2ImageKey,
+  library2LiveKey,
   library2ManifestKey,
   LIBRARY2_NAME,
   parseLibrary2Draft,
   parseLibrary2Images,
+  parseLibrary2LiveDescriptors,
   userLibrary2Prefix,
   validateLibrary2ContentId,
   validateLibrary2FileId,
   type Library2Draft,
   type Library2Image,
   type Library2Item,
+  type Library2LiveUploadObject,
   type Library2UploadObject
 } from "./contracts";
-import { createLibrary2UploadCapability } from "./upload-capability";
+import { createLibrary2LiveUploadCapability, createLibrary2UploadCapability } from "./upload-capability";
 
 type IntentOptions = { now?: Date; ids?: string[] };
 type UploadedFile = UploadIntentObject & { uploadUrl?: string };
@@ -27,13 +31,21 @@ function uploadUrl(contentId: string, fileId: string, token: string) {
   return `${path}?${new URLSearchParams({ token })}`;
 }
 
+function liveUploadUrl(contentId: string, fileId: string, token: string) {
+  const path = `/api/library2/items/${encodeURIComponent(contentId)}/live/${encodeURIComponent(fileId)}/upload`;
+  return `${path}?${new URLSearchParams({ token })}`;
+}
+
 export async function createLibrary2UploadIntent(
   ownerId: string,
   input: unknown,
   _gateway: ContentStorageGateway,
   options: IntentOptions = {}
 ) {
-  const images = parseLibrary2Images(input);
+  const request = Array.isArray(input) ? { images: input, livePhotos: [] } : input as { images?: unknown; livePhotos?: unknown };
+  const images = parseLibrary2Images(request?.images);
+  const livePhotos = parseLibrary2LiveDescriptors(request?.livePhotos);
+  if (livePhotos.length > images.length) throw new Error("Live 封面数量无效");
   const ids = [...(options.ids ?? [])];
   const contentId = createLibrary2Id(options.now ?? new Date(), ids.shift() ?? randomUUID());
   const objects: Library2UploadObject[] = images.map((image, index) => {
@@ -41,6 +53,17 @@ export async function createLibrary2UploadIntent(
     return { ...image, fileId, key: library2ImageKey(ownerId, contentId, fileId) };
   });
   const intentTime = (options.now ?? new Date()).getTime();
+  const liveObjects: Library2LiveUploadObject[] = livePhotos.map((live) => {
+    const cover = objects[live.coverIndex];
+    if (!cover) throw new Error("Live 封面无效");
+    const fileId = createLibrary2LiveFileId(live.order, ids.shift() ?? randomUUID());
+    return {
+      ...live,
+      fileId,
+      coverFileId: cover.fileId,
+      key: library2LiveKey(ownerId, contentId, fileId)
+    };
+  });
   return {
     contentId,
     uploads: objects.map((object) => ({
@@ -49,6 +72,14 @@ export async function createLibrary2UploadIntent(
         contentId,
         object.fileId,
         createLibrary2UploadCapability(ownerId, contentId, object.fileId, object, intentTime)
+      )
+    })),
+    liveUploads: liveObjects.map((object) => ({
+      ...object,
+      uploadUrl: liveUploadUrl(
+        contentId,
+        object.fileId,
+        createLibrary2LiveUploadCapability(ownerId, contentId, object.fileId, object, intentTime)
       )
     }))
   };

@@ -11,6 +11,8 @@ export const LIBRARY2_PLATFORMS = ["小红书", "抖音", "TikTok"] as const;
 export const LIBRARY2_TITLE_MAX = 200;
 export const LIBRARY2_BODY_MAX = 20_000;
 export const LIBRARY2_URL_MAX = 2_048;
+export const LIBRARY2_LIVE_MAX_BYTES = 100 * 1024 * 1024;
+export const LIBRARY2_LIVE_TOTAL_MAX_BYTES = 500 * 1024 * 1024;
 
 export type Library2Platform = (typeof LIBRARY2_PLATFORMS)[number];
 
@@ -18,6 +20,22 @@ export interface Library2Image {
   fileId: string;
   key: string;
   contentType: string;
+  size: number;
+}
+
+export interface Library2LivePhoto {
+  order: number;
+  coverFileId: string;
+  videoFileId: string;
+  key: string;
+  contentType: "video/mp4";
+  size: number;
+}
+
+export interface Library2LiveDescriptor {
+  order: number;
+  coverIndex: number;
+  contentType: "video/mp4";
   size: number;
 }
 
@@ -31,6 +49,7 @@ export interface Library2Item {
   title: string;
   body: string;
   images: Library2Image[];
+  livePhotos?: Library2LivePhoto[];
   createdAt: string;
   updatedAt: string;
 }
@@ -47,8 +66,15 @@ export interface Library2UploadObject extends ImageDescriptor {
   key: string;
 }
 
+export interface Library2LiveUploadObject extends Library2LiveDescriptor {
+  fileId: string;
+  coverFileId: string;
+  key: string;
+}
+
 const CONTENT_ID_PATTERN = /^\d{8}T\d{9}Z-[0-9a-f]{12}$/;
 const FILE_ID_PATTERN = /^\d{3}-[0-9a-f]{12}\.(?:jpg|png|webp|gif|avif)$/;
+const LIVE_FILE_ID_PATTERN = /^\d{3}-[0-9a-f]{12}\.mp4$/;
 
 function encodeOwnerId(ownerId: string): string {
   if (!ownerId.trim()) throw new Error("ownerId不能为空");
@@ -67,6 +93,10 @@ export function validateLibrary2FileId(fileId: string): void {
   if (!FILE_ID_PATTERN.test(fileId)) throw new Error("fileId无效");
 }
 
+export function validateLibrary2LiveFileId(fileId: string): void {
+  if (!LIVE_FILE_ID_PATTERN.test(fileId)) throw new Error("Live fileId无效");
+}
+
 export function library2ManifestKey(ownerId: string, contentId: string): string {
   validateLibrary2ContentId(contentId);
   return `${userLibrary2Prefix(ownerId)}${contentId}/manifest.json`;
@@ -78,6 +108,12 @@ export function library2ImageKey(ownerId: string, contentId: string, fileId: str
   return `${userLibrary2Prefix(ownerId)}${contentId}/images/${fileId}`;
 }
 
+export function library2LiveKey(ownerId: string, contentId: string, fileId: string): string {
+  validateLibrary2ContentId(contentId);
+  validateLibrary2LiveFileId(fileId);
+  return `${userLibrary2Prefix(ownerId)}${contentId}/live/${fileId}`;
+}
+
 export function createLibrary2Id(now: Date, id: string): string {
   return createContentId(now, id);
 }
@@ -86,8 +122,43 @@ export function createLibrary2FileId(index: number, contentType: string, id: str
   return mediaFileId(index, contentType, id);
 }
 
+export function createLibrary2LiveFileId(index: number, id: string): string {
+  if (!Number.isInteger(index) || index < 0 || index > 998) throw new Error("Live 顺序无效");
+  const uuid = id.toLowerCase().replace(/-/g, "");
+  if (!/^[0-9a-f]{32}$/.test(uuid)) throw new Error("id无效");
+  return `${String(index + 1).padStart(3, "0")}-${uuid.slice(0, 12)}.mp4`;
+}
+
 export function parseLibrary2Images(value: unknown): ImageDescriptor[] {
   return parseImageDescriptors(value);
+}
+
+export function parseLibrary2LiveDescriptors(value: unknown): Library2LiveDescriptor[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error("Live 列表无效");
+  if (value.length > 20) throw new Error("最多 20 组 Live");
+  const coverIndexes = new Set<number>();
+  let total = 0;
+  const descriptors = value.map((item, index) => {
+    if (!item || typeof item !== "object") throw new Error("Live 描述无效");
+    const input = item as Partial<Library2LiveDescriptor>;
+    if (input.order !== index) throw new Error("Live 顺序无效");
+    if (!Number.isInteger(input.coverIndex) || (input.coverIndex as number) < 0) throw new Error("Live 封面无效");
+    if (coverIndexes.has(input.coverIndex as number)) throw new Error("Live 封面不能重复");
+    if (input.contentType !== "video/mp4") throw new Error("Live 只支持 MP4");
+    if (!Number.isInteger(input.size) || (input.size as number) <= 0) throw new Error("Live 视频大小无效");
+    if ((input.size as number) > LIBRARY2_LIVE_MAX_BYTES) throw new Error("单个 Live 视频不能超过 100 MB");
+    coverIndexes.add(input.coverIndex as number);
+    total += input.size as number;
+    return {
+      order: index,
+      coverIndex: input.coverIndex as number,
+      contentType: "video/mp4" as const,
+      size: input.size as number
+    };
+  });
+  if (total > LIBRARY2_LIVE_TOTAL_MAX_BYTES) throw new Error("Live 视频总大小不能超过 500 MB");
+  return descriptors;
 }
 
 export function isLibrary2Platform(value: unknown): value is Library2Platform {

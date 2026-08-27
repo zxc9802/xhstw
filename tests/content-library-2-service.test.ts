@@ -10,7 +10,7 @@ import {
   deleteLibrary2Item,
   listLibrary2Items
 } from "../lib/content-library-2/service";
-import { userLibrary2Prefix } from "../lib/content-library-2/contracts";
+import { library2ManifestKey, userLibrary2Prefix } from "../lib/content-library-2/contracts";
 
 process.env.APP_SESSION_SECRET = "library2-service-test";
 
@@ -109,4 +109,83 @@ test("can delete one image or only the copy while keeping the rest of the item",
 
   await deleteLibrary2Item("member-a", intent.contentId, gateway);
   assert.equal((await listLibrary2Items("member-a", gateway)).length, 0);
+});
+
+test("creates ordered Live upload targets bound to their static covers", async () => {
+  const gateway = new MemoryGateway();
+  const intent = await createLibrary2UploadIntent("member-a", {
+    images: [
+      { contentType: "image/jpeg", size: 4 },
+      { contentType: "image/jpeg", size: 5 }
+    ],
+    livePhotos: [
+      { order: 0, coverIndex: 0, contentType: "video/mp4", size: 12 },
+      { order: 1, coverIndex: 1, contentType: "video/mp4", size: 14 }
+    ]
+  }, gateway, {
+    now: new Date("2026-08-27T08:00:00.000Z"),
+    ids: [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+      "33333333-3333-4333-8333-333333333333",
+      "44444444-4444-4444-8444-444444444444",
+      "55555555-5555-4555-8555-555555555555"
+    ]
+  });
+
+  assert.equal(intent.liveUploads.length, 2);
+  assert.equal(intent.liveUploads[0]!.coverFileId, intent.uploads[0]!.fileId);
+  assert.equal(intent.liveUploads[1]!.coverFileId, intent.uploads[1]!.fileId);
+  assert.match(intent.liveUploads[0]!.key, /\/library2\/.*\/live\/001-[0-9a-f]{12}\.mp4$/);
+  assert.match(intent.liveUploads[0]!.uploadUrl, /\/live\/001-[0-9a-f]{12}\.mp4\/upload\?token=/);
+});
+
+test("rejects invalid, duplicate, dangling, and oversized Live descriptors", async () => {
+  const gateway = new MemoryGateway();
+  const images = [
+    { contentType: "image/jpeg", size: 4 },
+    { contentType: "image/jpeg", size: 4 }
+  ];
+  const valid = [
+    { order: 0, coverIndex: 0, contentType: "video/mp4", size: 12 },
+    { order: 1, coverIndex: 1, contentType: "video/mp4", size: 12 }
+  ];
+
+  await assert.rejects(createLibrary2UploadIntent("member-a", { images, livePhotos: [valid[0], { ...valid[1], order: 0 }] }, gateway), /顺序/);
+  await assert.rejects(createLibrary2UploadIntent("member-a", { images, livePhotos: [valid[0], { ...valid[1], coverIndex: 0 }] }, gateway), /封面/);
+  await assert.rejects(createLibrary2UploadIntent("member-a", { images, livePhotos: [{ ...valid[0], coverIndex: 2 }] }, gateway), /封面/);
+  await assert.rejects(createLibrary2UploadIntent("member-a", { images, livePhotos: [{ ...valid[0], contentType: "video/webm" }] }, gateway), /MP4/);
+  await assert.rejects(createLibrary2UploadIntent("member-a", { images, livePhotos: [{ ...valid[0], size: 100 * 1024 * 1024 + 1 }] }, gateway), /100 MB/);
+
+  await assert.rejects(createLibrary2UploadIntent("member-a", {
+    images: Array.from({ length: 6 }, () => ({ contentType: "image/jpeg", size: 4 })),
+    livePhotos: Array.from({ length: 6 }, (_, index) => ({
+      order: index,
+      coverIndex: index,
+      contentType: "video/mp4",
+      size: 90 * 1024 * 1024
+    }))
+  }, gateway), /500 MB/);
+});
+
+test("keeps old image-only manifests readable without a Live migration", async () => {
+  const gateway = new MemoryGateway();
+  const contentId = "20260827T080000000Z-aaaaaaaaaaaa";
+  await gateway.putJson(library2ManifestKey("member-a", contentId), {
+    schemaVersion: 1,
+    id: contentId,
+    ownerId: "member-a",
+    library: "manual",
+    platform: "小红书",
+    sourceUrl: "",
+    title: "旧图文",
+    body: "旧清单没有 livePhotos",
+    images: [],
+    createdAt: "2026-08-27T08:00:00.000Z",
+    updatedAt: "2026-08-27T08:00:00.000Z"
+  });
+
+  const [item] = await listLibrary2Items("member-a", gateway);
+  assert.equal(item?.title, "旧图文");
+  assert.equal(item?.livePhotos, undefined);
 });
