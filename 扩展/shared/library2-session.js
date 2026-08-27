@@ -48,10 +48,10 @@
     const open = new Set((Array.isArray(openOrigins) ? openOrigins : []).map(normalizeOrigin).filter(Boolean));
     const valid = ALLOWED_ORIGINS.map((origin) => normalizeSession(current && current[origin]))
       .filter((session) => session && session.expiresAt > now);
-    const local = valid.find((session) => session.appOrigin === LOCAL_ORIGIN);
-    if (local && open.has(LOCAL_ORIGIN)) return local;
     const production = valid.find((session) => session.appOrigin === PRODUCTION_ORIGIN);
     if (production && open.has(PRODUCTION_ORIGIN)) return production;
+    const local = valid.find((session) => session.appOrigin === LOCAL_ORIGIN);
+    if (local && open.has(LOCAL_ORIGIN)) return local;
     return valid.sort((left, right) => right.updatedAt - left.updatedAt)[0] || null;
   }
 

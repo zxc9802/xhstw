@@ -44,7 +44,7 @@ test("keeps local and production workbench sessions independently", () => {
   });
 });
 
-test("selects the session for an open workbench and prefers local when both are open", () => {
+test("selects the session for an open workbench and prefers production when both are open", () => {
   assert.equal(existsSync(modulePath), true, "library2 session selector must exist");
   if (!existsSync(modulePath)) return;
 
@@ -58,6 +58,6 @@ test("selects the session for an open workbench and prefers local when both are 
   };
 
   assert.equal(sessions.selectSession(current, ["https://xhstw.qycm.top"], now)?.token, "production");
-  assert.equal(sessions.selectSession(current, ["https://xhstw.qycm.top", "http://127.0.0.1:3000"], now)?.token, "local");
+  assert.equal(sessions.selectSession(current, ["https://xhstw.qycm.top", "http://127.0.0.1:3000"], now)?.token, "production");
   assert.equal(sessions.selectSession(current, [], now)?.token, "production");
 });

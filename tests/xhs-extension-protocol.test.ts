@@ -393,7 +393,7 @@ test("manifest is an exact least-privilege template", () => {
   assert.deepEqual(Object.keys(manifest), ["manifest_version", "name", "version", "description", "permissions", "host_permissions", "background", "content_scripts", "action"]);
   assert.equal(manifest.manifest_version, 3);
   assert.equal(manifest.name, "小红书本机抓取助手");
-  assert.equal(manifest.version, "0.1.31");
+  assert.equal(manifest.version, "0.1.32");
   assert.equal(manifest.description, "在用户自己的浏览器中执行内容生产中台下达的小红书公开页面抓取任务，并支持把小红书、抖音、TikTok 图文上传到爆款选题库2。");
   assert.deepEqual(manifest.permissions, ["storage"]);
   assert.deepEqual(manifest.host_permissions, [
