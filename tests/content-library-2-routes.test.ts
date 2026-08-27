@@ -161,6 +161,9 @@ test("uploads, commits, and serves a paired Live MP4", async (t) => {
   const liveRoutePath = "../app/api/library2/items/[contentId]/live/[fileId]/upload/route";
   const { PUT: UPLOAD_LIVE } = await import(liveRoutePath).catch(() => ({ PUT: undefined }));
   assert.equal(typeof UPLOAD_LIVE, "function", "Live MP4 upload route must exist");
+  const liveIntentRoutePath = "../app/api/library2/items/[contentId]/live-upload-intents/route";
+  const { POST: CREATE_LIVE_INTENT } = await import(liveIntentRoutePath).catch(() => ({ POST: undefined }));
+  assert.equal(typeof CREATE_LIVE_INTENT, "function", "single Live upload-intent route must exist");
 
   const gateway = new MemoryGateway();
   setContentStorageGatewayForTests(gateway);
@@ -168,8 +171,7 @@ test("uploads, commits, and serves a paired Live MP4", async (t) => {
   const intentResponse = await CREATE_INTENT(bearerRequest("member-a", "https://app.test/api/library2/upload-intents", {
     method: "POST",
     body: JSON.stringify({
-      images: [{ contentType: "image/jpeg", size: 4 }],
-      livePhotos: [{ order: 0, coverIndex: 0, contentType: "video/mp4", size: 12 }]
+      images: [{ contentType: "image/jpeg", size: 4 }]
     })
   }));
   const intent = (await intentResponse.json()).data as {
@@ -182,6 +184,18 @@ test("uploads, commits, and serves a paired Live MP4", async (t) => {
     headers: { "Content-Type": "image/jpeg", "Content-Length": "4" },
     body: new Uint8Array([0xff, 0xd8, 0xff, 0xd9])
   }), { params: Promise.resolve({ contentId: intent.contentId, fileId: intent.uploads[0]!.fileId }) });
+
+  const liveIntentResponse = await CREATE_LIVE_INTENT(bearerRequest("member-a", `https://app.test/api/library2/items/${intent.contentId}/live-upload-intents`, {
+    method: "POST",
+    body: JSON.stringify({
+      order: 0,
+      coverFileId: intent.uploads[0]!.fileId,
+      contentType: "video/mp4",
+      size: 12
+    })
+  }), { params: Promise.resolve({ contentId: intent.contentId }) });
+  assert.equal(liveIntentResponse.status, 200);
+  intent.liveUploads = [(await liveIntentResponse.json()).data];
 
   const mp4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
   const liveUpload = await UPLOAD_LIVE(new NextRequest(`https://app.test${intent.liveUploads[0]!.uploadUrl}`, {

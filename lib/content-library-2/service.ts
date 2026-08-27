@@ -88,6 +88,48 @@ export async function createLibrary2UploadIntent(
   };
 }
 
+export async function createLibrary2LiveUploadIntent(
+  ownerId: string,
+  contentId: string,
+  input: unknown,
+  _gateway: ContentStorageGateway,
+  options: { now?: Date; id?: string } = {}
+) {
+  validateLibrary2ContentId(contentId);
+  if (!input || typeof input !== "object") throw new Error("Live 描述无效");
+  const value = input as Record<string, unknown>;
+  if (!Number.isInteger(value.order) || (value.order as number) < 0 || (value.order as number) >= 20) {
+    throw new Error("Live 顺序无效");
+  }
+  if (typeof value.coverFileId !== "string") throw new Error("Live 封面无效");
+  validateLibrary2FileId(value.coverFileId);
+  const [descriptor] = parseLibrary2LiveDescriptors([{
+    order: 0,
+    coverIndex: 0,
+    contentType: value.contentType,
+    size: value.size
+  }]);
+  const order = value.order as number;
+  const fileId = createLibrary2LiveFileId(order, options.id ?? randomUUID());
+  const key = library2LiveKey(ownerId, contentId, fileId);
+  const object: Library2LiveUploadObject = {
+    ...descriptor,
+    order,
+    fileId,
+    coverFileId: value.coverFileId,
+    key
+  };
+  const intentTime = (options.now ?? new Date()).getTime();
+  return {
+    ...object,
+    uploadUrl: liveUploadUrl(
+      contentId,
+      fileId,
+      createLibrary2LiveUploadCapability(ownerId, contentId, fileId, object, intentTime)
+    )
+  };
+}
+
 async function uploadedImages(
   ownerId: string,
   contentId: string,

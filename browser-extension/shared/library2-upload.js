@@ -28,5 +28,13 @@
     });
   }
 
-  return Object.freeze({ runBounded, uploadLibraryImages });
+  async function uploadLibraryLivePhotos(items, worker) {
+    const results = [];
+    for (const [index, item] of items.entries()) {
+      results.push(await worker(item, index));
+    }
+    return results;
+  }
+
+  return Object.freeze({ runBounded, uploadLibraryImages, uploadLibraryLivePhotos });
 });

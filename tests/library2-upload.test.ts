@@ -10,6 +10,7 @@ const modulePath = path.resolve("browser-extension/shared/library2-upload.js");
 type UploadHelper = {
   runBounded<T, R>(items: T[], limit: number, worker: (item: T, index: number) => Promise<R>): Promise<R[]>;
   uploadLibraryImages<T>(uploads: T[], put: (upload: T, index: number) => Promise<Response>): Promise<boolean[]>;
+  uploadLibraryLivePhotos<T, R>(items: T[], worker: (item: T, index: number) => Promise<R>): Promise<R[]>;
 };
 
 function loadUpload(): UploadHelper {
@@ -65,4 +66,23 @@ test("reports the original one-based index when an upload fails", async () => {
     )),
     /第 2 张图片上传失败/
   );
+});
+
+test("downloads and uploads Live videos one at a time in source order", async () => {
+  const upload = loadUpload();
+  let active = 0;
+  let peak = 0;
+  const completed: number[] = [];
+  const results = await upload.uploadLibraryLivePhotos([0, 1, 2], async (value) => {
+    active += 1;
+    peak = Math.max(peak, active);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    completed.push(value);
+    active -= 1;
+    return `live-${value}`;
+  });
+
+  assert.equal(peak, 1);
+  assert.deepEqual(completed, [0, 1, 2]);
+  assert.deepEqual(results, ["live-0", "live-1", "live-2"]);
 });

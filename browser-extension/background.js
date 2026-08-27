@@ -12,6 +12,7 @@ const SKIPPABLE_DETAIL_CODES = new Set(["NOTE_UNAVAILABLE", "DETAIL_INCOMPLETE"]
 const SEARCH_CANDIDATE_BATCH_SIZE = 5;
 const MEDIA_REPLY_TIMEOUT_MS = 30_000;
 const MEDIA_DOWNLOAD_BATCH_SIZE = 4;
+const LIVE_VIDEO_TOTAL_MAX_BYTES = 500 * 1024 * 1024;
 const protocol = globalThis.XhsExtensionProtocol;
 const collector = globalThis.XhsPageCollector;
 const taskState = globalThis.XhsTaskState;
@@ -577,7 +578,7 @@ function downloadLibrary2LiveVideo(videoSource, senderTabId) {
   throw new Error("Live 视频来源无效");
 }
 
-async function uploadLibrary2(payload) {
+async function uploadLibrary2(payload, senderTabId) {
   const stored = await chrome.storage.local.get([
     LIBRARY2_SESSIONS_STORAGE_KEY,
     "library2Token",
@@ -600,20 +601,37 @@ async function uploadLibrary2(payload) {
     return { ok: false, message: "请先打开图文生产中台并登录，授权插件上传到爆款选题库2" };
   }
   const appOrigin = session.appOrigin;
-  const images = [];
   const urls = Array.isArray(payload && payload.imageUrls) ? payload.imageUrls.slice(0, 20) : [];
+  const rawLivePhotos = Array.isArray(payload && payload.livePhotos) ? payload.livePhotos.slice(0, 20) : [];
+  const livePhotos = rawLivePhotos.map((pair, index) => {
+    const validSource = pair && pair.videoSource
+      && (pair.videoSource.kind === "remote" || pair.videoSource.kind === "blob")
+      && typeof pair.videoSource.url === "string";
+    if (!pair || pair.order !== index || !Number.isInteger(pair.coverIndex)
+      || pair.coverIndex < 0 || pair.coverIndex >= urls.length || !validSource) {
+      throw new Error(`第 ${index + 1} 组 Live 信息无效`);
+    }
+    return pair;
+  });
+  const imageSlots = new Array(urls.length).fill(null);
   for (let index = 0; index < urls.length; index += MEDIA_DOWNLOAD_BATCH_SIZE) {
-    const batch = await Promise.all(urls.slice(index, index + MEDIA_DOWNLOAD_BATCH_SIZE).map(async (url) => {
+    const batch = await Promise.all(urls.slice(index, index + MEDIA_DOWNLOAD_BATCH_SIZE).map(async (url, offset) => {
       try {
-        return await library2Media.downloadImage(url);
+        return { slot: index + offset, downloaded: await library2Media.downloadImage(url) };
       } catch (_) {
-        return null;
+        return { slot: index + offset, downloaded: null };
       }
     }));
-    for (const downloaded of batch) {
-      if (downloaded) images.push(downloaded);
+    for (const result of batch) {
+      imageSlots[result.slot] = result.downloaded;
     }
   }
+  if (livePhotos.length) {
+    for (const [index, pair] of livePhotos.entries()) {
+      if (!imageSlots[pair.coverIndex]) throw new Error(`第 ${index + 1} 组 Live 封面下载失败`);
+    }
+  }
+  const images = imageSlots.filter(Boolean);
   if (!images.length && !String(payload && payload.body || "").trim() && !String(payload && payload.title || "").trim()) {
     return { ok: false, message: "没有提取到图片或文案" };
   }
@@ -638,6 +656,34 @@ async function uploadLibrary2(payload) {
       body: images[index].bytes
     })
   ));
+  let liveTotalBytes = 0;
+  const liveUploads = await library2Upload.uploadLibraryLivePhotos(livePhotos, async (pair, index) => {
+    const video = await downloadLibrary2LiveVideo(pair.videoSource, senderTabId);
+    liveTotalBytes += video.size;
+    if (liveTotalBytes > LIVE_VIDEO_TOTAL_MAX_BYTES) throw new Error("Live 视频总大小不能超过 500 MB");
+    const cover = intent.uploads[pair.coverIndex];
+    if (!cover) throw new Error(`第 ${index + 1} 组 Live 封面无效`);
+    const liveUpload = await library2Api(
+      `${appOrigin}/api/library2/items/${encodeURIComponent(intent.contentId)}/live-upload-intents`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          order: pair.order,
+          coverFileId: cover.fileId,
+          contentType: "video/mp4",
+          size: video.size
+        })
+      }
+    );
+    const response = await fetch(new URL(liveUpload.uploadUrl, appOrigin).toString(), {
+      method: "PUT",
+      headers: { "Content-Type": "video/mp4" },
+      body: video.bytes
+    });
+    if (!response.ok) throw new Error(`第 ${index + 1} 个 Live 视频上传失败`);
+    return liveUpload;
+  });
   const platform = payload && ["小红书", "抖音", "TikTok"].includes(payload.platform) ? payload.platform : "小红书";
   await library2Api(`${appOrigin}/api/library2/items/${encodeURIComponent(intent.contentId)}/commit`, {
     method: "POST",
@@ -649,13 +695,14 @@ async function uploadLibrary2(payload) {
         platform,
         sourceUrl: String(payload && payload.sourceUrl || "").slice(0, 2048)
       },
-      uploads: intent.uploads
+      uploads: intent.uploads,
+      liveUploads
     })
   });
   return { ok: true };
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message !== "object") return;
   if (message.type === "library2:session") {
     const appOrigin = library2Session.normalizeOrigin(message.appOrigin);
@@ -674,7 +721,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
   if (message.type === "library2:upload") {
-    void uploadLibrary2(message.payload || {}).then(sendResponse, (error) => {
+    void uploadLibrary2(message.payload || {}, sender && sender.tab && sender.tab.id).then(sendResponse, (error) => {
       sendResponse({ ok: false, message: error && error.message ? String(error.message).slice(0, 300) : "上传失败" });
     });
     return true;
