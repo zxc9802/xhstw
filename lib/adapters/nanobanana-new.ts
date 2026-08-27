@@ -104,16 +104,8 @@ function imageScaleFromSize(size = "1:1") {
   } as Record<string, string>)[value] || "1:1";
 }
 
-function imagePrompt(input: NanobananaNewInput, hasReferenceImages: boolean) {
-  const userPrompt = input.prompt?.trim() || "生成一张适合小红书内容发布的图片。";
-  if (!hasReferenceImages) return userPrompt;
-  return [
-    "你必须以参考图为视觉事实来源进行编辑，而不是自由创作。",
-    "严格保留参考图中所有未被用户明确要求修改的内容，尤其是主体身份、品牌、产品、包装形状、Logo、文字、颜色、材质、人物身份与画面结构。",
-    "只允许修改用户提示词明确要求变更的部分；禁止把参考主体替换成其他品牌、产品、人物或物体，禁止自行新增无关内容。",
-    "如用户要求与参考图冲突，以“只修改明确指定部分、其余保持参考图一致”为最高优先级。",
-    `用户修改要求：${userPrompt}`
-  ].join("\n");
+function imagePrompt(input: NanobananaNewInput) {
+  return input.prompt?.trim() || "";
 }
 
 function extractImageUrls(input: unknown) {
@@ -317,7 +309,7 @@ async function requestImage(config: NanobananaNewConfig, input: NanobananaNewInp
     body: JSON.stringify({
       modelId: config.modelId,
       abilityType: "IMAGE",
-      prompt: imagePrompt(input, sourceImageUrls.length > 0),
+      prompt: imagePrompt(input),
       payload
     }),
     signal: AbortSignal.timeout(NANOBANANA_NEW_REQUEST_TIMEOUT_MS)

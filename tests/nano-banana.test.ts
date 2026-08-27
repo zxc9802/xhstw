@@ -53,6 +53,37 @@ test("keeps successful Nano Banana images when one request is blocked by image s
   });
 });
 
+test("sends only the user prompt without extra system or edit instructions", async () => {
+  let requestBody: {
+    messages: Array<{ role: string; content: unknown }>;
+  } | undefined;
+
+  await withNanoBanana(async (_url, init) => {
+    requestBody = JSON.parse(String(init?.body)) as typeof requestBody;
+    return Response.json({
+      choices: [{ message: { content: "https://img.test/nano-plain.jpg" } }]
+    });
+  }, async () => {
+    await generateWithNanoBanana({
+      provider: "Nano Banana 2",
+      prompt: "普通生活场景产品图",
+      size: "3:4",
+      sourceImageUrls: ["https://img.test/source.jpg"],
+      count: 1
+    });
+  });
+
+  assert.deepEqual(requestBody?.messages, [
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "普通生活场景产品图" },
+        { type: "image_url", image_url: { url: "https://img.test/source.jpg" } }
+      ]
+    }
+  ]);
+});
+
 test("fails clearly when every Nano Banana request is blocked", async () => {
   await withNanoBanana(async () => Response.json({
     error: {

@@ -5,7 +5,8 @@ import { cookies } from "next/headers";
 import {
   getMainAppSessionCookieName,
   getMainAppUrl,
-  readMainAppSessionCookie,
+  isMainAppSsoDisabled,
+  resolveMainAppSession,
 } from "@/lib/main-app-sso";
 
 export type MainAppTokenUsage = {
@@ -40,7 +41,7 @@ export async function currentBillingUserId() {
   if (contextualUserId) return contextualUserId;
   if (process.env.NODE_TEST_CONTEXT) return "test-user";
   const cookieStore = await cookies();
-  const session = await readMainAppSessionCookie(
+  const session = await resolveMainAppSession(
     cookieStore.get(getMainAppSessionCookieName())?.value,
   );
   if (!session) throw new MainAppBillingError("主站登录状态已失效", 401, "sso_session");
@@ -90,7 +91,7 @@ export async function reserveMainAppCredits(input: {
   maxOutputTokens?: number;
   media?: boolean;
 }) {
-  if (process.env.NODE_TEST_CONTEXT) return noopHandle();
+  if (process.env.NODE_TEST_CONTEXT || isMainAppSsoDisabled()) return noopHandle();
   const requestId = randomUUID();
   const common = {
     requestId,

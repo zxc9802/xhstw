@@ -14,6 +14,8 @@ import { imageRefToUploadUrl, isStoredImageRef, persistImageFile, persistImageRe
 import { appendMaterialLibrary, createLibraryAsset, getAssetBlob, readMaterialLibrary, type LibraryAsset } from "@/lib/utils/material-library";
 import { loadVersionedState, saveVersionedState } from "@/lib/utils/local-state";
 import { formatProductCopyContext, readProductLibrary, type ProductLibraryItem } from "@/lib/utils/product-library";
+import { getLibrary2Item } from "@/lib/content-library-2/client";
+import { library2PrefillPayload } from "@/lib/content-library-2/generation";
 import { saveContentDraft as saveContentDraftToCos } from "@/lib/content-storage/client";
 import type { ContentDraft, LibraryStatus, ReferenceSourceSnapshot } from "@/lib/content-storage/contracts";
 import { imageGenerationWarnings, pollImageGenerationJob } from "@/lib/utils/image-generation-job-client";
@@ -733,6 +735,91 @@ export default function ContentPage() {
     if (incomingTemplateName) {
       setFeedback(`已载入模板：${incomingTemplateName}`);
     }
+
+    const applyPrefill = (input: {
+      url: string;
+      title: string;
+      copy: string;
+      platform: string;
+      author: string;
+      likes: string;
+      fetchedAt: string;
+      media: ParsedReferenceMedia[];
+      feedback: string;
+    }) => {
+      const nextParsed: ParsedReference = {
+        platform: input.platform,
+        title: input.title,
+        author: input.author,
+        copy: input.copy,
+        url: input.url,
+        media: input.media
+      };
+      setTab("图文内容");
+      setImageStep("发布文案生成");
+      setReferenceUrl(input.url);
+      setParsedReference(nextParsed);
+      setDraftCopy(input.copy);
+      setSelectedTitle(input.title);
+      setDraftTitle(input.title);
+      const nextImagePlans = createReferenceImagePlans(input.title, input.copy, input.media.filter((item) => item.type === "image").length);
+      setPlanSourceMap({});
+      setImagePlanItems(nextImagePlans);
+      void autoAssignReferenceImagesToPlans(input.media, nextImagePlans);
+      setActiveImagePage(1);
+      setImageCount(`${Math.max(input.media.filter((item) => item.type === "image").length, 1)} 张`);
+      setReferenceRows((rows) => {
+        const nextRow: ReferenceRow = {
+          id: `kept_${Date.now()}`,
+          platform: input.platform,
+          title: input.title,
+          author: input.author,
+          time: input.fetchedAt,
+          likes: input.likes,
+          saves: "-",
+          comments: "-",
+          status: "已解析",
+          reason: "",
+          url: input.url,
+          copy: input.copy,
+          media: input.media
+        };
+        const nextRows = [nextRow, ...rows.filter((row) => row.url !== input.url)].slice(0, 3);
+        persistReferenceRows(nextRows);
+        return nextRows;
+      });
+      setFeedback(input.feedback);
+    };
+
+    const library2Id = params.get("library2Id") ?? "";
+    if (params.get("from") === "library2" && library2Id && incomingPrefill) {
+      let cancelled = false;
+      setTab("图文内容");
+      setImageStep("发布文案生成");
+      if (incomingTitle) {
+        setSelectedTitle(incomingTitle);
+        setDraftTitle(incomingTitle);
+      }
+      setFeedback("正在从爆款选题库2带入参考内容…");
+      void getLibrary2Item(library2Id).then((item) => {
+        if (cancelled) return;
+        const payload = library2PrefillPayload(item);
+        applyPrefill({
+          ...payload,
+          copy: payload.copy || `参考标题：${payload.title}`,
+          feedback: "已从爆款选题库2带入参考内容，标题、正文和图片已放入参考内容输入区；不用开始解析，直接点击发布文案生成即可仿写。"
+        });
+        setContentType("图文");
+      }).catch((error) => {
+        if (!cancelled) {
+          setFeedback(error instanceof Error ? `爆款选题库2带入失败：${error.message}` : "爆款选题库2带入失败");
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+
     if (incomingUrl && incomingPrefill) {
       const author = (params.get("sourceAccount") || "公开参考作品").replace(/^OpenCLI · /, "");
       const likes = params.get("likes") || "-";
@@ -740,46 +827,17 @@ export default function ContentPage() {
       const media = incomingReferenceMedia(params);
       const parsedTitle = incomingTitle || "保留参考作品";
       const parsedCopy = incomingCopy || `关键词：${incomingKeyword || "小红书"}\n参考标题：${parsedTitle}`;
-      const nextParsed: ParsedReference = {
-        platform: "小红书",
-        title: parsedTitle,
-        author,
-        copy: parsedCopy,
+      applyPrefill({
         url: incomingUrl,
-        media
-      };
-      setTab("图文内容");
-      setImageStep("发布文案生成");
-      setReferenceUrl(incomingUrl);
-      setParsedReference(nextParsed);
-      setDraftCopy(parsedCopy);
-      const nextImagePlans = createReferenceImagePlans(parsedTitle, parsedCopy, media.filter((item) => item.type === "image").length);
-      setPlanSourceMap({});
-      setImagePlanItems(nextImagePlans);
-      void autoAssignReferenceImagesToPlans(media, nextImagePlans);
-      setActiveImagePage(1);
-      setImageCount(`${Math.max(media.filter((item) => item.type === "image").length, 1)} 张`);
-      setReferenceRows((rows) => {
-        const nextRow: ReferenceRow = {
-          id: `kept_${Date.now()}`,
-          platform: "小红书",
-          title: parsedTitle,
-          author,
-          time: fetchedAt,
-          likes,
-          saves: "-",
-          comments: "-",
-          status: "已解析",
-          reason: "",
-          url: incomingUrl,
-          copy: parsedCopy,
-          media
-        };
-        const nextRows = [nextRow, ...rows.filter((row) => row.url !== incomingUrl)].slice(0, 3);
-        persistReferenceRows(nextRows);
-        return nextRows;
+        title: parsedTitle,
+        copy: parsedCopy,
+        platform: params.get("platform") || "小红书",
+        author,
+        likes,
+        fetchedAt,
+        media,
+        feedback: "已从全部保留带入参考内容，标题、正文和图片已放入参考内容输入区；不用开始解析，直接点击发布文案生成即可仿写。"
       });
-      setFeedback("已从全部保留带入参考内容，标题、正文和图片已放入参考内容输入区；不用开始解析，直接点击发布文案生成即可仿写。");
     } else if (incomingUrl) {
       setTab("图文内容");
       setImageStep("发布文案生成");

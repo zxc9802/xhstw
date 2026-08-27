@@ -15,6 +15,14 @@ import {
 import { readJson } from "@/lib/utils/api";
 
 function publicRequestOrigin(request: Request) {
+  const configured = process.env.PUBLIC_BASE_URL?.trim().replace(/\/+$/, "");
+  if (configured) {
+    try {
+      return new URL(configured).origin;
+    } catch {
+      // Fall through to the incoming request origin.
+    }
+  }
   const requestUrl = new URL(request.url);
   const forwardedHost = request.headers.get("X-Forwarded-Host")?.split(",")[0]?.trim();
   const forwardedProto = request.headers.get("X-Forwarded-Proto")?.split(",")[0]?.trim();

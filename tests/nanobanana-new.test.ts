@@ -67,13 +67,7 @@ test("submits and polls a nanobanan新 aggregation image task", async () => {
     assert.deepEqual(JSON.parse(String(calls[0].init?.body)), {
       modelId: "gemini-3.1-flash-image-preview",
       abilityType: "IMAGE",
-      prompt: [
-        "你必须以参考图为视觉事实来源进行编辑，而不是自由创作。",
-        "严格保留参考图中所有未被用户明确要求修改的内容，尤其是主体身份、品牌、产品、包装形状、Logo、文字、颜色、材质、人物身份与画面结构。",
-        "只允许修改用户提示词明确要求变更的部分；禁止把参考主体替换成其他品牌、产品、人物或物体，禁止自行新增无关内容。",
-        "如用户要求与参考图冲突，以“只修改明确指定部分、其余保持参考图一致”为最高优先级。",
-        "用户修改要求：只替换背景"
-      ].join("\n"),
+      prompt: "只替换背景",
       payload: {
         resources: ["https://app.test/reference/source.png"],
         params: { resolution: "1K", scale: "3:4" }
@@ -112,6 +106,27 @@ test("keeps the original prompt for generation without reference images", async 
   assert.deepEqual(submitBody?.payload, {
     params: { resolution: "1K", scale: "3:4" }
   });
+});
+
+test("sends an empty prompt unchanged when the user leaves it blank", async () => {
+  let submitBody: Record<string, unknown> | undefined;
+
+  await withProvider(async (_url, init) => {
+    submitBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return Response.json({
+      success: true,
+      data: { images: [{ url: "https://img.test/blank-prompt.png" }] }
+    });
+  }, async () => {
+    await generateWithNanobananaNew({
+      prompt: "   ",
+      size: "3:4",
+      count: 1,
+      sourceImageUrls: ["https://app.test/reference/source.png"]
+    });
+  });
+
+  assert.equal(submitBody?.prompt, "");
 });
 
 test("rejects missing aggregation configuration", async () => {

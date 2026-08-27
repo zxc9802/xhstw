@@ -9,17 +9,20 @@ import {
   DatabaseZap,
   GalleryVerticalEnd,
   ImagePlus,
+  Images,
   LibraryBig,
   PackageSearch,
   UsersRound
 } from "lucide-react";
 import { ExtensionInstaller } from "@/components/extension/ExtensionInstaller";
+import { Library2SessionBridge } from "@/components/extension/Library2SessionBridge";
 import { cn } from "@/lib/utils/cn";
 
 const productionNavItems = [
   { label: "① 爆款选题库", href: "/topics", icon: LibraryBig },
-  { label: "② 图文生产", href: "/content?tab=image", icon: ImagePlus },
-  { label: "③ 成品内容库", href: "/content-library", icon: Clapperboard }
+  { label: "② 爆款选题库2", href: "/content-library-2", icon: Images },
+  { label: "③ 图文生产", href: "/content?tab=image", icon: ImagePlus },
+  { label: "④ 内容库1", href: "/content-library", icon: Clapperboard }
 ];
 
 const resourceNavItems = [
@@ -95,6 +98,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <p className="text-xs text-muted">本地图文 workflow</p>
           </div>
           <div className="flex items-center gap-3">
+            <Library2SessionBridge />
             <ExtensionInstaller />
             <button className="relative flex h-9 w-9 items-center justify-center rounded-md border border-line bg-white text-muted transition hover:bg-orange-50 hover:text-orange-700" title="通知">
               <Bell className="h-4 w-4" />

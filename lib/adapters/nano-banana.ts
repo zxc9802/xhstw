@@ -76,15 +76,9 @@ export async function generateWithNanoBanana(input: unknown) {
   const apiKey = process.env.NANO_BANANA_API_KEY || process.env.YUNWU_API_KEY;
   if (!apiKey || process.env.IMAGE_MODEL_PROVIDER === "mock") return mockImages(body);
 
-  const promptParts = [
-    body.prompt || "生成一张适合内容生产中台图文页面的图片。",
-    `画幅比例：${body.size || "1:1"}。`,
-    body.sourceImages?.length ? `参考素材名称：${body.sourceImages.join("、")}` : "",
-    body.sourceImageUrls?.length ? "参考图片已经随消息传入。请把它们按顺序理解为图一、图二、图三等。" : "",
-    "严格按用户提示词生成，不要自行引用发布文案、标题或其他上下文。如果用户要求背景完全不变、只替换某个产品、图一换成图二产品等，只修改指定对象，其他元素尽量保持一致。"
-  ].filter(Boolean).join("\n");
+  const prompt = body.prompt?.trim() || "";
 
-  const requestOne = async (index: number) => fetch(YUNWU_CHAT_URL, {
+  const requestOne = async () => fetch(YUNWU_CHAT_URL, {
     method: "POST",
     headers: {
       Accept: "application/json",
@@ -94,11 +88,10 @@ export async function generateWithNanoBanana(input: unknown) {
     body: JSON.stringify({
       model: NANO_BANANA_MODEL,
       messages: [
-        { role: "system", content: "你是图片生成模型。请直接返回图片结果，保持用户指定比例。" },
         {
           role: "user",
           content: [
-            { type: "text", text: `${promptParts}\n这是第 ${index + 1} 张，请单独生成一张完整图片，不要做拼图或多宫格。` },
+            { type: "text", text: prompt },
             ...(body.sourceImageUrls ?? []).map((url) => ({ type: "image_url", image_url: { url } }))
           ]
         }
@@ -116,7 +109,7 @@ export async function generateWithNanoBanana(input: unknown) {
       media: true,
     });
     try {
-      const response = await requestOne(index);
+      const response = await requestOne();
       const data = await response.json().catch(() => ({}));
       logImageProviderResponse({
         provider: "Nano Banana 2",

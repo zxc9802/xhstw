@@ -7,6 +7,7 @@ import {
   S3Client
 } from "@aws-sdk/client-s3";
 import type { ContentStorageGateway } from "./gateway";
+import { isLocalContentStorageEnabled, LocalFileGateway } from "./local";
 
 function required(name: string) {
   const value = process.env[name]?.trim();
@@ -117,7 +118,9 @@ export class TencentCosGateway implements ContentStorageGateway {
 let gateway: ContentStorageGateway | undefined;
 
 export function getContentStorageGateway() {
-  return gateway ??= new TencentCosGateway();
+  return gateway ??= isLocalContentStorageEnabled()
+    ? new LocalFileGateway()
+    : new TencentCosGateway();
 }
 
 export function setContentStorageGatewayForTests(value?: ContentStorageGateway) {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { POST } from "../app/api/image/generate/route";
 import { GET } from "../app/api/image/generate/[jobId]/route";
-import { GET as GET_REFERENCE } from "../app/api/image/reference/[token]/route";
+import { GET as GET_TEMP_ASSET } from "../app/temp-assets/[filename]/route";
 import { GET as GET_RESULT } from "../app/api/image/result/[token]/route";
 import {
   getImageGenerationResult,
@@ -34,12 +34,13 @@ const IMAGE2_ENV = {
 } as const;
 
 function useImage2Provider(t: TestContext) {
-  const keys = [...Object.keys(IMAGE2_ENV), "YUNWU_API_KEY"];
+  const keys = [...Object.keys(IMAGE2_ENV), "YUNWU_API_KEY", "PUBLIC_BASE_URL"];
   const previous: Record<string, string | undefined> = Object.fromEntries(
     keys.map((key) => [key, process.env[key]])
   );
   Object.assign(process.env, IMAGE2_ENV);
   delete process.env.YUNWU_API_KEY;
+  delete process.env.PUBLIC_BASE_URL;
   t.after(() => {
     for (const key of keys) {
       const value = previous[key];
@@ -88,17 +89,30 @@ function useNanobananaNewProvider(t: TestContext) {
     NANOBANANA_NEW_POLL_INTERVAL_MS: "0",
     NANOBANANA_NEW_POLL_MAX_ATTEMPTS: "2"
   } as const;
-  const keys = Object.keys(values);
+  const keys = [...Object.keys(values), "PUBLIC_BASE_URL"];
   const previous: Record<string, string | undefined> = Object.fromEntries(
     keys.map((key) => [key, process.env[key]])
   );
   Object.assign(process.env, values);
+  delete process.env.PUBLIC_BASE_URL;
   t.after(() => {
     for (const key of keys) {
       const value = previous[key];
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+  });
+}
+
+const TEMP_ASSET_URL = /^https:\/\/[^/]+\/temp-assets\/\d+-[0-9a-f-]{36}\.png\?exp=\d+&sig=[A-Za-z0-9_-]+$/;
+
+function tempAssetFilename(url: string) {
+  return decodeURIComponent(new URL(url).pathname.split("/").pop() || "");
+}
+
+async function fetchTempAsset(url: string) {
+  return GET_TEMP_ASSET(new Request(url), {
+    params: Promise.resolve({ filename: tempAssetFilename(url) })
   });
 }
 
@@ -389,7 +403,7 @@ test("publishes local Image 2.0 references and preserves public URLs in resource
   let requestBody: {
     payload: { resources: string[] };
   } | undefined;
-  let temporaryToken = "";
+  let temporaryUrl = "";
   globalThis.fetch = async (url, init) => {
     if (String(url) === "https://img.test/generated.jpg") {
       return new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), {
@@ -399,11 +413,8 @@ test("publishes local Image 2.0 references and preserves public URLs in resource
     requestBody = JSON.parse(String(init?.body)) as {
       payload: { resources: string[] };
     };
-    const temporaryUrl = new URL(requestBody.payload.resources[0]);
-    temporaryToken = temporaryUrl.pathname.split("/").pop() || "";
-    const reference = await GET_REFERENCE(new Request(temporaryUrl), {
-      params: Promise.resolve({ token: temporaryToken })
-    });
+    temporaryUrl = requestBody.payload.resources[0];
+    const reference = await fetchTempAsset(temporaryUrl);
     assert.equal(reference.status, 200);
     assert.deepEqual(
       [...new Uint8Array(await reference.arrayBuffer())],
@@ -443,15 +454,11 @@ test("publishes local Image 2.0 references and preserves public URLs in resource
     String(((job.result as { images?: Array<{ url?: unknown }> })?.images?.[0]?.url) || ""),
     /^https:\/\/xhstw\.qycm\.top\/api\/image\/result\/[0-9a-f-]{36}$/
   );
-  assert.match(
-    requestBody!.payload.resources[0],
-    /^https:\/\/xhstw\.qycm\.top\/api\/image\/reference\/[0-9a-f-]{36}$/
-  );
+  assert.match(requestBody!.payload.resources[0], TEMP_ASSET_URL);
+  assert.match(requestBody!.payload.resources[0], /^https:\/\/xhstw\.qycm\.top\//);
   assert.equal(requestBody!.payload.resources[1], "https://img.test/existing.jpg");
 
-  const cleaned = await GET_REFERENCE(new Request("https://xhstw.qycm.top"), {
-    params: Promise.resolve({ token: temporaryToken })
-  });
+  const cleaned = await fetchTempAsset(temporaryUrl);
   assert.equal(cleaned.status, 404);
 });
 
@@ -463,16 +470,13 @@ test("routes nanobanan新 through the aggregation API and cleans temporary refer
     abilityType: string;
     payload: { resources: string[] };
   } | undefined;
-  let temporaryToken = "";
+  let temporaryUrl = "";
   let queryCalls = 0;
   globalThis.fetch = async (url, init) => {
     if (String(url).endsWith("/openApi/generate")) {
       submitBody = JSON.parse(String(init?.body)) as typeof submitBody;
-      const temporaryUrl = new URL(submitBody!.payload.resources[0]);
-      temporaryToken = temporaryUrl.pathname.split("/").pop() || "";
-      const reference = await GET_REFERENCE(new Request(temporaryUrl), {
-        params: Promise.resolve({ token: temporaryToken })
-      });
+      temporaryUrl = submitBody!.payload.resources[0];
+      const reference = await fetchTempAsset(temporaryUrl);
       assert.equal(reference.status, 200);
       return Response.json({ success: true, data: { taskId: "nano-new-task" } });
     }
@@ -516,15 +520,11 @@ test("routes nanobanan新 through the aggregation API and cleans temporary refer
   assert.equal(job.status, "completed");
   assert.equal(submitBody?.modelId, "gemini-3.1-flash-image-preview");
   assert.equal(submitBody?.abilityType, "IMAGE");
-  assert.match(
-    submitBody!.payload.resources[0],
-    /^https:\/\/xhstw\.qycm\.top\/api\/image\/reference\/[0-9a-f-]{36}$/
-  );
+  assert.match(submitBody!.payload.resources[0], TEMP_ASSET_URL);
+  assert.match(submitBody!.payload.resources[0], /^https:\/\/xhstw\.qycm\.top\//);
   assert.equal(queryCalls, 1);
 
-  const cleaned = await GET_REFERENCE(new Request("https://xhstw.qycm.top"), {
-    params: Promise.resolve({ token: temporaryToken })
-  });
+  const cleaned = await fetchTempAsset(temporaryUrl);
   assert.equal(cleaned.status, 404);
 });
 
@@ -620,14 +620,14 @@ test("rejects IPv6-mapped loopback reference URLs before direct Yunwu edits", as
 test("cleans temporary references when Image 2.0 generation fails", async (t) => {
   useImage2Provider(t);
   const previousFetch = globalThis.fetch;
-  let temporaryToken = "";
+  let temporaryUrl = "";
   let fetchCalls = 0;
   globalThis.fetch = async (_url, init) => {
     fetchCalls += 1;
     const body = JSON.parse(String(init?.body)) as {
       payload: { resources: string[] };
     };
-    temporaryToken = new URL(body.payload.resources[0]).pathname.split("/").pop() || "";
+    temporaryUrl = body.payload.resources[0];
     return Response.json({ success: false, msg: "渠道失败" });
   };
   t.after(() => {
@@ -648,9 +648,7 @@ test("cleans temporary references when Image 2.0 generation fails", async (t) =>
 
   assert.equal(job.status, "failed");
   assert.equal(fetchCalls, 4);
-  const cleaned = await GET_REFERENCE(new Request("https://app.test"), {
-    params: Promise.resolve({ token: temporaryToken })
-  });
+  const cleaned = await fetchTempAsset(temporaryUrl);
   assert.equal(cleaned.status, 404);
 });
 

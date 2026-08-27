@@ -7,6 +7,7 @@ import {
   exchangeMainAppSsoTicket,
   getMainAppSessionCookieOptions,
   readMainAppSessionCookie,
+  resolveMainAppSession,
   safeRedirectPath
 } from "../lib/main-app-sso";
 
@@ -47,6 +48,23 @@ test("callback and middleware keep ticket exchange server-side", async () => {
   assert.match(helper, /sameSite:\s*["']lax["']/);
   assert.match(middleware, /validateMainAppSession/);
   assert.match(middleware, /api\/sso\/callback/);
+  assert.match(middleware, /isMainAppSsoDisabled/);
+  assert.match(middleware, /api\/library2/);
+});
+
+test("offline mode supplies a local session without an SSO cookie", async () => {
+  const previous = process.env.DISABLE_SSO;
+  process.env.DISABLE_SSO = "true";
+  try {
+    const session = await resolveMainAppSession();
+    assert.equal(session?.user.id, "local-dev");
+    assert.equal(session?.user.account, "local@localhost");
+    assert.equal(session?.user.role, "admin");
+    assert.equal(await readMainAppSessionCookie(undefined), null);
+  } finally {
+    if (previous === undefined) delete process.env.DISABLE_SSO;
+    else process.env.DISABLE_SSO = previous;
+  }
 });
 
 test("keeps the child session until the main-issued token expires", async (t) => {

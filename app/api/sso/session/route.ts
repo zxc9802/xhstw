@@ -2,12 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   getMainAppSessionCookieName,
   getMainAppSessionCookieOptions,
-  readMainAppSessionCookie,
+  resolveMainAppSession,
   validateMainAppSession
 } from "../../../../lib/main-app-sso";
 
 export async function GET(request: NextRequest) {
-  const session = await readMainAppSessionCookie(request.cookies.get(getMainAppSessionCookieName())?.value);
+  const session = await resolveMainAppSession(request.cookies.get(getMainAppSessionCookieName())?.value);
   if (session && await validateMainAppSession(session)) {
     return Response.json({ success: true, data: { user: session.user } });
   }

@@ -3,6 +3,7 @@ import {
   getMainAppSessionCookieName,
   getMainAppSessionCookieOptions,
   getMainAppSsoLaunchUrl,
+  isMainAppSsoDisabled,
   readMainAppSessionCookie,
   validateMainAppSession
 } from "./lib/main-app-sso";
@@ -11,8 +12,11 @@ export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   if (
-    pathname === "/api/sso/callback"
+    isMainAppSsoDisabled()
+    || pathname === "/api/sso/callback"
     || pathname.startsWith("/api/image/reference/")
+    || pathname.startsWith("/temp-assets/")
+    || pathname.startsWith("/api/library2")
   ) {
     return NextResponse.next();
   }

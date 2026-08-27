@@ -1,11 +1,23 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$AppOrigin,
+  [string[]]$AdditionalAppOrigins = @(),
   [string]$Version = "0.1.0"
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+function Get-Sha256Hex([string]$Path) {
+  $stream = [IO.File]::OpenRead($Path)
+  $algorithm = [Security.Cryptography.SHA256]::Create()
+  try {
+    return [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-', '')
+  } finally {
+    $algorithm.Dispose()
+    $stream.Dispose()
+  }
+}
 
 if ($Version -notmatch '^\d{1,5}(?:\.\d{1,5}){0,3}$') {
   throw "Version must contain one to four dot-separated integers."
@@ -14,22 +26,27 @@ foreach ($part in $Version.Split('.')) {
   if ([int]$part -gt 65535) { throw "Each version component must be at most 65535." }
 }
 
-try {
-  $originUri = [Uri]$AppOrigin
-} catch {
-  throw "AppOrigin must be an absolute URL origin."
+function Get-NormalizedAppOrigin([string]$Value) {
+  try {
+    $originUri = [Uri]$Value
+  } catch {
+    throw "AppOrigin must be an absolute URL origin."
+  }
+  if (-not $originUri.IsAbsoluteUri -or $originUri.UserInfo) {
+    throw "AppOrigin must be an absolute URL origin without credentials."
+  }
+  if ($originUri.AbsolutePath -ne '/' -or $originUri.Query -or $originUri.Fragment) {
+    throw "AppOrigin must not contain a path, query, or fragment."
+  }
+  $isDevelopmentOrigin = $originUri.Scheme -eq 'http' -and $originUri.Host -eq '127.0.0.1' -and $originUri.Port -eq 3000
+  if ($originUri.Scheme -ne 'https' -and -not $isDevelopmentOrigin) {
+    throw "AppOrigin must use HTTPS. Only http://127.0.0.1:3000 is allowed for development."
+  }
+  return $originUri.GetLeftPart([UriPartial]::Authority).TrimEnd('/')
 }
-if (-not $originUri.IsAbsoluteUri -or $originUri.UserInfo) {
-  throw "AppOrigin must be an absolute URL origin without credentials."
-}
-if ($originUri.AbsolutePath -ne '/' -or $originUri.Query -or $originUri.Fragment) {
-  throw "AppOrigin must not contain a path, query, or fragment."
-}
-$isDevelopmentOrigin = $originUri.Scheme -eq 'http' -and $originUri.Host -eq '127.0.0.1' -and $originUri.Port -eq 3000
-if ($originUri.Scheme -ne 'https' -and -not $isDevelopmentOrigin) {
-  throw "AppOrigin must use HTTPS. Only http://127.0.0.1:3000 is allowed for development."
-}
-$normalizedOrigin = $originUri.GetLeftPart([UriPartial]::Authority).TrimEnd('/')
+
+$requestedOrigins = @($AppOrigin) + @($AdditionalAppOrigins)
+$normalizedOrigins = @($requestedOrigins | ForEach-Object { Get-NormalizedAppOrigin $_ } | Select-Object -Unique)
 
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $exportsRoot = [IO.Path]::GetFullPath((Join-Path $repositoryRoot 'exports'))
@@ -52,7 +69,7 @@ if (Test-Path -LiteralPath $stagingPath) { Remove-Item -LiteralPath $stagingPath
 if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
 New-Item -ItemType Directory -Path $stagingPath -Force | Out-Null
 
-foreach ($file in @('background.js', 'app-bridge.js', 'xhs-content.js')) {
+foreach ($file in @('background.js', 'app-bridge.js', 'xhs-content.js', 'library2-bar.js')) {
   Copy-Item -LiteralPath (Join-Path $repositoryRoot "browser-extension\$file") -Destination (Join-Path $stagingPath $file)
 }
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'browser-extension\shared') -Destination (Join-Path $stagingPath 'shared') -Recurse
@@ -61,16 +78,16 @@ Copy-Item -LiteralPath (Join-Path $repositoryRoot 'docs\xhs-browser-extension-in
 
 $manifest = Get-Content -LiteralPath (Join-Path $repositoryRoot 'browser-extension\manifest.template.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $manifest.version = $Version
-$appMatchPattern = "$normalizedOrigin/*"
-$manifest.host_permissions = @($manifest.host_permissions | ForEach-Object { if ($_ -eq '__APP_MATCH_PATTERN__') { $appMatchPattern } else { $_ } })
+$appMatchPatterns = @($normalizedOrigins | ForEach-Object { "$_/*" })
+$manifest.host_permissions = @($manifest.host_permissions | ForEach-Object { if ($_ -eq '__APP_MATCH_PATTERN__') { $appMatchPatterns } else { $_ } })
 foreach ($contentScript in $manifest.content_scripts) {
-  $contentScript.matches = @($contentScript.matches | ForEach-Object { if ($_ -eq '__APP_MATCH_PATTERN__') { $appMatchPattern } else { $_ } })
+  $contentScript.matches = @($contentScript.matches | ForEach-Object { if ($_ -eq '__APP_MATCH_PATTERN__') { $appMatchPatterns } else { $_ } })
 }
 $manifestJson = $manifest | ConvertTo-Json -Depth 20
 if ($manifestJson.Contains('__APP_MATCH_PATTERN__')) { throw "Manifest still contains the app-origin placeholder." }
 [IO.File]::WriteAllText((Join-Path $stagingPath 'manifest.json'), $manifestJson, [Text.UTF8Encoding]::new($false))
 
 Compress-Archive -Path (Join-Path $stagingPath '*') -DestinationPath $zipPath -Force
-$hash = Get-FileHash -LiteralPath $zipPath -Algorithm SHA256
+$hash = Get-Sha256Hex $zipPath
 Write-Output "ZIP: $zipPath"
-Write-Output "SHA256: $($hash.Hash)"
+Write-Output "SHA256: $hash"

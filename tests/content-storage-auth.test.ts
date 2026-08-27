@@ -26,3 +26,17 @@ test("uses only the encrypted SSO session user id as the COS owner", async () =>
     else process.env.APP_SESSION_SECRET = previous;
   }
 });
+
+test("offline mode uses the local developer as the COS owner", async () => {
+  const previous = process.env.DISABLE_SSO;
+  process.env.DISABLE_SSO = "true";
+  try {
+    assert.equal(
+      await requireContentStorageOwner(new NextRequest("https://app.test/api/content-storage/items")),
+      "local-dev"
+    );
+  } finally {
+    if (previous === undefined) delete process.env.DISABLE_SSO;
+    else process.env.DISABLE_SSO = previous;
+  }
+});

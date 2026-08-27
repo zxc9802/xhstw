@@ -1,4 +1,4 @@
-importScripts("shared/protocol.js", "shared/collector.js", "shared/task-state.js", "shared/media-transfer.js");
+importScripts("shared/protocol.js", "shared/collector.js", "shared/task-state.js", "shared/media-transfer.js", "shared/library2-media.js", "shared/library2-session.js");
 
 const DETAIL_DELAY_MS = 4_000;
 const QUERY_DELAY_MS = 15_000;
@@ -11,10 +11,14 @@ const BLOCK_CODES = new Set(["LOGIN_REQUIRED", "CAPTCHA", "RATE_LIMITED"]);
 const SKIPPABLE_DETAIL_CODES = new Set(["NOTE_UNAVAILABLE", "DETAIL_INCOMPLETE"]);
 const SEARCH_CANDIDATE_BATCH_SIZE = 5;
 const MEDIA_REPLY_TIMEOUT_MS = 30_000;
+const MEDIA_DOWNLOAD_BATCH_SIZE = 4;
 const protocol = globalThis.XhsExtensionProtocol;
 const collector = globalThis.XhsPageCollector;
 const taskState = globalThis.XhsTaskState;
 const mediaTransfer = globalThis.XhsMediaTransfer;
+const library2Media = globalThis.Library2Media;
+const library2Session = globalThis.Library2Session;
+const LIBRARY2_SESSIONS_STORAGE_KEY = "library2SessionsV2";
 let active = null;
 let recoveryPromise = null;
 
@@ -533,5 +537,133 @@ async function recoverStaleSession() {
   }
   await clearPersisted();
 }
+
+async function openLibrary2Origins() {
+  try {
+    const tabs = await chrome.tabs.query({
+      url: [
+        "http://127.0.0.1:3000/*",
+        "https://xhstw.qycm.top/*"
+      ]
+    });
+    return tabs.map((tab) => library2Session.normalizeOrigin(tab.url)).filter(Boolean);
+  } catch (_) {
+    return [];
+  }
+}
+
+async function library2Api(url, init) {
+  const response = await fetch(url, init);
+  const payload = await response.json().catch(() => undefined);
+  if (!response.ok || !payload || payload.ok !== true) {
+    throw new Error((payload && payload.message) || `请求失败（${response.status}）`);
+  }
+  return payload.data;
+}
+
+async function uploadLibrary2(payload) {
+  const stored = await chrome.storage.local.get([
+    LIBRARY2_SESSIONS_STORAGE_KEY,
+    "library2Token",
+    "library2ExpiresAt",
+    "library2AppOrigin"
+  ]);
+  const now = Date.now();
+  const openOrigins = await openLibrary2Origins();
+  let session = library2Session.selectSession(stored[LIBRARY2_SESSIONS_STORAGE_KEY], openOrigins, now);
+  if (!session) {
+    const legacyOrigin = library2Session.normalizeOrigin(stored.library2AppOrigin);
+    const legacySessions = library2Session.upsertSession({}, {
+      appOrigin: legacyOrigin,
+      token: stored.library2Token,
+      expiresAt: stored.library2ExpiresAt
+    }, 0);
+    session = library2Session.selectSession(legacySessions, openOrigins, now);
+  }
+  if (!session) {
+    return { ok: false, message: "请先打开图文生产中台并登录，授权插件上传到爆款选题库2" };
+  }
+  const appOrigin = session.appOrigin;
+  const images = [];
+  const urls = Array.isArray(payload && payload.imageUrls) ? payload.imageUrls.slice(0, 20) : [];
+  for (let index = 0; index < urls.length; index += MEDIA_DOWNLOAD_BATCH_SIZE) {
+    const batch = await Promise.all(urls.slice(index, index + MEDIA_DOWNLOAD_BATCH_SIZE).map(async (url) => {
+      try {
+        return await library2Media.downloadImage(url);
+      } catch (_) {
+        return null;
+      }
+    }));
+    for (const downloaded of batch) {
+      if (downloaded) images.push(downloaded);
+    }
+  }
+  if (!images.length && !String(payload && payload.body || "").trim() && !String(payload && payload.title || "").trim()) {
+    return { ok: false, message: "没有提取到图片或文案" };
+  }
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${session.token}`
+  };
+  const intent = await library2Api(`${appOrigin}/api/library2/upload-intents`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      images: images.map((image) => ({ contentType: image.contentType, size: image.size }))
+    })
+  });
+  if (!intent || !Array.isArray(intent.uploads) || intent.uploads.length !== images.length) {
+    return { ok: false, message: "上传地址数量不一致" };
+  }
+  for (const [index, upload] of intent.uploads.entries()) {
+    const response = await fetch(new URL(upload.uploadUrl, appOrigin).toString(), {
+      method: "PUT",
+      headers: { "Content-Type": upload.contentType },
+      body: images[index].bytes
+    });
+    if (!response.ok) return { ok: false, message: `第 ${index + 1} 张图片上传失败` };
+  }
+  const platform = payload && ["小红书", "抖音", "TikTok"].includes(payload.platform) ? payload.platform : "小红书";
+  await library2Api(`${appOrigin}/api/library2/items/${encodeURIComponent(intent.contentId)}/commit`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      content: {
+        title: String(payload && payload.title || "").slice(0, 200),
+        body: String(payload && payload.body || "").slice(0, 20_000),
+        platform,
+        sourceUrl: String(payload && payload.sourceUrl || "").slice(0, 2048)
+      },
+      uploads: intent.uploads
+    })
+  });
+  return { ok: true };
+}
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (!message || typeof message !== "object") return;
+  if (message.type === "library2:session") {
+    const appOrigin = library2Session.normalizeOrigin(message.appOrigin);
+    if (!appOrigin || typeof message.token !== "string" || !message.token || !Number.isInteger(message.expiresAt)) {
+      sendResponse({ ok: false });
+      return;
+    }
+    void chrome.storage.local.get(LIBRARY2_SESSIONS_STORAGE_KEY).then((stored) => {
+      const sessions = library2Session.upsertSession(stored[LIBRARY2_SESSIONS_STORAGE_KEY], {
+        appOrigin,
+        token: message.token,
+        expiresAt: message.expiresAt
+      }, Date.now());
+      return chrome.storage.local.set({ [LIBRARY2_SESSIONS_STORAGE_KEY]: sessions });
+    }).then(() => sendResponse({ ok: true }), () => sendResponse({ ok: false }));
+    return true;
+  }
+  if (message.type === "library2:upload") {
+    void uploadLibrary2(message.payload || {}).then(sendResponse, (error) => {
+      sendResponse({ ok: false, message: error && error.message ? String(error.message).slice(0, 300) : "上传失败" });
+    });
+    return true;
+  }
+});
 
 recoveryPromise = recoverStaleSession().catch(() => {});

@@ -89,6 +89,28 @@ export function getPublicXhstwAppUrl(): string {
   return PUBLIC_XHSTW_APP_URL;
 }
 
+export function isMainAppSsoDisabled(): boolean {
+  return process.env.DISABLE_SSO === "true";
+}
+
+export function getLocalDevSession(): MainAppSession | null {
+  if (!isMainAppSsoDisabled()) return null;
+  return {
+    token: "local-dev",
+    user: {
+      id: process.env.LOCAL_DEV_USER_ID?.trim() || "local-dev",
+      account: process.env.LOCAL_DEV_ACCOUNT?.trim() || "local@localhost",
+      nickname: process.env.LOCAL_DEV_NICKNAME?.trim() || "本地调试",
+      role: "admin"
+    },
+    expiresAt: Date.now() + 365 * 24 * 60 * 60 * 1000
+  };
+}
+
+export async function resolveMainAppSession(cookieValue?: string): Promise<MainAppSession | null> {
+  return await readMainAppSessionCookie(cookieValue) || getLocalDevSession();
+}
+
 export function getMainAppSsoLaunchUrl(): string {
   const url = new URL("/home2", getMainAppUrl());
   url.searchParams.set("externalSso", PRODUCT);
@@ -183,6 +205,7 @@ export async function exchangeMainAppSsoTicket(ticket: string): Promise<{
 }
 
 export async function validateMainAppSession(session: MainAppSession): Promise<boolean> {
+  if (isMainAppSsoDisabled()) return true;
   try {
     const response = await fetch(`${getMainAppUrl()}/api/sso/session`, {
       cache: "no-store",

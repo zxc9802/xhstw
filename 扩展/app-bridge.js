@@ -50,6 +50,19 @@
     connectPort().postMessage(event.data);
   });
 
+  window.addEventListener("message", (event) => {
+    if (event.source !== window || event.origin !== location.origin) return;
+    const data = event.data;
+    if (!data || data.channel !== "content-production-studio.library2" || data.type !== "session") return;
+    if (typeof data.token !== "string" || !data.token || typeof data.expiresAt !== "number") return;
+    chrome.runtime.sendMessage({
+      type: "library2:session",
+      token: data.token,
+      expiresAt: data.expiresAt,
+      appOrigin: typeof data.appOrigin === "string" ? data.appOrigin : location.origin
+    });
+  });
+
   window.addEventListener("pagehide", () => {
     activeRequestId = null;
     if (port) port.disconnect();

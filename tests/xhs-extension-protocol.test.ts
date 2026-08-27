@@ -393,19 +393,36 @@ test("manifest is an exact least-privilege template", () => {
   assert.deepEqual(Object.keys(manifest), ["manifest_version", "name", "version", "description", "permissions", "host_permissions", "background", "content_scripts", "action"]);
   assert.equal(manifest.manifest_version, 3);
   assert.equal(manifest.name, "小红书本机抓取助手");
-  assert.equal(manifest.version, "0.1.12");
-  assert.equal(manifest.description, "在用户自己的浏览器中执行内容生产中台下达的小红书公开页面抓取任务。");
+  assert.equal(manifest.version, "0.1.31");
+  assert.equal(manifest.description, "在用户自己的浏览器中执行内容生产中台下达的小红书公开页面抓取任务，并支持把小红书、抖音、TikTok 图文上传到爆款选题库2。");
   assert.deepEqual(manifest.permissions, ["storage"]);
   assert.deepEqual(manifest.host_permissions, [
     "https://www.xiaohongshu.com/*",
     "https://*.xiaohongshu.com/*",
     "https://*.xhscdn.com/*",
+    "https://www.douyin.com/*",
+    "https://*.douyin.com/*",
+    "https://www.iesdouyin.com/*",
+    "https://*.iesdouyin.com/*",
+    "https://*.douyinpic.com/*",
+    "https://*.douyincdn.com/*",
+    "https://*.byteimg.com/*",
+    "https://www.tiktok.com/*",
+    "https://*.tiktok.com/*",
+    "https://*.tiktokcdn.com/*",
+    "https://*.tiktokcdn-us.com/*",
+    "https://*.tiktokcdn-eu.com/*",
     "__APP_MATCH_PATTERN__"
   ]);
   assert.deepEqual(manifest.background, { service_worker: "background.js" });
   assert.deepEqual(manifest.content_scripts, [
     { matches: ["__APP_MATCH_PATTERN__"], js: ["shared/protocol.js", "app-bridge.js"], run_at: "document_start" },
-    { matches: ["https://www.xiaohongshu.com/*"], js: ["shared/protocol.js", "shared/collector.js", "xhs-content.js"], run_at: "document_idle" }
+    { matches: ["https://www.xiaohongshu.com/*"], js: ["shared/protocol.js", "shared/collector.js", "xhs-content.js"], run_at: "document_idle" },
+    {
+      matches: ["https://www.xiaohongshu.com/*", "https://www.douyin.com/*", "https://*.douyin.com/*", "https://www.iesdouyin.com/*", "https://*.iesdouyin.com/*", "https://www.tiktok.com/*"],
+      js: ["shared/collector.js", "shared/page-extract.js", "library2-bar.js"],
+      run_at: "document_idle"
+    }
   ]);
   assert.deepEqual(manifest.action, { default_title: "小红书本机抓取助手" });
   const serialized = JSON.stringify(manifest);
@@ -524,7 +541,7 @@ test("packages a scoped extension for one exact app origin", { skip: process.pla
     }
     execFileSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-AppOrigin", "https://studio.example.test", "-Version", version], { cwd: repositoryRoot, stdio: "pipe" });
     assert.equal(existsSync(zip), true);
-    execFileSync("powershell.exe", ["-NoProfile", "-Command", "Expand-Archive -LiteralPath $env:XHS_TEST_ZIP -DestinationPath $env:XHS_TEST_EXPANDED -Force"], {
+    execFileSync("powershell.exe", ["-NoProfile", "-Command", "Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::ExtractToDirectory($env:XHS_TEST_ZIP, $env:XHS_TEST_EXPANDED)"], {
       stdio: "pipe",
       env: { ...process.env, XHS_TEST_ZIP: zip, XHS_TEST_EXPANDED: expanded }
     });
@@ -537,10 +554,22 @@ test("packages a scoped extension for one exact app origin", { skip: process.pla
       "https://www.xiaohongshu.com/*",
       "https://*.xiaohongshu.com/*",
       "https://*.xhscdn.com/*",
+      "https://www.douyin.com/*",
+      "https://*.douyin.com/*",
+      "https://www.iesdouyin.com/*",
+      "https://*.iesdouyin.com/*",
+      "https://*.douyinpic.com/*",
+      "https://*.douyincdn.com/*",
+      "https://*.byteimg.com/*",
+      "https://www.tiktok.com/*",
+      "https://*.tiktok.com/*",
+      "https://*.tiktokcdn.com/*",
+      "https://*.tiktokcdn-us.com/*",
+      "https://*.tiktokcdn-eu.com/*",
       "https://studio.example.test/*"
     ]);
     assert.deepEqual(manifest.content_scripts[0].matches, ["https://studio.example.test/*"]);
-    for (const relativePath of ["background.js", "app-bridge.js", "xhs-content.js", "shared/protocol.js", "shared/collector.js", "shared/task-state.js", "安装说明.md"]) {
+    for (const relativePath of ["background.js", "app-bridge.js", "xhs-content.js", "library2-bar.js", "shared/protocol.js", "shared/collector.js", "shared/page-extract.js", "shared/library2-media.js", "shared/library2-session.js", "shared/task-state.js", "安装说明.md"]) {
       assert.equal(existsSync(join(expanded, relativePath)), true, `${relativePath} should be packaged`);
     }
     const permissions = JSON.stringify([manifest.permissions, manifest.host_permissions]);

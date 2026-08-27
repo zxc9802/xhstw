@@ -15,10 +15,10 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 
 test("renders a direct extension download control", () => {
   const markup = renderToStaticMarkup(React.createElement(ExtensionInstaller));
-  assert.equal(XHS_EXTENSION_DOWNLOAD_PATH, "/downloads/xhs-browser-extension-0.1.12.zip");
+  assert.equal(XHS_EXTENSION_DOWNLOAD_PATH, "/api/extension/download");
   assert.match(markup, /下载插件/);
   assert.match(markup, /安装说明/);
-  assert.match(markup, /href="\/downloads\/xhs-browser-extension-0\.1\.12\.zip"/);
+  assert.match(markup, /href="\/api\/extension\/download"/);
   assert.match(markup, /download=""/);
 });
 

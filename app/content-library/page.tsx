@@ -467,8 +467,8 @@ export default function ContentLibraryPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="成品内容库"
-        description="集中管理已通过审核、可发布、已保存本地和已归档的完整内容项目。"
+        title="内容库1"
+        description="成品内容库。这里继续保存生产页写入的成品，以及 OpenCLI / 本机抓取后制作完成的图文。"
         action={
           <div className="flex flex-wrap gap-2">
             <Button className={viewMode === "cards" ? "bg-orange-50 text-orange-700" : ""} icon={<Grid2X2 className="h-4 w-4" />} onClick={() => setViewMode("cards")}>卡片视图</Button>

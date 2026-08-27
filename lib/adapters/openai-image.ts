@@ -244,18 +244,6 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-function referenceEditGuidance(prompt: string) {
-  const preserveBackground = /(?:背景|background).{0,8}(?:不变|保持|保留|不要改|勿改|unchanged|keep|preserve)/i.test(prompt);
-  const replaceBackground = /(?:换个?背景|更换.{0,4}背景|替换.{0,4}背景|修改.{0,4}背景|改变.{0,4}背景|背景.{0,4}(?:换成|改成|替换成)|(?:change|replace).{0,12}background)/i.test(prompt);
-  return [
-    "已随请求传入参考图。这是基于参考图的编辑任务，必须执行用户明确要求的修改，不能把参考图原样返回。",
-    "用户点名要更换的人物、背景、服装等元素都必须明显变化；只保留用户没有要求改变的元素，不要让通用保持要求覆盖用户指令。",
-    replaceBackground && !preserveBackground
-      ? "用户明确要求换背景：必须明显替换原背景，不得保留或复刻原背景；新背景应符合用户描述。"
-      : ""
-  ].filter(Boolean).join("\n");
-}
-
 function providerHeaders(config: Image2Config) {
   return {
     Accept: "application/json",
@@ -536,14 +524,7 @@ export async function generateImage(input: unknown) {
     return mockImages(body);
   }
 
-  const prompt = [
-    "请生成高画质但未经精修的真实照片，呈现普通人使用原生手机或相机直出的素人随手拍质感。使用自然环境光和普通生活场景，保留真实皮肤纹理、毛孔和轻微瑕疵，手部与产品比例自然，材质和产品标签清晰可信。禁止商业棚拍、广告大片、过度磨皮、塑料皮肤、3D 渲染、卡通插画、AI 拼贴、虚假包装和过度锐化。",
-    body.prompt || "生成一张适合内容生产中台图文页面的真实图片。",
-    body.sourceImages?.length ? `参考素材名称：${body.sourceImages.join("、")}` : "",
-    body.sourceImageUrls?.length
-      ? referenceEditGuidance(body.prompt || "")
-      : ""
-  ].filter(Boolean).join("\n");
+  const prompt = body.prompt?.trim() || "";
   const requestedCount = Math.max(1, Math.min(MAX_IMAGES_PER_RUN, Number(body.count) || 1));
   const scale = imageScaleFromSize(body.size);
   const tasks = Array.from(
