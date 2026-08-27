@@ -130,7 +130,7 @@ export default function ContentLibrary2Page() {
     <div className="space-y-6">
       <PageHeader
         title="爆款选题库2"
-        description="插件抓到的图文先保存在本机 outputs/content-storage。每条都可以像选题库一样点「爆款裂变」，把标题、正文和图片带进图文生产做仿写。"
+        description="插件抓到的图文会保存到当前登录账号的爆款选题库2。每条都可以点「爆款裂变」，把标题、正文和图片带进图文生产做仿写。"
       />
 
       <Card>
