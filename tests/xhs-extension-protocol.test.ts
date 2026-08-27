@@ -393,7 +393,7 @@ test("manifest is an exact least-privilege template", () => {
   assert.deepEqual(Object.keys(manifest), ["manifest_version", "name", "version", "description", "permissions", "host_permissions", "background", "content_scripts", "action"]);
   assert.equal(manifest.manifest_version, 3);
   assert.equal(manifest.name, "小红书本机抓取助手");
-  assert.equal(manifest.version, "0.1.32");
+  assert.equal(manifest.version, "0.1.33");
   assert.equal(manifest.description, "在用户自己的浏览器中执行内容生产中台下达的小红书公开页面抓取任务，并支持把小红书、抖音、TikTok 图文上传到爆款选题库2。");
   assert.deepEqual(manifest.permissions, ["storage"]);
   assert.deepEqual(manifest.host_permissions, [
@@ -420,7 +420,7 @@ test("manifest is an exact least-privilege template", () => {
     { matches: ["https://www.xiaohongshu.com/*"], js: ["shared/protocol.js", "shared/collector.js", "xhs-content.js"], run_at: "document_idle" },
     {
       matches: ["https://www.xiaohongshu.com/*", "https://www.douyin.com/*", "https://*.douyin.com/*", "https://www.iesdouyin.com/*", "https://*.iesdouyin.com/*", "https://www.tiktok.com/*"],
-      js: ["shared/collector.js", "shared/page-extract.js", "library2-bar.js"],
+      js: ["shared/collector.js", "shared/page-extract.js", "shared/library2-live.js", "library2-bar.js"],
       run_at: "document_idle"
     }
   ]);
@@ -569,7 +569,7 @@ test("packages a scoped extension for one exact app origin", { skip: process.pla
       "https://studio.example.test/*"
     ]);
     assert.deepEqual(manifest.content_scripts[0].matches, ["https://studio.example.test/*"]);
-    for (const relativePath of ["background.js", "app-bridge.js", "xhs-content.js", "library2-bar.js", "shared/protocol.js", "shared/collector.js", "shared/page-extract.js", "shared/library2-media.js", "shared/library2-session.js", "shared/task-state.js", "安装说明.md"]) {
+    for (const relativePath of ["background.js", "app-bridge.js", "xhs-content.js", "library2-bar.js", "shared/protocol.js", "shared/collector.js", "shared/page-extract.js", "shared/library2-media.js", "shared/library2-live.js", "shared/library2-session.js", "shared/library2-upload.js", "shared/task-state.js", "安装说明.md"]) {
       assert.equal(existsSync(join(expanded, relativePath)), true, `${relativePath} should be packaged`);
     }
     const permissions = JSON.stringify([manifest.permissions, manifest.host_permissions]);

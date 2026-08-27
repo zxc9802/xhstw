@@ -164,10 +164,17 @@
     return Boolean(xhsDetailRoot(document) || xhsNoteId(href));
   }
 
+  function isXhsLiveDetail(scope) {
+    if (!scope) return false;
+    if (queryAll(scope, ".live-photo-contain, .live-video, [class*='live-photo-contain'], [class*='live-video']").length) return true;
+    return queryAll(scope, "span, div").some((element) => clean(element.textContent) === "LIVE");
+  }
+
   function extractXhs(document, href) {
     const detailRoot = xhsDetailRoot(document);
     if (!detailRoot && !xhsNoteId(href)) return { ok: false, reason: "not-detail" };
     const scope = detailRoot || document;
+    const isLive = isXhsLiveDetail(scope);
     const collector = root.XhsPageCollector;
     if (collector && typeof collector.parseDetail === "function") {
       const detail = collector.parseDetail(detailRoot || document, "");
@@ -184,7 +191,8 @@
           sourceUrl: href.split("#")[0],
           title: bounded(detail.title, 200),
           body: bounded(detail.content, MAX_TEXT),
-          imageUrls: images.slice(0, MAX_IMAGES)
+          imageUrls: images.slice(0, MAX_IMAGES),
+          ...(isLive ? { isLive: true } : {})
         };
       }
     }
@@ -200,7 +208,8 @@
       sourceUrl: href.split("#")[0],
       title: bounded(title, 200),
       body: bounded(body, MAX_TEXT),
-      imageUrls
+      imageUrls,
+      ...(isLive ? { isLive: true } : {})
     };
   }
 
@@ -855,6 +864,7 @@
     extract,
     isHttpsUrl,
     isXhsImageDetail,
+    isXhsLiveDetail,
     isDouyinImageDetail,
     isTiktokPhotoDetail
   });

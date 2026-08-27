@@ -3,6 +3,7 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.Library2Media = api;
 })(globalThis, function (root) {
+  const LIVE_VIDEO_MAX_BYTES = 100 * 1024 * 1024;
   const ALLOWED_SUFFIXES = [
     "xiaohongshu.com",
     "xhscdn.com",
@@ -44,6 +45,46 @@
     return ["image/jpeg", "image/png", "image/webp", "image/gif", "image/avif"].includes(type) ? type : "";
   }
 
+  function sniffVideoType(bytes) {
+    if (!bytes || bytes.length < 12) return "";
+    const lastOffset = Math.min(bytes.length - 4, 28);
+    for (let offset = 4; offset <= lastOffset; offset += 1) {
+      if (bytes[offset] === 0x66 && bytes[offset + 1] === 0x74
+        && bytes[offset + 2] === 0x79 && bytes[offset + 3] === 0x70) return "video/mp4";
+    }
+    return "";
+  }
+
+  async function readBoundedBytes(response, maxBytes) {
+    const declared = Number(response.headers.get("content-length") || 0);
+    if (declared > maxBytes) throw new Error("单个 Live 视频不能超过 100 MB");
+    if (!response.body) return new Uint8Array(await response.arrayBuffer());
+    const reader = response.body.getReader();
+    const chunks = [];
+    let size = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > maxBytes) {
+          await reader.cancel();
+          throw new Error("单个 Live 视频不能超过 100 MB");
+        }
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return bytes;
+  }
+
   async function downloadImage(sourceUrl, fetchImpl = root.fetch, timeoutMs = 10_000) {
     if (!isAllowedMediaUrl(sourceUrl)) return null;
     const controller = new AbortController();
@@ -69,5 +110,30 @@
     }
   }
 
-  return Object.freeze({ isAllowedMediaUrl, downloadImage, sniffType });
+  async function downloadVideo(sourceUrl, fetchImpl = root.fetch, timeoutMs = 30_000) {
+    if (!isAllowedMediaUrl(sourceUrl)) throw new Error("Live 视频地址不在白名单内");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetchImpl(sourceUrl, {
+        credentials: "omit",
+        redirect: "follow",
+        cache: "no-store",
+        signal: controller.signal
+      });
+      if (!response.ok) throw new Error(`Live 视频下载失败（${response.status}）`);
+      if (response.url && !isAllowedMediaUrl(response.url)) throw new Error("Live 视频重定向地址不在白名单内");
+      const bytes = await readBoundedBytes(response, LIVE_VIDEO_MAX_BYTES);
+      const contentType = String(response.headers.get("content-type") || "").split(";", 1)[0].trim().toLowerCase();
+      if (contentType !== "video/mp4" || sniffVideoType(bytes) !== "video/mp4") throw new Error("Live 视频格式无效");
+      return { bytes, contentType: "video/mp4", size: bytes.byteLength };
+    } catch (error) {
+      if (controller.signal.aborted) throw new Error("Live 视频下载超时");
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  return Object.freeze({ LIVE_VIDEO_MAX_BYTES, isAllowedMediaUrl, downloadImage, downloadVideo, sniffType, sniffVideoType });
 });

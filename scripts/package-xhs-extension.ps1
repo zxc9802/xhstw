@@ -12,7 +12,7 @@ function Get-Sha256Hex([string]$Path) {
 }
 
 $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-$version = "0.1.32"
+$version = "0.1.33"
 $canonicalPackager = Join-Path $PSScriptRoot "package-xhs-browser-extension.ps1"
 $exportPath = Join-Path $repositoryRoot "exports\xhs-browser-extension-$version.zip"
 $outputDirectory = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot "public\downloads"))

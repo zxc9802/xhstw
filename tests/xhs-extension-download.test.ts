@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const scriptPath = path.join(repoRoot, "scripts", "package-xhs-extension.ps1");
-const archivePath = path.join(repoRoot, "public", "downloads", "xhs-browser-extension-0.1.32.zip");
+const archivePath = path.join(repoRoot, "public", "downloads", "xhs-browser-extension-0.1.33.zip");
 
 test("keeps the unpacked extension on the current release version", () => {
   const manifest = JSON.parse(readFileSync(path.join(repoRoot, "扩展", "manifest.json"), "utf8")) as {
@@ -17,7 +17,7 @@ test("keeps the unpacked extension on the current release version", () => {
     content_scripts: Array<{ matches: string[] }>;
   };
 
-  assert.equal(manifest.version, "0.1.32");
+  assert.equal(manifest.version, "0.1.33");
   assert.equal(manifest.host_permissions.includes("http://127.0.0.1:3000/*"), true);
   assert.equal(manifest.host_permissions.includes("https://xhstw.qycm.top/*"), true);
   assert.deepEqual(manifest.content_scripts[0]?.matches, [
@@ -63,7 +63,9 @@ test("packages the complete scoped extension into the public download path", {
       path.join("shared", "collector.js"),
       path.join("shared", "media-transfer.js"),
       path.join("shared", "library2-media.js"),
+      path.join("shared", "library2-live.js"),
       path.join("shared", "library2-session.js"),
+      path.join("shared", "library2-upload.js"),
       path.join("shared", "page-extract.js"),
       path.join("shared", "task-state.js"),
       "安装说明.md"
@@ -78,7 +80,7 @@ test("packages the complete scoped extension into the public download path", {
       host_permissions: string[];
       content_scripts: Array<{ matches: string[] }>;
     };
-    assert.equal(manifest.version, "0.1.32");
+    assert.equal(manifest.version, "0.1.33");
     assert.equal(manifest.host_permissions.includes("https://xhstw.qycm.top/*"), true);
     assert.equal(manifest.host_permissions.includes("http://127.0.0.1:3000/*"), true);
     assert.deepEqual(manifest.content_scripts[0]?.matches, [

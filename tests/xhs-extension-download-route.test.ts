@@ -23,11 +23,11 @@ test("redirects every workbench to the same current extension package", async ()
   assert.equal(localResponse.status, 307);
   assert.equal(
     localResponse.headers.get("location"),
-    "/downloads/xhs-browser-extension-0.1.32.zip"
+    "/downloads/xhs-browser-extension-0.1.33.zip"
   );
   assert.equal(productionResponse.status, 307);
   assert.equal(
     productionResponse.headers.get("location"),
-    "/downloads/xhs-browser-extension-0.1.32.zip"
+    "/downloads/xhs-browser-extension-0.1.33.zip"
   );
 });

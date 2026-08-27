@@ -1,6 +1,6 @@
 import type { NextRequest } from "next/server";
 
-const EXTENSION_VERSION = "0.1.32";
+const EXTENSION_VERSION = "0.1.33";
 
 export async function GET(_request: NextRequest) {
   const filename = `xhs-browser-extension-${EXTENSION_VERSION}.zip`;

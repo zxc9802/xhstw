@@ -1,7 +1,7 @@
 {
     "manifest_version":  3,
     "name":  "小红书本机抓取助手",
-    "version":  "0.1.32",
+    "version":  "0.1.33",
     "description":  "在用户自己的浏览器中执行内容生产中台下达的小红书公开页面抓取任务，并支持把小红书、抖音、TikTok 图文上传到爆款选题库2。",
     "permissions":  [
                         "storage"
@@ -63,6 +63,7 @@
                                 "js":  [
                                            "shared/collector.js",
                                            "shared/page-extract.js",
+                                           "shared/library2-live.js",
                                            "library2-bar.js"
                                        ],
                                 "run_at":  "document_idle"
