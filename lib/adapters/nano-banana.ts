@@ -12,11 +12,10 @@ type NanoBananaInput = {
   sourceImageUrls?: string[];
 };
 
-type GeminiPart = {
-  text?: string;
-  inlineData?: { mimeType: string; data: string };
-  fileData?: { fileUri: string; mimeType?: string };
-};
+type GeminiPart =
+  | { text: string }
+  | { inlineData: { mimeType: string; data: string } }
+  | { fileData: { fileUri: string; mimeType?: string } };
 
 const NANO_BANANA_MODEL = process.env.NANO_BANANA_MODEL || "gemini-3.1-flash-image";
 const DEFAULT_NANO_BANANA_API_URL = `https://api.openlux.ai/v1beta/models/${NANO_BANANA_MODEL}:generateContent`;
@@ -112,7 +111,7 @@ function flattenImageUrls(value: unknown): string[] {
 }
 
 function referenceParts(urls: string[]): GeminiPart[] {
-  return urls.flatMap((url) => {
+  return urls.flatMap((url): GeminiPart[] => {
     const trimmed = url.trim();
     if (!trimmed) return [];
     const dataUrl = trimmed.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/i);
