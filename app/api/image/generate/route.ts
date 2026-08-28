@@ -1,6 +1,7 @@
 import { generateImage } from "@/lib/adapters/openai-image";
 import { generateWithNanoBanana } from "@/lib/adapters/nano-banana";
 import { generateWithNanobananaNew } from "@/lib/adapters/nanobanana-new";
+import { generateWithOpenlux, isOpenluxImageProvider } from "@/lib/adapters/openlux-image";
 import { createImageGenerationJob, runImageGenerationJob } from "@/lib/adapters/image-generation-job-store";
 import { cacheImageGenerationResult } from "@/lib/adapters/image-generation-result-store";
 import {
@@ -37,6 +38,7 @@ function publicRequestOrigin(request: Request) {
 function usesImage2References(provider: string) {
   return !provider.includes("Nano")
     && !provider.includes("仅生成提示词")
+    && !isOpenluxImageProvider(provider)
     && process.env.IMAGE_MODEL_PROVIDER !== "nano-banana"
     && process.env.IMAGE_MODEL_PROVIDER !== "mock"
     && process.env.IMAGE_MODEL_PROVIDER !== "yunwu";
@@ -88,9 +90,9 @@ export async function POST(request: Request) {
 
   try {
     const directYunwu = process.env.IMAGE_MODEL_PROVIDER === "yunwu";
-    if (usesImage2References(provider) || directYunwu) {
+    if (usesImage2References(provider) || directYunwu || isOpenluxImageProvider(provider)) {
       const sourceImageUrls = imageSourceUrls(body);
-      if (directYunwu) validateYunwuReferenceUrls(sourceImageUrls);
+      if (directYunwu || isOpenluxImageProvider(provider)) validateYunwuReferenceUrls(sourceImageUrls);
       if (usesImage2References(provider) && sourceImageUrls.length) {
         const published = publishImageReferences(sourceImageUrls, publicRequestOrigin(request));
         referenceTokens = published.tokens;
@@ -118,6 +120,8 @@ export async function POST(request: Request) {
     try {
       const generated = isNanobananaNew(provider)
         ? await generateWithNanobananaNew(jobBody)
+        : isOpenluxImageProvider(provider)
+          ? await generateWithOpenlux(jobBody)
         : provider.includes("Nano") || process.env.IMAGE_MODEL_PROVIDER === "nano-banana"
           ? await generateWithNanoBanana(jobBody)
           : await generateImage(jobBody);

@@ -14,6 +14,14 @@ test("all image provider selectors expose nanobanan新", () => {
   );
 });
 
+test("all image provider selectors expose gpt-image-2-c", () => {
+  assert.equal(imageTypeSource.includes('"gpt-image-2-c"'), true);
+  assert.match(
+    source,
+    /const imageProviders: ImageProvider\[\] = \[[^\]]*"gpt-image-2-c"/
+  );
+});
+
 test("persists only the unrelated keyword library, not generated drafts", () => {
   assert.equal(source.includes("content-production-studio.keyword-library"), true);
   assert.equal(source.includes("content-production-studio.image-draft"), false);

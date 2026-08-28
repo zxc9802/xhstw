@@ -3,11 +3,30 @@ import test from "node:test";
 
 import { generateWithNanoBanana } from "../lib/adapters/nano-banana";
 
+function geminiImageResponse(id: string) {
+  return {
+    candidates: [{
+      content: {
+        role: "model",
+        parts: [{
+          inlineData: {
+            mimeType: "image/jpeg",
+            data: Buffer.from(`fake-image-${id}`).toString("base64")
+          }
+        }]
+      },
+      finishReason: "STOP"
+    }]
+  };
+}
+
 async function withNanoBanana(fetcher: typeof fetch, run: () => Promise<void>) {
   const previousFetch = globalThis.fetch;
   const previousApiKey = process.env.NANO_BANANA_API_KEY;
+  const previousApiUrl = process.env.NANO_BANANA_API_URL;
   const previousProvider = process.env.IMAGE_MODEL_PROVIDER;
   process.env.NANO_BANANA_API_KEY = "test-nano-key";
+  process.env.NANO_BANANA_API_URL = "https://api.openlux.ai/v1beta/models/gemini-3.1-flash-image:generateContent";
   process.env.IMAGE_MODEL_PROVIDER = "nano-banana";
   globalThis.fetch = fetcher;
   try {
@@ -16,6 +35,8 @@ async function withNanoBanana(fetcher: typeof fetch, run: () => Promise<void>) {
     globalThis.fetch = previousFetch;
     if (previousApiKey === undefined) delete process.env.NANO_BANANA_API_KEY;
     else process.env.NANO_BANANA_API_KEY = previousApiKey;
+    if (previousApiUrl === undefined) delete process.env.NANO_BANANA_API_URL;
+    else process.env.NANO_BANANA_API_URL = previousApiUrl;
     if (previousProvider === undefined) delete process.env.IMAGE_MODEL_PROVIDER;
     else process.env.IMAGE_MODEL_PROVIDER = previousProvider;
   }
@@ -33,13 +54,7 @@ test("keeps successful Nano Banana images when one request is blocked by image s
         }
       }, { status: 400 });
     }
-    return Response.json({
-      choices: [{
-        message: {
-          content: `https://img.test/nano-${index + 1}.jpg`
-        }
-      }]
-    });
+    return Response.json(geminiImageResponse(String(index + 1)));
   }, async () => {
     const result = await generateWithNanoBanana({
       provider: "Nano Banana 2",
@@ -48,21 +63,23 @@ test("keeps successful Nano Banana images when one request is blocked by image s
     });
 
     assert.equal(result.images.length, 2);
+    assert.match(result.images[0].url, /^data:image\/jpeg;base64,/);
     assert.equal(result.warnings?.length, 1);
     assert.match(result.warnings?.[0] || "", /第 2 张.*IMAGE_SAFETY/);
   });
 });
 
-test("sends only the user prompt without extra system or edit instructions", async () => {
+test("sends Gemini generateContent parts without extra system or edit instructions", async () => {
+  let requestUrl = "";
   let requestBody: {
-    messages: Array<{ role: string; content: unknown }>;
+    contents: Array<{ role: string; parts: unknown[] }>;
+    generationConfig?: { responseModalities?: string[]; imageConfig?: { aspectRatio?: string } };
   } | undefined;
 
-  await withNanoBanana(async (_url, init) => {
+  await withNanoBanana(async (url, init) => {
+    requestUrl = String(url);
     requestBody = JSON.parse(String(init?.body)) as typeof requestBody;
-    return Response.json({
-      choices: [{ message: { content: "https://img.test/nano-plain.jpg" } }]
-    });
+    return Response.json(geminiImageResponse("plain"));
   }, async () => {
     await generateWithNanoBanana({
       provider: "Nano Banana 2",
@@ -73,14 +90,44 @@ test("sends only the user prompt without extra system or edit instructions", asy
     });
   });
 
-  assert.deepEqual(requestBody?.messages, [
-    {
-      role: "user",
-      content: [
-        { type: "text", text: "普通生活场景产品图" },
-        { type: "image_url", image_url: { url: "https://img.test/source.jpg" } }
-      ]
+  assert.equal(requestUrl, "https://api.openlux.ai/v1beta/models/gemini-3.1-flash-image:generateContent");
+  assert.deepEqual(requestBody, {
+    contents: [
+      {
+        role: "user",
+        parts: [
+          { text: "普通生活场景产品图" },
+          { fileData: { fileUri: "https://img.test/source.jpg" } }
+        ]
+      }
+    ],
+    generationConfig: {
+      responseModalities: ["TEXT", "IMAGE"],
+      imageConfig: { aspectRatio: "3:4" }
     }
+  });
+});
+
+test("sends data-url references as Gemini inline image parts", async () => {
+  let requestBody: {
+    contents: Array<{ parts: unknown[] }>;
+  } | undefined;
+
+  await withNanoBanana(async (_url, init) => {
+    requestBody = JSON.parse(String(init?.body)) as typeof requestBody;
+    return Response.json(geminiImageResponse("data-url"));
+  }, async () => {
+    await generateWithNanoBanana({
+      provider: "Nano Banana 2",
+      prompt: "参考这张图生成新品图",
+      sourceImageUrls: ["data:image/png;base64,ZmFrZQ=="],
+      count: 1
+    });
+  });
+
+  assert.deepEqual(requestBody?.contents[0].parts, [
+    { text: "参考这张图生成新品图" },
+    { inlineData: { mimeType: "image/png", data: "ZmFrZQ==" } }
   ]);
 });
 

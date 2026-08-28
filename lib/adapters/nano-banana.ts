@@ -12,12 +12,58 @@ type NanoBananaInput = {
   sourceImageUrls?: string[];
 };
 
-const YUNWU_CHAT_URL = process.env.YUNWU_CHAT_URL || "https://yunwu.ai/v1/chat/completions";
+type GeminiPart = {
+  text?: string;
+  inlineData?: { mimeType: string; data: string };
+  fileData?: { fileUri: string; mimeType?: string };
+};
+
 const NANO_BANANA_MODEL = process.env.NANO_BANANA_MODEL || "gemini-3.1-flash-image";
+const DEFAULT_NANO_BANANA_API_URL = `https://api.openlux.ai/v1beta/models/${NANO_BANANA_MODEL}:generateContent`;
 export const NANO_BANANA_REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
+
+function nanoBananaApiUrl() {
+  return process.env.NANO_BANANA_API_URL?.trim() || DEFAULT_NANO_BANANA_API_URL;
+}
+
+function nanoBananaApiKey() {
+  return process.env.NANO_BANANA_API_KEY?.trim()
+    || process.env.OPENLUX_API_KEY?.trim()
+    || process.env.YUNWU_API_KEY?.trim()
+    || "";
+}
 
 function asRecord(input: unknown): NanoBananaInput {
   return input && typeof input === "object" ? input as NanoBananaInput : {};
+}
+
+function imageAspectRatio(size = "1:1") {
+  const value = size.trim().toLowerCase();
+  if (["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9", "1:4", "1:8", "4:1", "8:1"].includes(value)) {
+    return value;
+  }
+  return ({
+    "1024x1024": "1:1",
+    "1080x1080": "1:1",
+    "1024x1536": "3:4",
+    "1080x1440": "3:4",
+    "1536x1024": "4:3",
+    "1440x1080": "4:3",
+    "1024x1792": "9:16",
+    "1080x1920": "9:16",
+    "1792x1024": "16:9",
+    "1920x1080": "16:9"
+  } as Record<string, string>)[value] || "1:1";
+}
+
+function inlineDataUrl(record: Record<string, unknown>) {
+  const data = record.data;
+  const mime = record.mimeType || record.mime_type;
+  if (typeof data !== "string" || !data) return undefined;
+  if (typeof mime === "string" && mime.startsWith("image/")) {
+    return data.startsWith("data:image/") ? data : `data:${mime};base64,${data}`;
+  }
+  return undefined;
 }
 
 function flattenImageUrls(value: unknown): string[] {
@@ -29,15 +75,19 @@ function flattenImageUrls(value: unknown): string[] {
       return flattenImageUrls(JSON.parse(text));
     } catch {
       const dataUrls = text.match(/data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g) ?? [];
-      const remoteUrls = text.match(/https?:\/\/[^\s"'<>)]*/g)?.filter((url) => /\.(png|jpe?g|webp|gif)(\?|$)/i.test(url) || /image|img|file|cdn|oss|cos|yunwu/i.test(url)) ?? [];
+      const remoteUrls = text.match(/https?:\/\/[^\s"'<>)]*/g)?.filter((url) => /\.(png|jpe?g|webp|gif)(\?|$)/i.test(url) || /image|img|file|cdn|oss|cos|yunwu|openlux/i.test(url)) ?? [];
       return [...dataUrls, ...remoteUrls];
     }
   }
   if (Array.isArray(value)) return value.flatMap(flattenImageUrls);
   if (typeof value === "object") {
     const record = value as Record<string, unknown>;
+    const selfInline = inlineDataUrl(record);
+    if (selfInline) return [selfInline];
     const nestedImageUrl = record.image_url && typeof record.image_url === "object" ? (record.image_url as Record<string, unknown>).url : undefined;
+    const nestedInline = inlineDataUrl((record.inlineData || record.inline_data || {}) as Record<string, unknown>);
     const candidates = [
+      nestedInline,
       record.url,
       record.image_url,
       nestedImageUrl,
@@ -45,7 +95,8 @@ function flattenImageUrls(value: unknown): string[] {
       record.imageUrl,
       record.b64_json ? `data:image/jpeg;base64,${record.b64_json}` : undefined,
       record.base64 ? `data:image/jpeg;base64,${record.base64}` : undefined,
-      record.data,
+      record.candidates,
+      record.parts,
       record.images,
       record.generated_images,
       record.output,
@@ -58,6 +109,21 @@ function flattenImageUrls(value: unknown): string[] {
     return candidates.flatMap(flattenImageUrls);
   }
   return [];
+}
+
+function referenceParts(urls: string[]): GeminiPart[] {
+  return urls.flatMap((url) => {
+    const trimmed = url.trim();
+    if (!trimmed) return [];
+    const dataUrl = trimmed.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/i);
+    if (dataUrl) {
+      return [{ inlineData: { mimeType: dataUrl[1], data: dataUrl[2] } }];
+    }
+    if (/^https?:\/\//i.test(trimmed)) {
+      return [{ fileData: { fileUri: trimmed } }];
+    }
+    return [];
+  });
 }
 
 function mockImages(input: NanoBananaInput) {
@@ -73,35 +139,38 @@ export async function generateWithNanoBanana(input: unknown) {
   const body = asRecord(input);
   if (body.provider?.includes("仅生成提示词")) return mockImages(body);
 
-  const apiKey = process.env.NANO_BANANA_API_KEY || process.env.YUNWU_API_KEY;
+  const apiKey = nanoBananaApiKey();
   if (!apiKey || process.env.IMAGE_MODEL_PROVIDER === "mock") return mockImages(body);
 
   const prompt = body.prompt?.trim() || "";
+  const endpoint = nanoBananaApiUrl();
+  const requestBody = {
+    contents: [{
+      role: "user",
+      parts: [
+        { text: prompt },
+        ...referenceParts(body.sourceImageUrls ?? [])
+      ] satisfies GeminiPart[]
+    }],
+    generationConfig: {
+      responseModalities: ["TEXT", "IMAGE"],
+      imageConfig: { aspectRatio: imageAspectRatio(body.size) }
+    }
+  };
 
-  const requestOne = async () => fetch(YUNWU_CHAT_URL, {
+  const requestOne = async () => fetch(endpoint, {
     method: "POST",
     headers: {
       Accept: "application/json",
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`
     },
-    body: JSON.stringify({
-      model: NANO_BANANA_MODEL,
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: prompt },
-            ...(body.sourceImageUrls ?? []).map((url) => ({ type: "image_url", image_url: { url } }))
-          ]
-        }
-      ]
-    }),
+    body: JSON.stringify(requestBody),
     signal: AbortSignal.timeout(NANO_BANANA_REQUEST_TIMEOUT_MS)
   });
 
   const count = Math.max(1, Math.min(10, Number(body.count) || 1));
-  const results = await Promise.allSettled(Array.from({ length: count }, async (_, index) => {
+  const results = await Promise.allSettled(Array.from({ length: count }, async () => {
     const billing = await reserveMainAppCredits({
       operation: "image-generate",
       providerId: "yunwu",
@@ -114,7 +183,7 @@ export async function generateWithNanoBanana(input: unknown) {
       logImageProviderResponse({
         provider: "Nano Banana 2",
         operation: "generate",
-        endpoint: YUNWU_CHAT_URL,
+        endpoint,
         status: response.status,
         response: data
       });

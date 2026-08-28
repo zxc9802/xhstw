@@ -79,6 +79,27 @@ function useYunwuProvider(t: TestContext) {
   });
 }
 
+function useOpenluxProvider(t: TestContext) {
+  const values = {
+    OPENLUX_API_KEY: "test-openlux-key",
+    OPENLUX_IMAGE_URL: "https://openlux.test/v1/images/generations",
+    OPENLUX_IMAGE_EDIT_URL: "https://openlux.test/v1/images/edits",
+    OPENLUX_IMAGE_MODEL: "gpt-image-2-c"
+  } as const;
+  const keys = Object.keys(values);
+  const previous: Record<string, string | undefined> = Object.fromEntries(
+    keys.map((key) => [key, process.env[key]])
+  );
+  Object.assign(process.env, values);
+  t.after(() => {
+    for (const key of keys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+}
+
 function useNanobananaNewProvider(t: TestContext) {
   const values = {
     IMAGE_AGGREGATION_API_BASE_URL: "https://aggregation.test",
@@ -526,6 +547,43 @@ test("routes nanobanan新 through the aggregation API and cleans temporary refer
 
   const cleaned = await fetchTempAsset(temporaryUrl);
   assert.equal(cleaned.status, 404);
+});
+
+test("routes gpt-image-2-c through OpenLux and keeps local reference data for edits", async (t) => {
+  useOpenluxProvider(t);
+  const previousFetch = globalThis.fetch;
+  let editForm: FormData | undefined;
+  globalThis.fetch = async (url, init) => {
+    if (String(url) === "https://img.test/openlux-edit.jpg") {
+      return new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), {
+        headers: { "Content-Type": "image/jpeg" }
+      });
+    }
+    assert.equal(String(url), "https://openlux.test/v1/images/edits");
+    editForm = init?.body as FormData;
+    return Response.json({ data: [{ url: "https://img.test/openlux-edit.jpg" }] });
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+  });
+
+  const response = await POST(new Request("https://app.test/api/image/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      provider: "gpt-image-2-c",
+      prompt: "只换背景",
+      size: "3:4",
+      sourceImageUrls: ["data:image/png;base64,iVBORw0KGgo="]
+    })
+  }));
+  const created = await response.json();
+  assert.equal(response.status, 202);
+  const job = await waitForJob(created.data.jobId);
+
+  assert.equal(job.status, "completed");
+  assert.equal(editForm?.get("model"), "gpt-image-2-c");
+  assert.equal(editForm?.getAll("image").length, 1);
 });
 
 test("keeps local reference data available to direct Yunwu edits", async (t) => {
