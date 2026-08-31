@@ -1,4 +1,4 @@
-import type { ContentDraft, StoredContentManifest, UploadIntentObject } from "./contracts";
+import { canonicalImageContentType, type ContentDraft, type StoredContentManifest, type UploadIntentObject } from "./contracts";
 
 type Fetcher = typeof fetch;
 type UploadPlan = {
@@ -21,7 +21,7 @@ export async function saveContentDraft(
   const intent = await apiData<UploadPlan>(await fetcher("/api/content-storage/upload-intents", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ images: images.map((image) => ({ contentType: image.type, size: image.size })) })
+    body: JSON.stringify({ images: images.map((image) => ({ contentType: canonicalImageContentType(image.type) || image.type, size: image.size })) })
   }));
   if (intent.uploads.length !== images.length) throw new Error("上传地址数量不一致");
   for (const [index, upload] of intent.uploads.entries()) {
@@ -51,7 +51,7 @@ export async function replaceContentDraft(
   const intent = await apiData<UploadPlan>(await fetcher(`${itemUrl}/upload-intents`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ images: images.map((image) => ({ contentType: image.type, size: image.size })) })
+    body: JSON.stringify({ images: images.map((image) => ({ contentType: canonicalImageContentType(image.type) || image.type, size: image.size })) })
   }));
   if (intent.contentId !== contentId || intent.uploads.length !== images.length) throw new Error("上传地址数量不一致");
   for (const [index, upload] of intent.uploads.entries()) {

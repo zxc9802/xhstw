@@ -155,8 +155,16 @@ async function imageUrlToBlob(url: string) {
   return response.blob();
 }
 
+function canonicalBrowserImageType(type: string) {
+  const raw = type.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  return raw === "image/jpg" ? "image/jpeg" : raw;
+}
+
 async function normalizeCosImageBlob(blob: Blob) {
-  if (["image/jpeg", "image/png", "image/webp", "image/gif", "image/avif"].includes(blob.type)) return blob;
+  const contentType = canonicalBrowserImageType(blob.type);
+  if (["image/jpeg", "image/png", "image/webp", "image/gif", "image/avif"].includes(contentType)) {
+    return contentType === blob.type ? blob : new Blob([await blob.arrayBuffer()], { type: contentType });
+  }
   const bitmap = await createImageBitmap(blob);
   try {
     const canvas = document.createElement("canvas");
@@ -1840,6 +1848,11 @@ export default function ContentPage() {
   };
 
   const confirmSaveFinishedImage = async () => {
+    const missingImages = selectedBatchDrafts.some((_, workIndex) => !(finishedImageAssignments[workIndex] ?? []).length);
+    if (missingImages) {
+      const confirmed = window.confirm("有作品还没有选择图片。继续保存将只写入文字，内容库会显示“暂无真实图片”。确定继续？");
+      if (!confirmed) return;
+    }
     setFinishedSaving(true);
     try {
       await saveFinishedImages("需复查");

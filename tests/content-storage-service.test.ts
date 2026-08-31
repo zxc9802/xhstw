@@ -107,6 +107,21 @@ test("commits selected images and lists them only for the authenticated member",
   assert.equal((await getContentMedia("member-a", intent.contentId, intent.uploads[0].fileId, gateway))?.contentType, "image/png");
 });
 
+test("commits when COS HeadObject returns a charset-suffixed content type", async () => {
+  const gateway = new MemoryGateway();
+  const intent = await createUploadIntent("member-a", [{ contentType: "image/png", size: 4 }], gateway, {
+    now: new Date("2026-08-21T06:00:00.000Z"),
+    ids: ["11111111-2222-4333-8444-555555555555", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"]
+  });
+  gateway.objects.set(intent.uploads[0].key, {
+    bytes: new Uint8Array(4),
+    contentType: "image/png; charset=utf-8"
+  });
+
+  const saved = await commitContent("member-a", intent.contentId, draft, intent.uploads, gateway);
+  assert.equal(saved.media[0]?.storage, "cos");
+});
+
 test("does not write a manifest when an uploaded image is missing or mismatched", async () => {
   const gateway = new MemoryGateway();
   const intent = await createUploadIntent("member-a", [{ contentType: "image/webp", size: 5 }], gateway, {

@@ -13,7 +13,9 @@ import {
   type StoredContentManifest,
   type UploadIntent,
   type UploadIntentObject,
+  canonicalImageContentType,
   createContentId,
+  imageMetaMatches,
   imageObjectKey,
   manifestObjectKey,
   mediaFileId,
@@ -75,6 +77,18 @@ test('accepts valid image descriptors', () => {
     { contentType: 'image/jpeg', size: 1024 },
     { contentType: 'image/avif', size: 2048 },
   ]);
+});
+
+test('normalizes COS and browser content types before validating descriptors', () => {
+  assert.equal(canonicalImageContentType('image/png; charset=utf-8'), 'image/png');
+  assert.equal(canonicalImageContentType('image/jpg'), 'image/jpeg');
+  assert.deepEqual(parseImageDescriptors([{ contentType: 'image/png; charset=utf-8', size: 8 }]), [
+    { contentType: 'image/png', size: 8 }
+  ]);
+  assert.equal(imageMetaMatches(
+    { contentType: 'image/png; charset=utf-8', size: 8 },
+    { contentType: 'image/png', size: 8 }
+  ), true);
 });
 
 test('exposes the exact manifest, draft, and upload intent contracts', () => {

@@ -3,6 +3,7 @@ import {
   createContentId,
   imageObjectKey,
   manifestObjectKey,
+  imageMetaMatches,
   mediaFileId,
   parseImageDescriptors,
   userContentsPrefix,
@@ -89,7 +90,7 @@ async function uploadedMedia(
     if (file.key !== key) throw new Error("图片对象路径无效");
     const head = await gateway.headObject(key);
     if (!head) throw new Error(`第 ${index + 1} 张图片尚未上传`);
-    if (head.contentType !== file.contentType || head.size !== file.size) {
+    if (!imageMetaMatches(head, file)) {
       throw new Error(`第 ${index + 1} 张图片信息不一致`);
     }
     media.push({ storage: "cos", fileId: file.fileId, key, contentType: file.contentType, size: file.size });

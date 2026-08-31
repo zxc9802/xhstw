@@ -26,21 +26,28 @@ export function readCosConfig() {
   };
 }
 
+export function tencentCosS3ClientOptions(config: ReturnType<typeof readCosConfig>) {
+  return {
+    region: config.region,
+    endpoint: config.endpoint,
+    forcePathStyle: false,
+    // Tencent COS rejects AWS SDK v3 default flexible checksums (CRC32).
+    requestChecksumCalculation: "WHEN_REQUIRED" as const,
+    responseChecksumValidation: "WHEN_REQUIRED" as const,
+    credentials: {
+      accessKeyId: config.accessKeyId,
+      secretAccessKey: config.secretAccessKey
+    }
+  };
+}
+
 function isNotFound(error: unknown) {
   return (error as { $metadata?: { httpStatusCode?: number } })?.$metadata?.httpStatusCode === 404;
 }
 
 export class TencentCosGateway implements ContentStorageGateway {
   private readonly config = readCosConfig();
-  private readonly client = new S3Client({
-    region: this.config.region,
-    endpoint: this.config.endpoint,
-    forcePathStyle: false,
-    credentials: {
-      accessKeyId: this.config.accessKeyId,
-      secretAccessKey: this.config.secretAccessKey
-    }
-  });
+  private readonly client = new S3Client(tencentCosS3ClientOptions(this.config));
 
   async headObject(key: string) {
     try {

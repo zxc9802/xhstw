@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 import {
   CONTENT_IMAGE_MAX_BYTES,
   CONTENT_IMAGE_TYPES,
+  canonicalImageContentType,
   imageObjectKey,
   parseImageDescriptors
 } from "@/lib/content-storage/contracts";
@@ -59,8 +60,8 @@ export async function PUT(
       contentId,
       fileId
     );
-    const contentType = request.headers.get("Content-Type")?.split(";", 1)[0]?.trim() ?? "";
-    if (contentType !== descriptor.contentType) throw new Error("图片信息不一致");
+    const contentType = canonicalImageContentType(request.headers.get("Content-Type") ?? "");
+    if (contentType !== canonicalImageContentType(descriptor.contentType)) throw new Error("图片信息不一致");
     const bytes = await readImageBytes(request, descriptor.size);
     parseImageDescriptors([{ contentType, size: bytes.byteLength }]);
     if (bytes.byteLength !== descriptor.size) throw new Error("图片信息不一致");

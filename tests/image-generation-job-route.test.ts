@@ -224,9 +224,9 @@ test("keeps the job processing until provider images are cached locally", async 
   );
 
   assert.equal(completed.status, "completed");
-  assert.match(imageUrl, /^https:\/\/app\.test\/api\/image\/result\/[0-9a-f-]{36}$/);
-  const token = new URL(imageUrl).pathname.split("/").pop() || "";
-  const imageResponse = await GET_RESULT(new Request(imageUrl), {
+  assert.match(imageUrl, /^\/api\/image\/result\/[0-9a-f-]{36}$/);
+  const token = imageUrl.split("/").pop() || "";
+  const imageResponse = await GET_RESULT(new Request(`https://app.test${imageUrl}`), {
     params: Promise.resolve({ token })
   });
   assert.equal(imageResponse.status, 200);
@@ -473,7 +473,7 @@ test("publishes local Image 2.0 references and preserves public URLs in resource
   assert.equal(job.status, "completed");
   assert.match(
     String(((job.result as { images?: Array<{ url?: unknown }> })?.images?.[0]?.url) || ""),
-    /^https:\/\/xhstw\.qycm\.top\/api\/image\/result\/[0-9a-f-]{36}$/
+    /^\/api\/image\/result\/[0-9a-f-]{36}$/
   );
   assert.match(requestBody!.payload.resources[0], TEMP_ASSET_URL);
   assert.match(requestBody!.payload.resources[0], /^https:\/\/xhstw\.qycm\.top\//);

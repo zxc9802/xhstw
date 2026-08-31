@@ -90,6 +90,11 @@ test("image-plan pages are generated one at a time", () => {
   assert.equal(source.includes("正在依次生成"), true);
 });
 
+test("asks before saving finished works that have no selected images", () => {
+  assert.equal(source.includes("有作品还没有选择图片"), true);
+  assert.equal(source.includes("暂无真实图片"), true);
+});
+
 test("finished preview starts empty and supports manual upload and ordering", () => {
   assert.equal(source.includes("setFinishedImageAssignments({})"), true);
   assert.equal(source.includes("buildDefaultImageAssignments"), false);

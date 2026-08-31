@@ -146,17 +146,31 @@ export function imageObjectKey(ownerId: string, contentId: string, fileId: strin
   return `${userContentsPrefix(ownerId)}${contentId}/images/${fileId}`;
 }
 
+export function canonicalImageContentType(value: string): string {
+  const raw = value.split(';', 1)[0]?.trim().toLowerCase() ?? '';
+  return raw === 'image/jpg' ? 'image/jpeg' : raw;
+}
+
+export function imageMetaMatches(
+  head: { contentType: string; size: number },
+  file: { contentType: string; size: number }
+) {
+  return canonicalImageContentType(head.contentType) === canonicalImageContentType(file.contentType)
+    && head.size === file.size;
+}
+
 export function parseImageDescriptors(value: unknown): ImageDescriptor[] {
   if (!Array.isArray(value)) throw new Error('图片列表无效');
   if (value.length > CONTENT_IMAGE_MAX_COUNT) throw new Error('最多 20 张');
   let total = 0;
   const descriptors = value.map((item) => {
     const descriptor = item as Partial<ImageDescriptor>;
-    if (!CONTENT_IMAGE_TYPES.has(descriptor.contentType ?? '')) throw new Error('不支持的图片类型');
+    const contentType = canonicalImageContentType(descriptor.contentType ?? '');
+    if (!CONTENT_IMAGE_TYPES.has(contentType)) throw new Error('不支持的图片类型');
     if (!Number.isInteger(descriptor.size) || (descriptor.size as number) <= 0) throw new Error('图片大小无效');
     if ((descriptor.size as number) > CONTENT_IMAGE_MAX_BYTES) throw new Error('单张图片不能超过 20 MB');
     total += descriptor.size as number;
-    return { contentType: descriptor.contentType as string, size: descriptor.size as number };
+    return { contentType, size: descriptor.size as number };
   });
   if (total > CONTENT_IMAGE_TOTAL_MAX_BYTES) throw new Error('图片总大小不能超过 100 MB');
   return descriptors;

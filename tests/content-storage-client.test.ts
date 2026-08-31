@@ -10,6 +10,35 @@ const draft: ContentDraft = {
   lowFlowRisk: "低", checkAdvice: [], reviewNotes: [], externalVideoUrls: []
 };
 
+test("canonicalizes charset-suffixed blob types before requesting upload intents", async () => {
+  let intentBody = "";
+  const fetcher = async (input: RequestInfo | URL, init: RequestInit = {}) => {
+    const url = String(input);
+    if (url === "/api/content-storage/upload-intents") {
+      intentBody = String(init.body);
+      return Response.json({ ok: true, data: {
+        contentId: "20260821T060000000Z-111111111111",
+        uploads: [{
+          fileId: "001-aaaaaaaaaaaa.png",
+          key: "key",
+          contentType: "image/png",
+          size: 4,
+          uploadUrl: "https://cos.test/upload"
+        }]
+      } });
+    }
+    if (url === "https://cos.test/upload") return new Response(null, { status: 200 });
+    if (url.endsWith("/commit")) return Response.json({ ok: true, data: { id: "saved" } });
+    throw new Error(`unexpected ${url}`);
+  };
+
+  await saveContentDraft(draft, [new Blob([new Uint8Array(4)], { type: "image/png; charset=utf-8" })], {
+    fetcher: fetcher as typeof fetch
+  });
+  assert.match(intentBody, /"contentType":"image\/png"/);
+  assert.equal(intentBody.includes("charset"), false);
+});
+
 test("requests PUT URLs, uploads image bytes, then commits the manifest", async () => {
   const calls: Array<{ url: string; method: string; body: unknown }> = [];
   const fetcher = async (input: RequestInfo | URL, init: RequestInit = {}) => {

@@ -50,6 +50,8 @@ test("callback and middleware keep ticket exchange server-side", async () => {
   assert.match(middleware, /api\/sso\/callback/);
   assert.match(middleware, /isMainAppSsoDisabled/);
   assert.match(middleware, /api\/library2/);
+  assert.match(middleware, /api\/content-storage/);
+  assert.match(middleware, /api\/image\/result/);
 });
 
 test("offline mode supplies a local session without an SSO cookie", async () => {

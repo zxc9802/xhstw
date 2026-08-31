@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readCosConfig } from "../lib/content-storage/cos";
+import { readCosConfig, tencentCosS3ClientOptions } from "../lib/content-storage/cos";
 
 test("builds the Tencent COS S3-compatible endpoint from environment variables", () => {
   const previous = { ...process.env };
@@ -9,13 +9,17 @@ test("builds the Tencent COS S3-compatible endpoint from environment variables",
   process.env.TENCENT_COS_SECRET_ID = "secret-id";
   process.env.TENCENT_COS_SECRET_KEY = "secret-key";
   try {
-    assert.deepEqual(readCosConfig(), {
+    const config = readCosConfig();
+    assert.deepEqual(config, {
       bucket: "xshcp-1410143389",
       region: "ap-singapore",
       endpoint: "https://cos.ap-singapore.myqcloud.com",
       accessKeyId: "secret-id",
       secretAccessKey: "secret-key"
     });
+    const clientOptions = tencentCosS3ClientOptions(config);
+    assert.equal(clientOptions.requestChecksumCalculation, "WHEN_REQUIRED");
+    assert.equal(clientOptions.responseChecksumValidation, "WHEN_REQUIRED");
   } finally {
     process.env = previous;
   }

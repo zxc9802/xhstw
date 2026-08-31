@@ -15,8 +15,10 @@ export async function middleware(request: NextRequest) {
     isMainAppSsoDisabled()
     || pathname === "/api/sso/callback"
     || pathname.startsWith("/api/image/reference/")
+    || pathname.startsWith("/api/image/result/")
     || pathname.startsWith("/temp-assets/")
     || pathname.startsWith("/api/library2")
+    || pathname.startsWith("/api/content-storage")
   ) {
     return NextResponse.next();
   }

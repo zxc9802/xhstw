@@ -39,8 +39,9 @@ function normalizedResultOrigin(origin: string) {
 }
 
 function imageContentType(response: Response, source: string) {
-  const header = response.headers.get("Content-Type") || "";
-  if (/^image\//i.test(header)) return header;
+  const header = (response.headers.get("Content-Type") || "").split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  const normalized = header === "image/jpg" ? "image/jpeg" : header;
+  if (normalized.startsWith("image/")) return normalized;
   const extension = new URL(source).pathname.toLowerCase().match(/\.(avif|gif|jpe?g|png|webp)$/)?.[1];
   if (!extension) return undefined;
   return ({
@@ -136,7 +137,7 @@ export async function cacheImageGenerationResult(result: unknown, origin: string
   });
   if (!remoteImages.length) return result;
 
-  const publicOrigin = normalizedResultOrigin(origin);
+  normalizedResultOrigin(origin);
   const downloadResults = await settleWithConcurrency(
     remoteImages.map(({ index, url }) => async () => ({
       index,
@@ -177,7 +178,7 @@ export async function cacheImageGenerationResult(result: unknown, origin: string
       contentType: image.contentType,
       expiresAt: now + IMAGE_GENERATION_RESULT_TTL_MS
     });
-    replacements.set(image.index, new URL(`/api/image/result/${token}`, publicOrigin).toString());
+    replacements.set(image.index, `/api/image/result/${token}`);
   }
 
   const previousWarnings = Array.isArray(record.warnings)
