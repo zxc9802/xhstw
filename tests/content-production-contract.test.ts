@@ -22,6 +22,14 @@ test("all image provider selectors expose gpt-image-2-c", () => {
   );
 });
 
+test("all image provider selectors expose gpt-image2-vip", () => {
+  assert.equal(imageTypeSource.includes('"gpt-image2-vip"'), true);
+  assert.match(
+    source,
+    /const imageProviders: ImageProvider\[\] = \[[^\]]*"gpt-image2-vip"/
+  );
+});
+
 test("persists only the unrelated keyword library, not generated drafts", () => {
   assert.equal(source.includes("content-production-studio.keyword-library"), true);
   assert.equal(source.includes("content-production-studio.image-draft"), false);
