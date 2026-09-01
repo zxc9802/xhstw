@@ -23,6 +23,17 @@ test("prompt library dialog provides search and complete local CRUD controls", (
   assert.equal(promptLibraryDialogSource.includes("删除"), true);
 });
 
+test("every image P page can open and use the shared browser prompt library", () => {
+  assert.equal(source.includes("content-production-studio.prompt-library"), true);
+  assert.equal(source.includes("sanitizePromptLibraryItems"), true);
+  assert.equal(source.includes("<PromptLibraryDialog"), true);
+  assert.equal(source.includes("setPromptLibraryTargetPage(item.page)"), true);
+  assert.equal(source.includes("提示词库"), true);
+  assert.equal(source.includes("if (currentPrompt.trim() && !window.confirm"), true);
+  assert.equal(source.includes("[targetPage]: item.content"), true);
+  assert.equal(source.includes("提示词库无法写入浏览器本地存储"), true);
+});
+
 test("all image provider selectors expose nanobanan新", () => {
   assert.equal(imageTypeSource.includes('"nanobanan新"'), true);
   assert.match(

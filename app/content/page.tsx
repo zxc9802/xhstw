@@ -2,6 +2,7 @@
 
 import { type DragEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { FileText, FolderOpen, ImagePlus, Link2, Sparkles, Trash2, UploadCloud } from "lucide-react";
+import { PromptLibraryDialog } from "@/components/content/PromptLibraryDialog";
 import { Button } from "@/components/ui/Button";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { DataTable } from "@/components/ui/DataTable";
@@ -13,6 +14,7 @@ import { cn } from "@/lib/utils/cn";
 import { imageRefToUploadUrl, isStoredImageRef, persistImageFile, persistImageRefs, resolveImageRef } from "@/lib/utils/image-store";
 import { appendMaterialLibrary, createLibraryAsset, getAssetBlob, readMaterialLibrary, type LibraryAsset } from "@/lib/utils/material-library";
 import { loadVersionedState, saveVersionedState } from "@/lib/utils/local-state";
+import { sanitizePromptLibraryItems, type PromptLibraryItem } from "@/lib/utils/prompt-library";
 import { formatProductCopyContext, readProductLibrary, type ProductLibraryItem } from "@/lib/utils/product-library";
 import { getLibrary2Item } from "@/lib/content-library-2/client";
 import { library2PrefillPayload } from "@/lib/content-library-2/generation";
@@ -37,6 +39,7 @@ const videoProviders: VideoProvider[] = ["Seedance 2.0", "仅生成分镜提示�
 const actionLinkClass = "inline-flex h-9 cursor-pointer items-center justify-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink transition hover:border-orange-200 hover:bg-orange-50";
 const REFERENCE_HISTORY_STORAGE_KEY = "content-production-studio-xhs.reference-history";
 const KEYWORD_LIBRARY_STORAGE_KEY = "content-production-studio.keyword-library";
+const PROMPT_LIBRARY_STORAGE_KEY = "content-production-studio.prompt-library";
 const LOCAL_STATE_VERSION = 1;
 const defaultImagePlan: ImagePlanItem = { ...imagePlans[0], status: "pending" };
 const keywordLibrary = [
@@ -551,6 +554,9 @@ export default function ContentPage() {
   const [selectedMaterialUrls, setSelectedMaterialUrls] = useState<string[]>([]);
   const [planSourceMap, setPlanSourceMap] = useState<Record<number, ImageSourceAsset[]>>({});
   const [planPromptMap, setPlanPromptMap] = useState<Record<number, string>>({});
+  const [promptLibraryItems, setPromptLibraryItems] = useState<PromptLibraryItem[]>([]);
+  const [promptLibraryHydrated, setPromptLibraryHydrated] = useState(false);
+  const [promptLibraryTargetPage, setPromptLibraryTargetPage] = useState<number | null>(null);
   const [planSizeMap, setPlanSizeMap] = useState<Record<number, string>>({});
   const [planCountMap, setPlanCountMap] = useState<Record<number, string>>({});
   const [planProviderMap, setPlanProviderMap] = useState<Record<number, ImageProvider>>({});
@@ -583,6 +589,14 @@ export default function ContentPage() {
     setCustomKeywords(keywordState.customKeywords);
     setHiddenKeywords(keywordState.hiddenKeywords);
     setKeywordLibraryHydrated(true);
+    const storedPromptLibrary = loadVersionedState<unknown>(
+      window.localStorage,
+      PROMPT_LIBRARY_STORAGE_KEY,
+      LOCAL_STATE_VERSION,
+      []
+    );
+    setPromptLibraryItems(sanitizePromptLibraryItems(storedPromptLibrary));
+    setPromptLibraryHydrated(true);
   }, []);
 
   useEffect(() => {
@@ -592,6 +606,13 @@ export default function ContentPage() {
       hiddenKeywords
     })) setFeedback("关键词库无法写入浏览器本地存储，请检查浏览器存储空间或隐私设置。");
   }, [customKeywords, hiddenKeywords, keywordLibraryHydrated]);
+
+  useEffect(() => {
+    if (!promptLibraryHydrated) return;
+    if (!saveVersionedState(window.localStorage, PROMPT_LIBRARY_STORAGE_KEY, LOCAL_STATE_VERSION, promptLibraryItems)) {
+      setFeedback("提示词库无法写入浏览器本地存储，请检查浏览器存储空间或隐私设置。");
+    }
+  }, [promptLibraryHydrated, promptLibraryItems]);
 
   const [selectedVideoTitle, setSelectedVideoTitle] = useState("夏天通勤补防晒，喷雾到底怎么用才不花妆");
   const [videoCoverCopy, setVideoCoverCopy] = useState(videoExtraction.coverCopy);
@@ -1666,6 +1687,15 @@ export default function ContentPage() {
     });
   };
 
+  const usePromptLibraryItem = (item: PromptLibraryItem) => {
+    const targetPage = promptLibraryTargetPage;
+    if (targetPage === null) return;
+    const currentPrompt = planPromptMap[targetPage] ?? "";
+    if (currentPrompt.trim() && !window.confirm(`P${targetPage} 当前已有提示词，确认替换吗？`)) return;
+    setPlanPromptMap((prompts) => ({ ...prompts, [targetPage]: item.content }));
+    setPromptLibraryTargetPage(null);
+  };
+
   const toggleLocalSaveSelection = (imageUrl: string) => {
     setLocalSaveSelectedUrls((items) => items.includes(imageUrl) ? items.filter((url) => url !== imageUrl) : [...items, imageUrl]);
   };
@@ -2312,7 +2342,13 @@ export default function ContentPage() {
                             )}
                           </div>
                           <div className="space-y-3">
-                            <label className="block text-sm font-medium text-ink">提示词<textarea value={planPromptMap[item.page] ?? ""} onChange={(event) => setPlanPromptMap((items) => ({ ...items, [item.page]: event.target.value }))} className="mt-2 min-h-24 w-full rounded-md border border-line px-3 py-2 text-sm leading-6 outline-none focus:border-orange-300" /></label>
+                            <div>
+                              <div className="flex items-center justify-between gap-3">
+                                <label htmlFor={`image-plan-prompt-${item.page}`} className="text-sm font-medium text-ink">提示词</label>
+                                <Button type="button" className="h-7 px-2.5 text-xs" onClick={() => setPromptLibraryTargetPage(item.page)}>提示词库</Button>
+                              </div>
+                              <textarea id={`image-plan-prompt-${item.page}`} value={planPromptMap[item.page] ?? ""} onChange={(event) => setPlanPromptMap((items) => ({ ...items, [item.page]: event.target.value }))} className="mt-2 min-h-24 w-full rounded-md border border-line px-3 py-2 text-sm leading-6 outline-none focus:border-orange-300" />
+                            </div>
                             <div className="grid gap-3 md:grid-cols-3">
                               <label className="block text-sm font-medium text-ink">生成张数<select value={planCountMap[item.page] ?? "1"} onChange={(event) => setPlanCountMap((items) => ({ ...items, [item.page]: event.target.value }))} className="mt-2 h-10 w-full rounded-md border border-line px-3 text-sm text-muted outline-none">{Array.from({ length: 10 }, (_, countIndex) => <option key={countIndex + 1}>{countIndex + 1}</option>)}</select></label>
                               <label className="block text-sm font-medium text-ink">图片比例<select value={planSizeMap[item.page] ?? "3:4"} onChange={(event) => setPlanSizeMap((items) => ({ ...items, [item.page]: event.target.value }))} className="mt-2 h-10 w-full rounded-md border border-line px-3 text-sm text-muted outline-none"><option>3:4</option><option>9:16</option><option>1:1</option><option>4:3</option><option>16:9</option></select></label>
@@ -2843,6 +2879,15 @@ export default function ContentPage() {
           </div>
         </div>
       ) : null}
+
+      <PromptLibraryDialog
+        open={promptLibraryTargetPage !== null}
+        targetPage={promptLibraryTargetPage}
+        items={promptLibraryItems}
+        onClose={() => setPromptLibraryTargetPage(null)}
+        onItemsChange={setPromptLibraryItems}
+        onUse={usePromptLibraryItem}
+      />
 
       {videoFinishedPreviewOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
