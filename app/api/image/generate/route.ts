@@ -2,6 +2,7 @@ import { generateImage } from "@/lib/adapters/openai-image";
 import { generateWithNanoBanana } from "@/lib/adapters/nano-banana";
 import { generateWithNanobananaNew } from "@/lib/adapters/nanobanana-new";
 import { generateWithOpenlux, isOpenluxImageProvider } from "@/lib/adapters/openlux-image";
+import { generateWithApiyi, isApiyiImageProvider } from "@/lib/adapters/apiyi-image";
 import { createImageGenerationJob, runImageGenerationJob } from "@/lib/adapters/image-generation-job-store";
 import { cacheImageGenerationResult } from "@/lib/adapters/image-generation-result-store";
 import {
@@ -39,6 +40,7 @@ function usesImage2References(provider: string) {
   return !provider.includes("Nano")
     && !provider.includes("仅生成提示词")
     && !isOpenluxImageProvider(provider)
+    && !isApiyiImageProvider(provider)
     && process.env.IMAGE_MODEL_PROVIDER !== "nano-banana"
     && process.env.IMAGE_MODEL_PROVIDER !== "mock"
     && process.env.IMAGE_MODEL_PROVIDER !== "yunwu";
@@ -67,17 +69,17 @@ function isPrivateReferenceHost(hostname: string) {
   return first === 10 || first === 127 || first === 0 || (first === 169 && second === 254) || (first === 172 && second >= 16 && second <= 31) || (first === 192 && second === 168);
 }
 
-function validateYunwuReferenceUrls(urls: string[]) {
+function validateDirectReferenceUrls(urls: string[], providerLabel: string) {
   urls.forEach((source) => {
     if (source.startsWith("data:image/")) return;
     try {
       const url = new URL(source);
       if (url.protocol !== "https:" || isPrivateReferenceHost(url.hostname)) {
-        throw new ImageReferenceInputError("Yunwu 参考图仅支持公开 HTTPS 图片地址或本地图片数据。", 400);
+        throw new ImageReferenceInputError(`${providerLabel} 参考图仅支持公开 HTTPS 图片地址或本地图片数据。`, 400);
       }
     } catch (error) {
       if (error instanceof ImageReferenceInputError) throw error;
-      throw new ImageReferenceInputError("Yunwu 参考图地址无效。", 400);
+      throw new ImageReferenceInputError(`${providerLabel} 参考图地址无效。`, 400);
     }
   });
 }
@@ -90,9 +92,16 @@ export async function POST(request: Request) {
 
   try {
     const directYunwu = process.env.IMAGE_MODEL_PROVIDER === "yunwu";
-    if (usesImage2References(provider) || directYunwu || isOpenluxImageProvider(provider)) {
+    const directProviderLabel = directYunwu
+      ? "Yunwu"
+      : isOpenluxImageProvider(provider)
+        ? "gpt-image-2-c"
+        : isApiyiImageProvider(provider)
+          ? "gpt-image2-vip"
+          : "";
+    if (usesImage2References(provider) || directProviderLabel) {
       const sourceImageUrls = imageSourceUrls(body);
-      if (directYunwu || isOpenluxImageProvider(provider)) validateYunwuReferenceUrls(sourceImageUrls);
+      if (directProviderLabel) validateDirectReferenceUrls(sourceImageUrls, directProviderLabel);
       if (usesImage2References(provider) && sourceImageUrls.length) {
         const published = publishImageReferences(sourceImageUrls, publicRequestOrigin(request));
         referenceTokens = published.tokens;
@@ -120,11 +129,13 @@ export async function POST(request: Request) {
     try {
       const generated = isNanobananaNew(provider)
         ? await generateWithNanobananaNew(jobBody)
-        : isOpenluxImageProvider(provider)
-          ? await generateWithOpenlux(jobBody)
-        : provider.includes("Nano") || process.env.IMAGE_MODEL_PROVIDER === "nano-banana"
-          ? await generateWithNanoBanana(jobBody)
-          : await generateImage(jobBody);
+        : isApiyiImageProvider(provider)
+          ? await generateWithApiyi(jobBody)
+          : isOpenluxImageProvider(provider)
+            ? await generateWithOpenlux(jobBody)
+            : provider.includes("Nano") || process.env.IMAGE_MODEL_PROVIDER === "nano-banana"
+              ? await generateWithNanoBanana(jobBody)
+              : await generateImage(jobBody);
       const result = await cacheImageGenerationResult(generated, resultOrigin);
       const imageCount = result && typeof result === "object" && "images" in result && Array.isArray((result as { images?: unknown }).images) ? (result as { images: unknown[] }).images.length : 0;
       console.log(`[image/generate] job=${job.id} provider=${provider || "default"} images=${imageCount}`);

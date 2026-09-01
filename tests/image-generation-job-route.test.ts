@@ -100,6 +100,27 @@ function useOpenluxProvider(t: TestContext) {
   });
 }
 
+function useApiyiProvider(t: TestContext) {
+  const values = {
+    APIYI_IMAGE_API_KEY: "test-apiyi-key",
+    APIYI_IMAGE_URL: "https://apiyi.test/v1/images/generations",
+    APIYI_IMAGE_EDIT_URL: "https://apiyi.test/v1/images/edits",
+    APIYI_IMAGE_MODEL: "gpt-image-2-vip"
+  } as const;
+  const keys = Object.keys(values);
+  const previous: Record<string, string | undefined> = Object.fromEntries(
+    keys.map((key) => [key, process.env[key]])
+  );
+  Object.assign(process.env, values);
+  t.after(() => {
+    for (const key of keys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+}
+
 function useNanobananaNewProvider(t: TestContext) {
   const values = {
     IMAGE_AGGREGATION_API_BASE_URL: "https://aggregation.test",
@@ -584,6 +605,53 @@ test("routes gpt-image-2-c through OpenLux and keeps local reference data for ed
   assert.equal(job.status, "completed");
   assert.equal(editForm?.get("model"), "gpt-image-2-c");
   assert.equal(editForm?.getAll("image").length, 1);
+});
+
+test("routes gpt-image2-vip through APIYI and keeps local references for edits", async (t) => {
+  useApiyiProvider(t);
+  const previousFetch = globalThis.fetch;
+  let editForm: FormData | undefined;
+  globalThis.fetch = async (url, init) => {
+    assert.equal(String(url), "https://apiyi.test/v1/images/edits");
+    editForm = init?.body as FormData;
+    return Response.json({ data: [{ b64_json: "YWJj" }] });
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+  });
+
+  const response = await POST(new Request("https://app.test/api/image/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      provider: "gpt-image2-vip",
+      prompt: "只换背景",
+      size: "3:4",
+      sourceImageUrls: ["data:image/png;base64,iVBORw0KGgo="]
+    })
+  }));
+  const created = await response.json();
+  assert.equal(response.status, 202);
+  const job = await waitForJob(created.data.jobId);
+  assert.equal(job.status, "completed");
+  assert.equal(editForm?.get("model"), "gpt-image-2-vip");
+  assert.equal(editForm?.getAll("image").length, 1);
+});
+
+test("rejects private remote references before APIYI edits", async (t) => {
+  useApiyiProvider(t);
+  const response = await POST(new Request("http://localhost/api/image/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      provider: "gpt-image2-vip",
+      prompt: "只换背景",
+      sourceImageUrls: ["http://127.0.0.1/internal-image.png"]
+    })
+  }));
+  const payload = await response.json();
+  assert.equal(response.status, 400);
+  assert.match(payload.message, /gpt-image2-vip 参考图仅支持公开 HTTPS/);
 });
 
 test("keeps local reference data available to direct Yunwu edits", async (t) => {
