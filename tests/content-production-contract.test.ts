@@ -1,11 +1,27 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 const source = readFileSync("app/content/page.tsx", "utf8");
 const imageStoreSource = readFileSync("lib/utils/image-store.ts", "utf8");
 const imageTypeSource = readFileSync("types/image.ts", "utf8");
 const envExampleSource = readFileSync(".env.example", "utf8");
+const promptLibraryDialogPath = "components/content/PromptLibraryDialog.tsx";
+const promptLibraryDialogSource = existsSync(promptLibraryDialogPath)
+  ? readFileSync(promptLibraryDialogPath, "utf8")
+  : "";
+
+test("prompt library dialog provides search and complete local CRUD controls", () => {
+  assert.equal(promptLibraryDialogSource.includes("提示词库 · 填入 P"), true);
+  assert.equal(promptLibraryDialogSource.includes("搜索名称或提示词内容"), true);
+  assert.equal(promptLibraryDialogSource.includes("名称（选填）"), true);
+  assert.equal(promptLibraryDialogSource.includes("提示词内容"), true);
+  assert.equal(promptLibraryDialogSource.includes("未命名提示词"), true);
+  assert.equal(promptLibraryDialogSource.includes("window.confirm"), true);
+  assert.equal(promptLibraryDialogSource.includes("使用"), true);
+  assert.equal(promptLibraryDialogSource.includes("编辑"), true);
+  assert.equal(promptLibraryDialogSource.includes("删除"), true);
+});
 
 test("all image provider selectors expose nanobanan新", () => {
   assert.equal(imageTypeSource.includes('"nanobanan新"'), true);
