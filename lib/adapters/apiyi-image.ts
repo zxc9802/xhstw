@@ -136,6 +136,40 @@ function assertApiyiResponse(response: Response, data: unknown, operation: "gene
   }
 }
 
+function parseDataUrl(url: string) {
+  const match = url.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+  if (!match) return null;
+  const mime = match[1];
+  const ext = mime.split("/")[1]?.replace("jpeg", "jpg") || "png";
+  return { mime, ext, buffer: Buffer.from(match[2], "base64") };
+}
+
+async function imageUrlToBlob(url: string, index: number) {
+  const parsed = parseDataUrl(url);
+  if (parsed) {
+    return {
+      blob: new Blob([parsed.buffer], { type: parsed.mime }),
+      fileName: `reference-${index + 1}.${parsed.ext}`
+    };
+  }
+
+  const response = await fetch(url, {
+    cache: "no-store",
+    redirect: "follow",
+    signal: AbortSignal.timeout(APIYI_IMAGE_TIMEOUT_MS)
+  });
+  if (!response.ok) throw new Error(`参考图下载失败：HTTP ${response.status}`);
+  const contentType = (response.headers.get("Content-Type") || "image/jpeg").split(";", 1)[0];
+  if (!/^image\/(?:jpeg|png|webp)$/i.test(contentType)) {
+    throw new Error("参考图下载失败：响应不是支持的图片格式。");
+  }
+  const ext = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
+  return {
+    blob: new Blob([await response.arrayBuffer()], { type: contentType }),
+    fileName: `reference-${index + 1}.${ext}`
+  };
+}
+
 async function requestGeneration(config: ApiyiConfig, prompt: string, size: string) {
   const response = await fetch(config.generationUrl, {
     method: "POST",
@@ -154,6 +188,29 @@ async function requestGeneration(config: ApiyiConfig, prompt: string, size: stri
   });
   const data = await response.json().catch(() => ({}));
   assertApiyiResponse(response, data, "generate", config.generationUrl);
+  return data;
+}
+
+async function requestEdit(config: ApiyiConfig, prompt: string, size: string, sourceImageUrls: string[]) {
+  const form = new FormData();
+  form.append("model", config.model);
+  form.append("prompt", prompt);
+  form.append("size", size);
+  form.append("response_format", "b64_json");
+  const references = await Promise.all(sourceImageUrls.map(imageUrlToBlob));
+  references.forEach(({ blob, fileName }) => form.append("image", blob, fileName));
+
+  const response = await fetch(config.editUrl, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${config.apiKey}`
+    },
+    body: form,
+    signal: AbortSignal.timeout(APIYI_IMAGE_TIMEOUT_MS)
+  });
+  const data = await response.json().catch(() => ({}));
+  assertApiyiResponse(response, data, "edit", config.editUrl);
   return data;
 }
 
@@ -177,7 +234,7 @@ export async function generateWithApiyi(input: unknown) {
   const prompt = body.prompt?.trim() || "";
   const requestedCount = Math.max(1, Math.min(MAX_IMAGES_PER_RUN, Number(body.count) || 1));
   const size = imageSizeFromRatio(body.size);
-  if (body.sourceImageUrls?.length) throw new Error("gpt-image2-vip 图生图尚未接入。");
+  const sourceImageUrls = body.sourceImageUrls ?? [];
 
   const tasks = Array.from({ length: requestedCount }, () => async () => {
     const billing = await reserveMainAppCredits({
@@ -187,7 +244,9 @@ export async function generateWithApiyi(input: unknown) {
       media: true
     });
     try {
-      const data = await requestGeneration(config, prompt, size);
+      const data = sourceImageUrls.length
+        ? await requestEdit(config, prompt, size, sourceImageUrls)
+        : await requestGeneration(config, prompt, size);
       await billing.settleMedia();
       return data;
     } catch (error) {

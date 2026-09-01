@@ -151,3 +151,50 @@ test("surfaces an APIYI error without exposing credentials", async () => {
     );
   });
 });
+
+test("uploads ordered references as repeated image fields", async () => {
+  let editForm: FormData | undefined;
+  await withProvider(async (url, init) => {
+    assert.equal(String(url), PROVIDER_ENV.APIYI_IMAGE_EDIT_URL);
+    editForm = init?.body as FormData;
+    return Response.json({ data: [{ b64_json: "ZWRpdGVk" }] });
+  }, async () => {
+    const result = await generateWithApiyi({
+      provider: "gpt-image2-vip",
+      prompt: "把图1的人物放进图2的场景",
+      size: "1:1",
+      sourceImageUrls: [
+        "data:image/png;base64,Zmlyc3Q=",
+        "data:image/webp;base64,c2Vjb25k"
+      ]
+    });
+    assert.equal(editForm?.get("model"), "gpt-image-2-vip");
+    assert.equal(editForm?.get("prompt"), "把图1的人物放进图2的场景");
+    assert.equal(editForm?.get("size"), "2048x2048");
+    assert.equal(editForm?.get("response_format"), "b64_json");
+    assert.equal(editForm?.getAll("image").length, 2);
+    assert.equal(editForm?.get("image.items"), null);
+    assert.equal((editForm?.getAll("image")[0] as File).type, "image/png");
+    assert.equal((editForm?.getAll("image")[1] as File).type, "image/webp");
+    assert.equal(result.images[0].url, "data:image/png;base64,ZWRpdGVk");
+  });
+});
+
+test("downloads a public reference before uploading it", async () => {
+  let editForm: FormData | undefined;
+  await withProvider(async (url, init) => {
+    if (String(url) === "https://img.test/reference.jpg") {
+      return new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), {
+        headers: { "Content-Type": "image/jpeg" }
+      });
+    }
+    editForm = init?.body as FormData;
+    return Response.json({ data: [{ url: "https://img.test/edited.png" }] });
+  }, async () => {
+    await generateWithApiyi({
+      prompt: "换背景",
+      sourceImageUrls: ["https://img.test/reference.jpg"]
+    });
+    assert.equal((editForm?.get("image") as File).type, "image/jpeg");
+  });
+});
