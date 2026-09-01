@@ -5,6 +5,7 @@ import test from "node:test";
 const source = readFileSync("app/content/page.tsx", "utf8");
 const imageStoreSource = readFileSync("lib/utils/image-store.ts", "utf8");
 const imageTypeSource = readFileSync("types/image.ts", "utf8");
+const envExampleSource = readFileSync(".env.example", "utf8");
 
 test("all image provider selectors expose nanobanan新", () => {
   assert.equal(imageTypeSource.includes('"nanobanan新"'), true);
@@ -28,6 +29,18 @@ test("all image provider selectors expose gpt-image2-vip", () => {
     source,
     /const imageProviders: ImageProvider\[\] = \[[^\]]*"gpt-image2-vip"/
   );
+});
+
+test("documents server-only APIYI image configuration", () => {
+  for (const name of [
+    "APIYI_IMAGE_API_KEY=",
+    "APIYI_IMAGE_URL=https://api.apiyi.com/v1/images/generations",
+    "APIYI_IMAGE_EDIT_URL=https://api.apiyi.com/v1/images/edits",
+    "APIYI_IMAGE_MODEL=gpt-image-2-vip"
+  ]) {
+    assert.equal(envExampleSource.includes(name), true, name);
+  }
+  assert.equal(source.includes("APIYI_IMAGE_API_KEY"), false);
 });
 
 test("persists only the unrelated keyword library, not generated drafts", () => {
