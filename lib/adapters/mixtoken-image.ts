@@ -35,54 +35,28 @@ function imageSizeFromRatio(ratio = "1:1") {
   } as Record<string, string>)[value] || (/^\d+x\d+$/.test(value) ? value : "1024x1024");
 }
 
-async function referenceImage(source: string) {
-  const match = source.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
-  if (match) return new Blob([Buffer.from(match[2], "base64")], { type: match[1] });
-  const response = await fetch(source, { signal: AbortSignal.timeout(TIMEOUT_MS) });
-  if (!response.ok) throw new Error(`参考图下载失败：HTTP ${response.status}`);
-  const contentType = (response.headers.get("Content-Type") || "").split(";", 1)[0];
-  if (!/^image\/(?:jpeg|png|webp)$/i.test(contentType)) {
-    throw new Error("参考图下载失败：响应不是支持的图片格式。");
-  }
-  return new Blob([await response.arrayBuffer()], { type: contentType });
-}
-
 export async function generateWithMixtoken(input: unknown) {
   const body = input && typeof input === "object" ? input as MixtokenInput : {};
   const apiKey = process.env.MIXTOKEN_API_KEY?.trim() || "";
   if (!apiKey) throw new Error(`${PROVIDER} 配置缺失：MIXTOKEN_API_KEY`);
   const primaryModel = process.env.MIXTOKEN_IMAGE_MODEL?.trim() || "gpt-image-2.5-sunburst";
   const fallbackModel = process.env.MIXTOKEN_IMAGE_FALLBACK_MODEL?.trim() || "gpt-image-2.5";
-  const generationUrl = process.env.MIXTOKEN_IMAGE_URL?.trim() || "https://api.mixtoken.ai/v1/images/generations";
-  const editUrl = process.env.MIXTOKEN_IMAGE_EDIT_URL?.trim() || generationUrl.replace(/\/generations\/?$/, "/edits");
+  const endpoint = process.env.MIXTOKEN_IMAGE_URL?.trim() || "https://api.mixtoken.ai/v1/images/generations";
   const prompt = body.prompt?.trim() || "";
   const size = imageSizeFromRatio(body.size);
   const count = Math.max(1, Math.min(10, Math.trunc(Number(body.count) || 1)));
-  const references = await Promise.all((body.sourceImageUrls ?? []).map(referenceImage));
-  const endpoint = references.length ? editUrl : generationUrl;
+  const references = body.sourceImageUrls ?? [];
   async function requestImage(model: string) {
     const billing = await reserveMainAppCredits({
       operation: "image-generate", providerId: "mixtoken", model, media: true
     });
     try {
-      const headers: Record<string, string> = { Accept: "application/json", Authorization: `Bearer ${apiKey}` };
-      let requestBody: string | FormData;
-      if (references.length) {
-        const form = new FormData();
-        form.append("model", model);
-        form.append("prompt", prompt);
-        form.append("size", size);
-        form.append("n", "1");
-        form.append("response_format", "b64_json");
-        references.forEach((blob, referenceIndex) => {
-          const extension = blob.type.split("/")[1].replace("jpeg", "jpg");
-          form.append("image", blob, `reference-${referenceIndex + 1}.${extension}`);
-        });
-        requestBody = form;
-      } else {
-        headers["Content-Type"] = "application/json";
-        requestBody = JSON.stringify({ model, prompt, size, n: 1, response_format: "b64_json" });
-      }
+      // Mixtoken accepts reference URLs in generation JSON, not multipart /images/edits.
+      const headers = { Accept: "application/json", "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` };
+      const requestBody = JSON.stringify({
+        model, prompt, size, n: 1, output_format: "png",
+        ...(references.length ? { image: references } : {})
+      });
       const response = await fetch(endpoint, {
         method: "POST", headers, body: requestBody, signal: AbortSignal.timeout(TIMEOUT_MS)
       });
@@ -94,7 +68,7 @@ export async function generateWithMixtoken(input: unknown) {
       if (!response.ok || data.success === false || data.error) {
         const message = (typeof data.error === "string" ? data.error : data.error?.message)
           || data.message || `HTTP ${response.status}`;
-        throw new Error(`${PROVIDER} 生成失败：${message.split(apiKey).join("[redacted]")}`);
+        throw new Error(`${PROVIDER} 生成失败（HTTP ${response.status}）：${message.split(apiKey).join("[redacted]")}`);
       }
       const item = data.data?.find((image) => image.b64_json || image.url);
       const url = item?.b64_json
