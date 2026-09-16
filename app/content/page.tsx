@@ -20,7 +20,7 @@ import { getLibrary2Item } from "@/lib/content-library-2/client";
 import { library2PrefillPayload } from "@/lib/content-library-2/generation";
 import { saveContentDraft as saveContentDraftToCos } from "@/lib/content-storage/client";
 import type { ContentDraft, LibraryStatus, ReferenceSourceSnapshot } from "@/lib/content-storage/contracts";
-import { imageGenerationWarnings, pollImageGenerationJob } from "@/lib/utils/image-generation-job-client";
+import { extractGeneratedImageUrls, imageGenerationWarnings, pollImageGenerationJob } from "@/lib/utils/image-generation-job-client";
 import { addKeywordValues, prependAssignedImages, removeAssignedImage, removeKeywordValue, reorderAssignedImages, withoutSelectedKeywords } from "@/lib/utils/production-workflow";
 import { loadXhsReferenceMediaBlob, loadXhsReferenceMediaObjectUrls, normalizeXhsReferenceMedia, resolveXhsReferenceMedia, type XhsReferenceMedia } from "@/lib/xhs-reference-media";
 import { createXhsTopicMediaStore } from "@/lib/xhs-topic-media-store";
@@ -411,21 +411,6 @@ function normalizeCopyCandidates(payload: unknown, baseTitle: string) {
   });
 
   return expandCopyCandidates(normalized as typeof copyCandidates, baseTitle);
-}
-
-function extractGeneratedImageUrls(payload: unknown): string[] {
-  if (!payload) return [];
-  if (typeof payload === "string") {
-    if (/^https?:\/\//.test(payload) || payload.startsWith("data:image/")) return [payload];
-    return [];
-  }
-  if (Array.isArray(payload)) return payload.flatMap(extractGeneratedImageUrls);
-  if (typeof payload === "object") {
-    const record = payload as Record<string, unknown>;
-    return [record.url, record.image_url, record.b64_json ? `data:image/jpeg;base64,${record.b64_json}` : undefined, record.base64 ? `data:image/jpeg;base64,${record.base64}` : undefined, record.images, record.data]
-      .flatMap(extractGeneratedImageUrls);
-  }
-  return [];
 }
 
 function StepNav<T extends string>({ steps, value, onChange }: { steps: T[]; value: T; onChange: (value: T) => void }) {
