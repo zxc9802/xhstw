@@ -3,6 +3,7 @@ import { generateWithNanoBanana } from "@/lib/adapters/nano-banana";
 import { generateWithNanobananaNew } from "@/lib/adapters/nanobanana-new";
 import { generateWithOpenlux, isOpenluxImageProvider } from "@/lib/adapters/openlux-image";
 import { generateWithApiyi, isApiyiImageProvider } from "@/lib/adapters/apiyi-image";
+import { generateWithMixtoken, isMixtokenImageProvider } from "@/lib/adapters/mixtoken-image";
 import { createImageGenerationJob, runImageGenerationJob } from "@/lib/adapters/image-generation-job-store";
 import { cacheImageGenerationResult } from "@/lib/adapters/image-generation-result-store";
 import {
@@ -41,6 +42,7 @@ function usesImage2References(provider: string) {
     && !provider.includes("仅生成提示词")
     && !isOpenluxImageProvider(provider)
     && !isApiyiImageProvider(provider)
+    && !isMixtokenImageProvider(provider)
     && process.env.IMAGE_MODEL_PROVIDER !== "nano-banana"
     && process.env.IMAGE_MODEL_PROVIDER !== "mock"
     && process.env.IMAGE_MODEL_PROVIDER !== "yunwu";
@@ -98,7 +100,9 @@ export async function POST(request: Request) {
         ? "gpt-image-2-c"
         : isApiyiImageProvider(provider)
           ? "gpt-image2-vip"
-          : "";
+          : isMixtokenImageProvider(provider)
+            ? "gpt-image-2.5"
+            : "";
     if (usesImage2References(provider) || directProviderLabel) {
       const sourceImageUrls = imageSourceUrls(body);
       if (directProviderLabel) validateDirectReferenceUrls(sourceImageUrls, directProviderLabel);
@@ -127,15 +131,17 @@ export async function POST(request: Request) {
 
   void runImageGenerationJob(job.id, () => runWithMainAppBillingUser(billingUserId, async () => {
     try {
-      const generated = isNanobananaNew(provider)
-        ? await generateWithNanobananaNew(jobBody)
-        : isApiyiImageProvider(provider)
-          ? await generateWithApiyi(jobBody)
-          : isOpenluxImageProvider(provider)
-            ? await generateWithOpenlux(jobBody)
-            : provider.includes("Nano") || process.env.IMAGE_MODEL_PROVIDER === "nano-banana"
-              ? await generateWithNanoBanana(jobBody)
-              : await generateImage(jobBody);
+      const generated = isMixtokenImageProvider(provider)
+        ? await generateWithMixtoken(jobBody)
+        : isNanobananaNew(provider)
+          ? await generateWithNanobananaNew(jobBody)
+          : isApiyiImageProvider(provider)
+            ? await generateWithApiyi(jobBody)
+            : isOpenluxImageProvider(provider)
+              ? await generateWithOpenlux(jobBody)
+              : provider.includes("Nano") || process.env.IMAGE_MODEL_PROVIDER === "nano-banana"
+                ? await generateWithNanoBanana(jobBody)
+                : await generateImage(jobBody);
       const result = await cacheImageGenerationResult(generated, resultOrigin);
       const imageCount = result && typeof result === "object" && "images" in result && Array.isArray((result as { images?: unknown }).images) ? (result as { images: unknown[] }).images.length : 0;
       console.log(`[image/generate] job=${job.id} provider=${provider || "default"} images=${imageCount}`);
