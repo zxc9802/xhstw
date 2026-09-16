@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { POST } from "../app/api/image/generate/route";
 import { GET } from "../app/api/image/generate/[jobId]/route";
+import { GET as getReference } from "../app/temp-assets/[filename]/route";
 
 function useMixtoken(t: TestContext, fetcher: typeof fetch) {
   const values = {
@@ -61,7 +62,7 @@ test("routes gpt-image-2.5 to Mixtoken with its own credentials and returns gene
   assert.equal(job.status, "completed");
   assert.equal(requests.length, 2);
   assert.deepEqual(requests[0], {
-    model: "gpt-image-2.5-sunburst", prompt: "白底红苹果", size: "1024x1536", n: 1, response_format: "b64_json"
+    model: "gpt-image-2.5-sunburst", prompt: "白底红苹果", size: "1024x1536", n: 1, output_format: "png"
   });
   assert.equal(job.result.provider, "gpt-image-2.5");
   assert.equal(job.result.model, "gpt-image-2.5-sunburst");
@@ -69,12 +70,24 @@ test("routes gpt-image-2.5 to Mixtoken with its own credentials and returns gene
   assert.equal(job.result.images[0].url, "data:image/png;base64,iVBORw0KGgo=");
 });
 
-test("sends local references directly to Mixtoken edits even with the OpenAPI default", async (t) => {
-  let form: FormData | undefined;
+test("publishes local references as signed URLs and sends Mixtoken generation JSON", async (t) => {
+  let payload: Record<string, any> | undefined;
   useMixtoken(t, async (url, init) => {
-    assert.equal(String(url), "https://mixtoken.test/v1/images/edits");
+    assert.equal(String(url), "https://mixtoken.test/v1/images/generations");
     assert.equal(new Headers(init?.headers).get("Authorization"), "Bearer test-mixtoken-key");
-    form = init?.body as FormData;
+    assert.equal(new Headers(init?.headers).get("Content-Type"), "application/json");
+    payload = JSON.parse(String(init?.body));
+    for (const reference of payload!.image) {
+      const parsed = new URL(reference);
+      assert.equal(parsed.origin, "https://app.test");
+      assert.match(parsed.pathname, /^\/temp-assets\//);
+      assert.ok(parsed.searchParams.get("sig"));
+      const response = await getReference(new Request(reference), {
+        params: Promise.resolve({ filename: parsed.pathname.split("/").pop()! })
+      });
+      assert.equal(response.status, 200);
+      assert.ok((await response.arrayBuffer()).byteLength > 0);
+    }
     return Response.json({ data: [{ b64_json: "iVBORw0KGgo=" }] });
   });
   process.env.IMAGE_MODEL_PROVIDER = "openapi";
@@ -84,10 +97,16 @@ test("sends local references directly to Mixtoken edits even with the OpenAPI de
     sourceImageUrls: ["data:image/png;base64,iVBORw0KGgo=", "data:image/webp;base64,UklGRg=="]
   });
   assert.equal(job.status, "completed");
-  assert.equal(form?.get("model"), "gpt-image-2.5-sunburst");
-  assert.equal(form?.get("size"), "1024x1024");
-  assert.equal(form?.get("n"), "1");
-  assert.deepEqual(form?.getAll("image").map((file) => (file as File).type), ["image/png", "image/webp"]);
+  assert.equal(payload?.model, "gpt-image-2.5-sunburst");
+  assert.equal(payload?.size, "1024x1024");
+  assert.equal(payload?.n, 1);
+  assert.equal(payload?.image.length, 2);
+  for (const reference of payload!.image) {
+    const response = await getReference(new Request(reference), {
+      params: Promise.resolve({ filename: new URL(reference).pathname.split("/").pop()! })
+    });
+    assert.equal(response.status, 404);
+  }
 });
 
 test("caches Mixtoken URL results for the existing image job client", async (t) => {
@@ -125,7 +144,7 @@ test("surfaces a Mixtoken rejection and rejects empty successful responses", asy
   useMixtoken(t, async () => Response.json({ error: { message: "quota exceeded" } }, { status: 429 }));
   const rejected = await generate();
   assert.equal(rejected.status, "failed");
-  assert.match(rejected.error, /gpt-image-2.5 生成失败：quota exceeded/);
+  assert.match(rejected.error, /gpt-image-2.5 生成失败（HTTP 429）：quota exceeded/);
   globalThis.fetch = async () => Response.json({ data: [] });
   const empty = await generate();
   assert.equal(empty.status, "failed");
@@ -161,19 +180,21 @@ test("uses gpt-image-2.5 only after the first Sunburst attempt and three retries
   assert.equal(job.result.images[0].model, "gpt-image-2.5");
 });
 
-test("keeps reference images in every retry and fallback edit request", async (t) => {
+test("keeps all reference URLs in every retry and fallback generation request", async (t) => {
   const models: string[] = [];
   useMixtoken(t, async (url, init) => {
-    assert.equal(String(url), "https://mixtoken.test/v1/images/edits");
-    const form = init?.body as FormData;
-    models.push(String(form.get("model")));
-    assert.equal((form.get("image") as File).type, "image/png");
-    assert.equal(form.get("prompt"), "白底红苹果");
+    assert.equal(String(url), "https://mixtoken.test/v1/images/generations");
+    const payload = JSON.parse(String(init?.body));
+    models.push(payload.model);
+    assert.equal(payload.image.length, 2);
+    assert.match(payload.image[0], /^https:\/\/app.test\/temp-assets\//);
+    assert.equal(payload.image[1], "https://img.test/reference.webp");
+    assert.equal(payload.prompt, "白底红苹果");
     return models.length <= 4
       ? Response.json({ data: [] })
       : Response.json({ data: [{ b64_json: "iVBORw0KGgo=" }] });
   });
-  const job = await generate({ sourceImageUrls: ["data:image/png;base64,iVBORw0KGgo="] });
+  const job = await generate({ sourceImageUrls: ["data:image/png;base64,iVBORw0KGgo=", "https://img.test/reference.webp"] });
   assert.equal(job.status, "completed");
   assert.deepEqual(models, [...Array(4).fill("gpt-image-2.5-sunburst"), "gpt-image-2.5"]);
 });

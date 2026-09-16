@@ -106,7 +106,7 @@ export async function POST(request: Request) {
     if (usesImage2References(provider) || directProviderLabel) {
       const sourceImageUrls = imageSourceUrls(body);
       if (directProviderLabel) validateDirectReferenceUrls(sourceImageUrls, directProviderLabel);
-      if (usesImage2References(provider) && sourceImageUrls.length) {
+      if ((usesImage2References(provider) || isMixtokenImageProvider(provider)) && sourceImageUrls.length) {
         const published = publishImageReferences(sourceImageUrls, publicRequestOrigin(request));
         referenceTokens = published.tokens;
         jobBody = {

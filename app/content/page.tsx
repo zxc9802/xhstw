@@ -30,7 +30,7 @@ import type { VideoProvider, VideoScriptRow, VideoShotPlan } from "@/types/video
 type MainTab = "图文内容" | "视频内容";
 type ImageStep = "发布文案生成" | "图片生成";
 type VideoStep = "发布文案生成" | "视频脚本生成" | "视频素材生成";
-type ImagePageGenerationOutcome = { success: boolean; warning?: string };
+type ImagePageGenerationOutcome = { success: boolean; warning?: string; error?: string };
 
 const imageSteps: ImageStep[] = ["发布文案生成", "图片生成"];
 const videoSteps: VideoStep[] = ["发布文案生成", "视频脚本生成", "视频素材生成"];
@@ -1542,8 +1542,9 @@ export default function ContentPage() {
       return { success: true, ...(warning ? { warning } : {}) };
     } catch (error) {
       setImagePlanItems((items) => items.map((item) => item.page === page ? { ...item, status: "failed" as const } : item));
-      if (announce) setFeedback(error instanceof Error ? `P${page} 生成失败：${error.message}` : `P${page} 生成失败。`);
-      return { success: false };
+      const message = error instanceof Error ? error.message : "图片生成失败，请重试。";
+      if (announce) setFeedback(`P${page} 生成失败：${message}`);
+      return { success: false, error: message };
     } finally {
       imagePageGenerationLock.current = false;
       setGeneratingImagePages((items) => {
@@ -1574,12 +1575,15 @@ export default function ContentPage() {
       }
       const failedPages = pages.filter((_, index) => !results[index].success);
       const partialWarnings = results.flatMap((result, index) => result.warning ? [`P${pages[index]}：${result.warning}`] : []);
+      const failures = results.flatMap((result, index) => result.error ? [`P${pages[index]}：${result.error}`] : []);
       const completionMessage = failedPages.length
         ? `多页面生成完成：${pages.length - failedPages.length} 个成功，失败页面为 ${failedPages.map((page) => `P${page}`).join("、")}。`
         : `多页面生成完成：P${pages.join("、P")} 均已生成。`;
-      setFeedback(partialWarnings.length
-        ? `${completionMessage} 部分图片未完成：${partialWarnings.join("；")}`
-        : completionMessage);
+      setFeedback([
+        completionMessage,
+        ...(failures.length ? [`失败原因：${failures.join("；")}`] : []),
+        ...(partialWarnings.length ? [`部分图片未完成：${partialWarnings.join("；")}`] : [])
+      ].join(" "));
     } finally {
       setGeneratingAllPages(false);
     }
