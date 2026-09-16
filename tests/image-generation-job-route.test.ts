@@ -4,6 +4,7 @@ import { POST } from "../app/api/image/generate/route";
 import { GET } from "../app/api/image/generate/[jobId]/route";
 import { GET as GET_TEMP_ASSET } from "../app/temp-assets/[filename]/route";
 import { GET as GET_RESULT } from "../app/api/image/result/[token]/route";
+import { extractGeneratedImageUrls } from "../lib/utils/image-generation-job-client";
 import {
   getImageGenerationResult,
   IMAGE_GENERATION_RESULT_DOWNLOAD_CONCURRENCY,
@@ -246,6 +247,7 @@ test("keeps the job processing until provider images are cached locally", async 
 
   assert.equal(completed.status, "completed");
   assert.match(imageUrl, /^\/api\/image\/result\/[0-9a-f-]{36}$/);
+  assert.deepEqual(extractGeneratedImageUrls(completed.result), [imageUrl]);
   const token = imageUrl.split("/").pop() || "";
   const imageResponse = await GET_RESULT(new Request(`https://app.test${imageUrl}`), {
     params: Promise.resolve({ token })

@@ -1,6 +1,45 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { imageGenerationWarnings, pollImageGenerationJob } from "../lib/utils/image-generation-job-client";
+import { extractGeneratedImageUrls, imageGenerationWarnings, pollImageGenerationJob } from "../lib/utils/image-generation-job-client";
+
+test("recognizes cached image URLs from completed generation jobs", async () => {
+  const url = "/api/image/result/12345678-1234-1234-1234-123456789abc";
+  const result = await pollImageGenerationJob("cached-job", {
+    fetcher: async () => jsonResponse({
+      ok: true,
+      data: { status: "completed", result: { images: [{ url }] } }
+    })
+  });
+
+  assert.deepEqual(extractGeneratedImageUrls(result), [url]);
+});
+
+test("preserves remote and base64 image result formats", () => {
+  assert.deepEqual(extractGeneratedImageUrls({ data: [
+    { url: "https://images.test/generated.png" },
+    { image_url: "http://images.test/generated.jpg" },
+    { url: "data:image/png;base64,aW1hZ2U=" },
+    { b64_json: "aW1hZ2U=" },
+    { base64: "aW1hZ2U=" }
+  ] }), [
+    "https://images.test/generated.png",
+    "http://images.test/generated.jpg",
+    "data:image/png;base64,aW1hZ2U=",
+    "data:image/jpeg;base64,aW1hZ2U=",
+    "data:image/jpeg;base64,aW1hZ2U="
+  ]);
+});
+
+test("does not treat unrelated relative paths or text as generated images", () => {
+  assert.deepEqual(extractGeneratedImageUrls([
+    null,
+    { url: "/api/image/generate/job-id" },
+    { url: "//images.test/generated.png" },
+    { url: "javascript:alert(1)" },
+    { url: "图片生成中" },
+    { message: "生成失败" }
+  ]), []);
+});
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {

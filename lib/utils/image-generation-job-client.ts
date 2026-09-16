@@ -19,6 +19,21 @@ type ImageGenerationJobPayload = {
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+export function extractGeneratedImageUrls(payload: unknown): string[] {
+  if (!payload) return [];
+  if (typeof payload === "string") {
+    if (/^https?:\/\//.test(payload) || payload.startsWith("data:image/") || payload.startsWith("/api/image/result/")) return [payload];
+    return [];
+  }
+  if (Array.isArray(payload)) return payload.flatMap(extractGeneratedImageUrls);
+  if (typeof payload === "object") {
+    const record = payload as Record<string, unknown>;
+    return [record.url, record.image_url, record.b64_json ? `data:image/jpeg;base64,${record.b64_json}` : undefined, record.base64 ? `data:image/jpeg;base64,${record.base64}` : undefined, record.images, record.data]
+      .flatMap(extractGeneratedImageUrls);
+  }
+  return [];
+}
+
 export function imageGenerationWarnings(result: unknown) {
   if (!result || typeof result !== "object" || Array.isArray(result)) return [];
   const warnings = (result as { warnings?: unknown }).warnings;
