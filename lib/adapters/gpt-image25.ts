@@ -1,4 +1,5 @@
 import { logImageProviderResponse } from "@/lib/adapters/image-response-diagnostics";
+import { generateFalImage } from "@/lib/adapters/fal-image";
 import { MainAppBillingError, reserveMainAppCredits } from "@/lib/main-app-billing";
 
 type MixtokenInput = {
@@ -20,7 +21,7 @@ const PROVIDER = "gpt-image-2.5";
 const TIMEOUT_MS = 6 * 60 * 1000;
 const MAX_PARALLEL_REQUESTS = Math.max(1, Math.min(10, Number(process.env.OPENAI_IMAGE_PARALLEL_REQUESTS) || 4));
 
-export function isMixtokenImageProvider(provider: string) {
+export function isGptImage25Provider(provider: string) {
   return provider === PROVIDER;
 }
 
@@ -35,10 +36,11 @@ function imageSizeFromRatio(ratio = "1:1") {
   } as Record<string, string>)[value] || (/^\d+x\d+$/.test(value) ? value : "1024x1024");
 }
 
-export async function generateWithMixtoken(input: unknown) {
+export async function generateWithGptImage25(input: unknown) {
   const body = input && typeof input === "object" ? input as MixtokenInput : {};
   const apiKey = process.env.MIXTOKEN_API_KEY?.trim() || "";
-  if (!apiKey) throw new Error(`${PROVIDER} 配置缺失：MIXTOKEN_API_KEY`);
+  const useFal = Boolean(process.env.FAL_KEY?.trim());
+  if (!useFal && !apiKey) throw new Error(`${PROVIDER} 配置缺失：FAL_KEY / MIXTOKEN_API_KEY`);
   const primaryModel = process.env.MIXTOKEN_IMAGE_MODEL?.trim() || "gpt-image-2.5-sunburst";
   const fallbackModel = process.env.MIXTOKEN_IMAGE_FALLBACK_MODEL?.trim() || "gpt-image-2.5";
   const endpoint = process.env.MIXTOKEN_IMAGE_URL?.trim() || "https://api.mixtoken.ai/v1/images/generations";
@@ -47,6 +49,7 @@ export async function generateWithMixtoken(input: unknown) {
   const count = Math.max(1, Math.min(10, Math.trunc(Number(body.count) || 1)));
   const references = body.sourceImageUrls ?? [];
   async function requestImage(model: string) {
+    if (!apiKey) throw new Error(`${PROVIDER} 备用通道配置缺失：MIXTOKEN_API_KEY`);
     const billing = await reserveMainAppCredits({
       operation: "image-generate", providerId: "mixtoken", model, media: true
     });
@@ -85,10 +88,23 @@ export async function generateWithMixtoken(input: unknown) {
   }
 
   const images: Array<{ id: string; url: string; provider: string; model: string }> = [];
+  const warnings: string[] = [];
   let nextIndex = 0;
   const workers = Array.from({ length: Math.min(count, MAX_PARALLEL_REQUESTS) }, async () => {
     while (nextIndex < count) {
       const index = nextIndex++;
+      let falError = "";
+      if (useFal) {
+        try {
+          const result = await generateFalImage({ prompt, size: body.size, sourceImageUrls: references });
+          images[index] = { id: `fal_${Date.now()}_${index}`, ...result, provider: PROVIDER };
+          continue;
+        } catch (error) {
+          if (error instanceof MainAppBillingError) throw error;
+          falError = error instanceof Error ? error.message : String(error);
+          if (!apiKey) throw new Error(falError);
+        }
+      }
       let primaryError = "";
       // One initial attempt, three retries, then one fallback request.
       for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -96,16 +112,17 @@ export async function generateWithMixtoken(input: unknown) {
         try {
           const result = await requestImage(model);
           images[index] = { id: `mixtoken_${Date.now()}_${index}`, ...result, provider: PROVIDER };
+          if (falError) warnings.push(`fal.ai 首选通道失败，已使用 Mixtoken 备用通道：${falError}`);
           break;
         } catch (error) {
           if (error instanceof MainAppBillingError) throw error;
           const message = error instanceof Error ? error.message : String(error);
           if (attempt < 4) primaryError = message;
-          else throw new Error(`${primaryModel} 重试 3 次后仍失败：${primaryError}；${fallbackModel} 兜底失败：${message}`);
+          else throw new Error(`${falError ? `${falError}；` : ""}${primaryModel} 重试 3 次后仍失败：${primaryError}；${fallbackModel} 兜底失败：${message}`);
         }
       }
     }
   });
   await Promise.all(workers);
-  return { provider: PROVIDER, model: images[0].model, input: body, images };
+  return { provider: PROVIDER, model: images[0].model, input: body, images, ...(warnings.length ? { warnings: [...new Set(warnings)] } : {}) };
 }
