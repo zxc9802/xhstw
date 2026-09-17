@@ -7,6 +7,7 @@ import { GET as getReference } from "../app/temp-assets/[filename]/route";
 function useMixtoken(t: TestContext, fetcher: typeof fetch) {
   const values = {
     IMAGE_MODEL_PROVIDER: "mock",
+    FAL_KEY: "",
     MIXTOKEN_API_KEY: "test-mixtoken-key",
     MIXTOKEN_IMAGE_URL: "https://mixtoken.test/v1/images/generations",
     MIXTOKEN_IMAGE_EDIT_URL: "https://mixtoken.test/v1/images/edits",
@@ -137,7 +138,7 @@ test("reports a missing Mixtoken key without falling back to another model", asy
   delete process.env.MIXTOKEN_API_KEY;
   const job = await generate();
   assert.equal(job.status, "failed");
-  assert.match(job.error, /gpt-image-2.5 配置缺失：MIXTOKEN_API_KEY/);
+  assert.match(job.error, /gpt-image-2.5 配置缺失：FAL_KEY \/ MIXTOKEN_API_KEY/);
 });
 
 test("surfaces a Mixtoken rejection and rejects empty successful responses", async (t) => {
