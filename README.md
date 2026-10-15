@@ -36,6 +36,12 @@ Copy-Item .env.example .env.local
 
 默认 `MOCK_MODE=true`，没有 API Key 时所有 adapter 都会自动 fallback 到 mock，不会让页面报错。
 
+## GPT Image 2.5
+
+在服务端配置 `FAL_KEY` 后，页面的 `gpt-image-2.5` 优先使用 fal.ai Sunburst，固定 `quality: "high"`。有参考图时调用 `openai/gpt-image-2.5/sunburst/edit`，无参考图时调用 `openai/gpt-image-2.5/sunburst/text-to-image`，等待队列完成后获取并缓存图片。
+
+保留 `MIXTOKEN_API_KEY` 可启用原有备用通道；fal 失败时仅对失败的图片回退，并在页面提示原因。未配置 `FAL_KEY` 的现有部署仍使用 Mixtoken。密钥只放在服务端环境变量中，不提交到仓库。
+
 ## Mock 模式说明
 
 当前页面、API 和 adapter 均可在 mock 模式下运行。mock 数据主要放在：

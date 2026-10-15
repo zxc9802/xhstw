@@ -20,7 +20,7 @@ import { getLibrary2Item } from "@/lib/content-library-2/client";
 import { library2PrefillPayload } from "@/lib/content-library-2/generation";
 import { saveContentDraft as saveContentDraftToCos } from "@/lib/content-storage/client";
 import type { ContentDraft, LibraryStatus, ReferenceSourceSnapshot } from "@/lib/content-storage/contracts";
-import { imageGenerationWarnings, pollImageGenerationJob } from "@/lib/utils/image-generation-job-client";
+import { extractGeneratedImageUrls, imageGenerationWarnings, pollImageGenerationJob } from "@/lib/utils/image-generation-job-client";
 import { addKeywordValues, prependAssignedImages, removeAssignedImage, removeKeywordValue, reorderAssignedImages, withoutSelectedKeywords } from "@/lib/utils/production-workflow";
 import { loadXhsReferenceMediaBlob, loadXhsReferenceMediaObjectUrls, normalizeXhsReferenceMedia, resolveXhsReferenceMedia, type XhsReferenceMedia } from "@/lib/xhs-reference-media";
 import { createXhsTopicMediaStore } from "@/lib/xhs-topic-media-store";
@@ -30,7 +30,7 @@ import type { VideoProvider, VideoScriptRow, VideoShotPlan } from "@/types/video
 type MainTab = "图文内容" | "视频内容";
 type ImageStep = "发布文案生成" | "图片生成";
 type VideoStep = "发布文案生成" | "视频脚本生成" | "视频素材生成";
-type ImagePageGenerationOutcome = { success: boolean; warning?: string };
+type ImagePageGenerationOutcome = { success: boolean; warning?: string; error?: string };
 
 const imageSteps: ImageStep[] = ["发布文案生成", "图片生成"];
 const videoSteps: VideoStep[] = ["发布文案生成", "视频脚本生成", "视频素材生成"];
@@ -411,21 +411,6 @@ function normalizeCopyCandidates(payload: unknown, baseTitle: string) {
   });
 
   return expandCopyCandidates(normalized as typeof copyCandidates, baseTitle);
-}
-
-function extractGeneratedImageUrls(payload: unknown): string[] {
-  if (!payload) return [];
-  if (typeof payload === "string") {
-    if (/^https?:\/\//.test(payload) || payload.startsWith("data:image/")) return [payload];
-    return [];
-  }
-  if (Array.isArray(payload)) return payload.flatMap(extractGeneratedImageUrls);
-  if (typeof payload === "object") {
-    const record = payload as Record<string, unknown>;
-    return [record.url, record.image_url, record.b64_json ? `data:image/jpeg;base64,${record.b64_json}` : undefined, record.base64 ? `data:image/jpeg;base64,${record.base64}` : undefined, record.images, record.data]
-      .flatMap(extractGeneratedImageUrls);
-  }
-  return [];
 }
 
 function StepNav<T extends string>({ steps, value, onChange }: { steps: T[]; value: T; onChange: (value: T) => void }) {
@@ -1557,8 +1542,9 @@ export default function ContentPage() {
       return { success: true, ...(warning ? { warning } : {}) };
     } catch (error) {
       setImagePlanItems((items) => items.map((item) => item.page === page ? { ...item, status: "failed" as const } : item));
-      if (announce) setFeedback(error instanceof Error ? `P${page} 生成失败：${error.message}` : `P${page} 生成失败。`);
-      return { success: false };
+      const message = error instanceof Error ? error.message : "图片生成失败，请重试。";
+      if (announce) setFeedback(`P${page} 生成失败：${message}`);
+      return { success: false, error: message };
     } finally {
       imagePageGenerationLock.current = false;
       setGeneratingImagePages((items) => {
@@ -1589,12 +1575,15 @@ export default function ContentPage() {
       }
       const failedPages = pages.filter((_, index) => !results[index].success);
       const partialWarnings = results.flatMap((result, index) => result.warning ? [`P${pages[index]}：${result.warning}`] : []);
+      const failures = results.flatMap((result, index) => result.error ? [`P${pages[index]}：${result.error}`] : []);
       const completionMessage = failedPages.length
         ? `多页面生成完成：${pages.length - failedPages.length} 个成功，失败页面为 ${failedPages.map((page) => `P${page}`).join("、")}。`
         : `多页面生成完成：P${pages.join("、P")} 均已生成。`;
-      setFeedback(partialWarnings.length
-        ? `${completionMessage} 部分图片未完成：${partialWarnings.join("；")}`
-        : completionMessage);
+      setFeedback([
+        completionMessage,
+        ...(failures.length ? [`失败原因：${failures.join("；")}`] : []),
+        ...(partialWarnings.length ? [`部分图片未完成：${partialWarnings.join("；")}`] : [])
+      ].join(" "));
     } finally {
       setGeneratingAllPages(false);
     }
