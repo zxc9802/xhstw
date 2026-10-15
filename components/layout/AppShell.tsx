@@ -22,7 +22,8 @@ const productionNavItems = [
   { label: "① 爆款选题库", href: "/topics", icon: LibraryBig },
   { label: "② 爆款选题库2", href: "/content-library-2", icon: Images },
   { label: "③ 图文生产", href: "/content?tab=image", icon: ImagePlus },
-  { label: "④ 内容库1", href: "/content-library", icon: Clapperboard }
+  { label: "④ 内容库1", href: "/content-library", icon: Clapperboard },
+  { label: "TikTok 爆款视频", href: "/tiktok", icon: Clapperboard }
 ];
 
 const resourceNavItems = [

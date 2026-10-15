@@ -4,6 +4,7 @@ const nextConfig = {
   reactStrictMode: true,
   serverExternalPackages: ["@jackwener/opencli", "ws"],
   outputFileTracingExcludes: {
+    "/api/tiktok/*": ["./outputs/**/*"],
     "/api/reference/*": [
       "./xiaohongshu-downloads/**/*",
       "./outputs/**/*",
