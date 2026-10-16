@@ -67,6 +67,7 @@ export async function collectTikTokVideos(input: unknown, options: { apiKey?: st
     for (const key of ["status_code", "statusCode"]) {
       if (data[key] !== undefined && data[key] !== 0) throw new TikTokServiceError(`TikHub ${endpoint} 上游业务状态异常`, 502);
     }
+    if (record(data.search_nil_info).search_nil_item === "hit_shark") throw new TikTokServiceError("TikHub 上游搜索暂不可用（hit_shark），无法确认候选数量；请稍后重试或联系 TikHub", 502);
     return data;
   }
 

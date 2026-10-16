@@ -40,6 +40,44 @@ test("upstream HTTP 200 with business failure is an error", async () => {
   await assert.rejects(collectTikTokVideos(request, { apiKey: "test-key", fetcher: (async () => reply({}, 401)) as typeof fetch }), /业务/);
 });
 
+test("HTTP 200 search with hit_shark is unavailable rather than a successful zero", async () => {
+  const fetcher = (async () => reply({ status_code: 0, data: [], has_more: false, search_nil_info: { search_nil_item: "hit_shark" } })) as typeof fetch;
+  await assert.rejects(collectTikTokVideos(request, { apiKey: "test-key", fetcher }), (error: unknown) => {
+    assert.equal((error as { status: number }).status, 502);
+    assert.match((error as Error).message, /hit_shark/);
+    return true;
+  });
+});
+
+test("an ordinary empty search remains a valid empty result", async () => {
+  const fetcher = (async () => reply({ status_code: 0, data: [], has_more: false })) as typeof fetch;
+  const result = await collectTikTokVideos(request, { apiKey: "test-key", fetcher });
+  assert.equal(result.scanned, 0);
+  assert.equal(result.videos.length, 0);
+  assert.equal(result.hasMore, false);
+});
+
+test("a blocked later page keeps prior candidates and reports incomplete collection", async () => {
+  let searchCalls = 0;
+  const fetcher = (async (input: RequestInfo | URL) => {
+    const path = new URL(String(input)).pathname;
+    if (path.endsWith("fetch_general_search_result")) {
+      searchCalls++;
+      return reply(searchCalls === 1 ? { data: [{ aweme_info: item }], has_more: true, cursor: 10 }
+        : { status_code: 0, data: [], has_more: false, search_nil_info: { search_nil_item: "hit_shark" } });
+    }
+    if (path.endsWith("fetch_one_video_v3")) return reply({ aweme_detail: item });
+    if (path.endsWith("handler_user_profile")) return reply({ user: { unique_id: "example", follower_count: 20000 } });
+    if (path.endsWith("fetch_user_country_by_username")) return reply({ username: "example", country: "MY" });
+    return reply({ itemInfo: { itemStruct: { id, author: { uniqueId: "example" } } } });
+  }) as typeof fetch;
+  const result = await collectTikTokVideos(request, { apiKey: "test-key", fetcher });
+  assert.equal(result.videos.length, 1);
+  assert.equal(result.hasMore, true);
+  assert.equal(result.nextOffset, 10);
+  assert.match(result.warnings.join(" "), /hit_shark/);
+});
+
 test("wrong creator identity leaves country and followers unverified", async () => {
   const fetcher = (async (input: RequestInfo | URL) => {
     const path = new URL(String(input)).pathname;
