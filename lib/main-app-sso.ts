@@ -204,15 +204,17 @@ export async function exchangeMainAppSsoTicket(ticket: string): Promise<{
   };
 }
 
-export async function validateMainAppSession(session: MainAppSession): Promise<boolean> {
+export async function validateMainAppSession(session: MainAppSession, onResponse?: (status: number | null) => void): Promise<boolean> {
   if (isMainAppSsoDisabled()) return true;
   try {
     const response = await fetch(`${getMainAppUrl()}/api/sso/session`, {
       cache: "no-store",
       headers: { Authorization: `Bearer ${session.token}` }
     });
+    onResponse?.(response.status);
     return response.ok;
   } catch {
+    onResponse?.(null);
     return false;
   }
 }

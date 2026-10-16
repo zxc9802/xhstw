@@ -1,8 +1,9 @@
 import { TikTokServiceError } from "./errors";
 import { extractVideoRows, record } from "./videos";
+import { logCollectionRequest } from "./diagnostics";
 
 export type CollectionProvider = "scrapecreators" | "tikhub";
-export type CollectionApiOptions = { apiKey?: string; scrapeCreatorsApiKey?: string; fetcher?: typeof fetch; signal?: AbortSignal; onFallback?: (message: string) => void };
+export type CollectionApiOptions = { apiKey?: string; scrapeCreatorsApiKey?: string; fetcher?: typeof fetch; signal?: AbortSignal; onFallback?: (message: string) => void; requestId?: string };
 export const providerLabel = (provider: CollectionProvider) => provider === "scrapecreators" ? "ScrapeCreators" : "TikHub App V3";
 
 export function hasCollectionKey(options: CollectionApiOptions = {}) {
@@ -12,6 +13,7 @@ export function hasCollectionKey(options: CollectionApiOptions = {}) {
 export function createCollectionApi(options: CollectionApiOptions = {}) {
   const keys = { scrapecreators: (options.scrapeCreatorsApiKey ?? process.env.SCRAPECREATORS_API_KEY)?.trim(), tikhub: (options.apiKey ?? process.env.TIKHUB_API_KEY)?.trim() };
   const fetcher = options.fetcher ?? fetch;
+  let attemptNumber = 0;
   return {
     async request(endpoint: string, params: Record<string, string | number>, preferred?: CollectionProvider): Promise<{ data: Record<string, unknown>; provider: CollectionProvider; offset: number }> {
       const providers: CollectionProvider[] = preferred === "tikhub" || endpoint.startsWith("web/") ? ["tikhub"] : ["scrapecreators", "tikhub"];
@@ -40,11 +42,16 @@ export function createCollectionApi(options: CollectionApiOptions = {}) {
             : { handle: params.unique_id ?? params.username };
           for (const [name, value] of Object.entries(query)) if (value !== undefined) url.searchParams.set(name, String(value));
         }
+        const attempt = ++attemptNumber, started = Date.now();
+        let status: number | null = null;
+        logCollectionRequest(options.requestId, "upstream.start", { attempt, provider, endpoint });
         try {
           const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(20000)]) : AbortSignal.timeout(20000);
           let response: Response;
           try { response = await fetcher(url.toString(), { headers: provider === "scrapecreators" ? { "x-api-key": key } : { Authorization: `Bearer ${key}` }, signal, cache: "no-store" }); }
           catch { throw new TikTokServiceError(`${providerLabel(provider)} ${endpoint} 连接失败或超时`, 502); }
+          status = response.status;
+          logCollectionRequest(options.requestId, "upstream.response", { attempt, provider, endpoint, status, elapsedMs: Date.now() - started, contentType: (response.headers.get("content-type") ?? "").split(";")[0].slice(0, 80) });
           if (!response.ok) throw new TikTokServiceError(`${providerLabel(provider)} ${endpoint} HTTP ${response.status}，请检查服务权限与额度`, 502);
           const envelope = record(await response.json().catch(() => null));
           if (provider === "scrapecreators" ? envelope.success !== true : envelope.code !== 200) throw new TikTokServiceError(`${providerLabel(provider)} ${endpoint} 业务状态异常`, 502);
@@ -72,8 +79,10 @@ export function createCollectionApi(options: CollectionApiOptions = {}) {
             const row = extractVideoRows(data).find(value => record(value).aweme_id === params.aweme_id), author = record(record(row).author);
             if (!row || typeof author.unique_id !== "string" || author.unique_id.toLowerCase() !== String(params.username).toLowerCase()) throw new TikTokServiceError("原视频详情视频或作者身份不一致", 502);
           }
+          logCollectionRequest(options.requestId, "upstream.complete", { attempt, provider, endpoint, status, elapsedMs: Date.now() - started });
           return { data, provider, offset };
         } catch (error) {
+          logCollectionRequest(options.requestId, "upstream.error", { attempt, provider, endpoint, status, elapsedMs: Date.now() - started, errorType: error instanceof Error ? error.name : "unknown" });
           const message = error instanceof TikTokServiceError ? error.message : `${providerLabel(provider)} ${endpoint} 响应格式无效`;
           errors.push(message);
           if (provider === "scrapecreators" && keys.tikhub && !options.signal?.aborted) {
