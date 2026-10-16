@@ -16,14 +16,15 @@ export function createCollectionApi(options: CollectionApiOptions = {}) {
   let attemptNumber = 0;
   return {
     async request(endpoint: string, params: Record<string, string | number>, preferred?: CollectionProvider): Promise<{ data: Record<string, unknown>; provider: CollectionProvider; offset: number }> {
-      const providers: CollectionProvider[] = preferred === "tikhub" || endpoint.startsWith("web/") ? ["tikhub"] : ["scrapecreators", "tikhub"];
+      const providers: CollectionProvider[] = endpoint.startsWith("web/") ? ["tikhub"] : preferred === "scrapecreators" ? ["scrapecreators", "tikhub"] : ["tikhub", "scrapecreators"];
+      const availableProviders = providers.filter(provider => keys[provider]);
       const errors: string[] = [];
       let offset = Number(params.offset ?? 0);
-      if (preferred === "scrapecreators" && !keys.scrapecreators && endpoint === "fetch_general_search_result") {
+      if (preferred && !keys[preferred] && availableProviders[0] && endpoint === "fetch_general_search_result") {
         offset = 0;
-        options.onFallback?.("ScrapeCreators 未配置，已切换 TikHub 并从首批重新采集；两者分页游标不通用");
+        options.onFallback?.(`${providerLabel(preferred)} 未配置，已切换 ${providerLabel(availableProviders[0])} 并从首批重新采集；两者分页游标不通用`);
       }
-      for (const provider of providers) {
+      for (const [index, provider] of availableProviders.entries()) {
         const key = keys[provider];
         if (!key) continue;
         let url: URL;
@@ -85,14 +86,15 @@ export function createCollectionApi(options: CollectionApiOptions = {}) {
           logCollectionRequest(options.requestId, "upstream.error", { attempt, provider, endpoint, status, elapsedMs: Date.now() - started, errorType: error instanceof Error ? error.name : "unknown" });
           const message = error instanceof TikTokServiceError ? error.message : `${providerLabel(provider)} ${endpoint} 响应格式无效`;
           errors.push(message);
-          if (provider === "scrapecreators" && keys.tikhub && !options.signal?.aborted) {
+          const backup = availableProviders[index + 1];
+          if (backup && !options.signal?.aborted) {
             if (endpoint === "fetch_general_search_result") offset = 0;
-            options.onFallback?.(`${message}；已切换 TikHub${endpoint === "fetch_general_search_result" && Number(params.offset) > 0 ? " 并从首批重新采集；两者分页游标不通用" : " 备用接口"}`);
+            options.onFallback?.(`${message}；已切换 ${providerLabel(backup)}${endpoint === "fetch_general_search_result" && Number(params.offset) > 0 ? " 并从首批重新采集；两者分页游标不通用" : " 备用接口"}`);
           }
         }
         if (options.signal?.aborted) break;
       }
-      if (!errors.length && endpoint.startsWith("web/") && keys.scrapecreators) throw new TikTokServiceError("ScrapeCreators 未提供当前内容类目字段，未配置 TikHub 备用，类目待核实", 503);
+      if (!errors.length && endpoint.startsWith("web/") && keys.scrapecreators) throw new TikTokServiceError("ScrapeCreators 未提供当前内容类目字段，未配置 TikHub，类目待核实", 503);
       if (!errors.length) throw new TikTokServiceError("尚未配置可用采集接口，请设置 SCRAPECREATORS_API_KEY 或 TIKHUB_API_KEY", 503);
       throw new TikTokServiceError(errors.join("；"), 502);
     }

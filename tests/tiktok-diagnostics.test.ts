@@ -49,12 +49,12 @@ test("valid session forwards one generated ID and exposes SSO status without its
 test("failed upstream calls retain fallback and record HTTP status without inputs or bodies", async t => {
   const logs = capture(t), requestId = crypto.randomUUID();
   const api = createCollectionApi({ requestId, scrapeCreatorsApiKey: "secret-sc-key", apiKey: "secret-tikhub-key", fetcher: (async input => {
-    return String(input).includes("scrapecreators") ? new Response("secret-upstream-body", { status: 502, headers: { "Content-Type": "text/html" } }) : Response.json({ code: 200, data: { data: [], has_more: false } });
+    return String(input).includes("tikhub") ? new Response("secret-upstream-body", { status: 502, headers: { "Content-Type": "text/html" } }) : Response.json({ success: true, search_item_list: [], has_more: false });
   }) as typeof fetch });
   const result = await api.request("fetch_general_search_result", { keyword: "private-search", region: "MY", offset: 0 });
-  assert.equal(result.provider, "tikhub");
+  assert.equal(result.provider, "scrapecreators");
   assert.ok(logs.every(log => log.requestId === requestId));
-  assert.deepEqual(logs.filter(log => log.stage === "upstream.response").map(log => [log.provider, log.status]), [["scrapecreators", 502], ["tikhub", 200]]);
+  assert.deepEqual(logs.filter(log => log.stage === "upstream.response").map(log => [log.provider, log.status]), [["tikhub", 502], ["scrapecreators", 200]]);
   assert.deepEqual(logs.filter(log => log.stage === "upstream.start").map(log => log.attempt), [1, 2]);
   assert.ok(logs.some(log => log.stage === "upstream.error" && typeof log.elapsedMs === "number"));
   assert.doesNotMatch(JSON.stringify(logs), /secret-|private-search/);

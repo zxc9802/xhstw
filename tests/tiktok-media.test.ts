@@ -87,13 +87,17 @@ test("ScrapeCreators original-media details work without TikHub and keys never r
   assert.equal(result.evidence.temporaryMediaRemoved, true);
 });
 
-test("original-media metadata automatically falls back from ScrapeCreators to TikHub", async t => {
+test("original-media metadata automatically falls back from TikHub to ScrapeCreators", async t => {
   const options = await setup(t);
-  const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => new URL(String(input)).hostname === "api.scrapecreators.com"
-    ? new Response("unavailable", { status: 503 }) : options.fetcher(input, init)) as typeof fetch;
+  const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (url.hostname === "api.tikhub.io") return new Response("unavailable", { status: 503 });
+    if (url.hostname === "api.scrapecreators.com") return Response.json({ success: true, aweme_detail: { aweme_id: id, author: { unique_id: "example" }, video: { duration: 17200, play_addr: { url_list: ["https://v19.tiktokcdn.com/source.mp4"] } } } });
+    return options.fetcher(input, init);
+  }) as typeof fetch;
   const result = await analyzeTikTokVideo({ video }, { ...options, scrapeCreatorsApiKey: "sc-test-key", fetcher });
-  assert.equal(result.evidence.provider, "tikhub");
-  assert.ok(options.phases.some(message => message.includes("已切换 TikHub")));
+  assert.equal(result.evidence.provider, "scrapecreators");
+  assert.ok(options.phases.some(message => message.includes("已切换 ScrapeCreators")));
 });
 
 test("HTTP 200 HTML payloads, mismatched IDs and excess duration never become media analysis", async t => {

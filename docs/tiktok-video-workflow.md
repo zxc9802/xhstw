@@ -4,7 +4,7 @@
 
 ## 使用方法
 
-1. 配置 ScrapeCreators 后输入关键词或完整公开视频链接采集，或导入 JSON/CSV。ScrapeCreators 优先，配置 TikHub 时在接口失败后自动备用；仅配置 TikHub 也可采集。采集的是候选样本，不是全站清单。单批关键词最多 50 条，指定链接最多 20 条。每条视频核验创作者国家与粉丝；有后续页时可继续下一批。
+1. 配置 TikHub 后输入关键词或完整公开视频链接采集，或导入 JSON/CSV。TikHub 优先，失败时使用已配置的 ScrapeCreators 备用；仅配置其中一家也可采集。采集的是候选样本，不是全站清单。单批关键词最多 50 条，指定链接最多 20 条。每条视频核验创作者国家与粉丝；有后续页时可继续下一批。
 2. 账号国家下拉默认马来西亚（MY），可选择其他国家/地区或「国家不限」。指定国家时归属缺失仍待核实；不限时不以国家作为命中条件。默认粉丝 ≤ 20,000、播放 ≥ 50,000、近 7 天、播放/粉丝比至少 3 倍且上不封顶、类目不限。可切换近 3 天、严格 3–5 倍或至少 5 倍及精确内容类目。挂车状态不采集、不展示、不参与筛选；旧导入数据可保留该字段。缺少必要字段显示「待核实」；已知不符合显示「不符合」。0 粉丝不能计算倍数。倍数不是粉丝增长率。
 3. 点击「拆解与创作」→「自动转录与音画拆解」，自动下载经过视频/作者身份核验的原媒体，校验轨道与时长、完整解码，再将整段压缩视频交给 OpenLux。页面显示原语言人声转录、原片画面/声音/字幕/剪辑时间轴及节奏分析。当前支持单条 ≤180 秒、原媒体 ≤64 MiB、处理后模型输入 ≤18 MiB；时间戳与识别文字近似，需核对。
 4. 可修正自动转录或补充真实观察，选择马来语、英语或中文和时长，填写已确认的产品事实及拍摄要求。生成原创标题/发布文案/完整口播、连续新拍分镜、准备清单及审核事项。原片音画依据只能从服务端已验证的记录读取并与当前来源绑定，旧文字模式仍可使用，页面明确标注依据。原片价格及优惠不能代替当前产品事实。
@@ -31,7 +31,7 @@ TIKTOK_FFPROBE_BIN=
 TIKTOK_MEDIA_PROXY=
 ```
 
-采集、粉丝、账号国家及原片详情优先使用 ScrapeCreators；HTTP、业务状态、响应结构或身份异常时尝试 TikHub，切换原因进入采集说明。正常空列表不触发备用；两家均异常时明确失败。两家的搜索游标不能混用，下一批同时携带 `provider`；ScrapeCreators 分页失败后 TikHub 从首批重新开始并按视频 ID 去重。上游整页超过所选批量时仅处理本批上限，并提示超出部分未处理。内容类目目前仍通过已配置的 TikHub Web 接口补采，缺失时待核实。
+采集、粉丝、账号国家及原片详情优先使用 TikHub；请求失败、业务状态异常（含 `hit_shark`）或详情身份校验失败时尝试已配置的 ScrapeCreators，切换原因进入采集说明。正常空列表不触发备用；两家均异常时明确失败。两家的搜索游标不能混用，下一批同时携带 `provider` 并沿用该来源；切换来源时从首批重新开始并按视频 ID 去重，不把旧游标传给另一家。上游整页超过所选批量时仅处理本批上限，并提示超出部分未处理。内容类目仅通过 TikHub Web 接口补采，缺失时待核实。
 
 服务器需安装 FFmpeg 与 FFprobe，在 PATH 上可运行或配置上面的可执行文件路径。TikTok CDN 直连不可达时，可设置 `TIKTOK_MEDIA_PROXY` 为已存在的 HTTP 代理地址；代理仅用于媒体下载，两家服务的密钥均不转发到媒体域名。当前机器使用已开启的本机代理，不改变 Windows 全局代理设置。
 
@@ -52,7 +52,7 @@ TIKTOK_MEDIA_PROXY=
 
 ## 采集边界
 
-ScrapeCreators 接入 `/v1/tiktok/search/keyword`、`/v2/tiktok/video`、`/v1/tiktok/profile` 和 `/v1/tiktok/profile/region`。TikHub 备用接入 `fetch_general_search_result`、`fetch_one_video_v3`、`handler_user_profile`、`fetch_user_country_by_username` 和 Web `fetch_post_detail_v2`。详情请求地区采用所选国家，不限时使用默认请求地区 MY；请求地区不能证明账号归属，归属仍由独立国家接口核验。ScrapeCreators 搜索的 `region` 是代理地区，TikHub 搜索没有地区参数；均先取得候选再按核实的账号国家筛选，不能保证任一国家全站覆盖或足量命中。切换国家会重置下一批游标。音画采集优先用视频自身的已知账号国家，未知时使用默认请求地区。上游按近一周搜索；选近 3 天时在本地精确过滤。账号国家不能证明实际观众地区。
+ScrapeCreators 备用接口为 `/v1/tiktok/search/keyword`、`/v2/tiktok/video`、`/v1/tiktok/profile` 和 `/v1/tiktok/profile/region`。TikHub 主接口为 `fetch_general_search_result`、`fetch_one_video_v3`、`handler_user_profile`、`fetch_user_country_by_username` 和 Web `fetch_post_detail_v2`。详情请求地区采用所选国家，不限时使用默认请求地区 MY；请求地区不能证明账号归属，归属仍由独立国家接口核验。ScrapeCreators 搜索的 `region` 是代理地区，TikHub 搜索没有地区参数；均先取得候选再按核实的账号国家筛选，不能保证任一国家全站覆盖或足量命中。切换国家会重置下一批游标。音画采集优先用视频自身的已知账号国家，未知时使用默认请求地区。上游按近一周搜索；选近 3 天时在本地精确过滤。账号国家不能证明实际观众地区。
 
 国家/地区代码来自 [Unicode CLDR](https://github.com/unicode-org/cldr-json/blob/main/cldr-json/cldr-core/supplemental/territoryInfo.json)，常用国家置前。选项不保证上游在所有地区均能取得媒体；上游不支持或读取失败会提示，归属字段不会被所选国家覆盖。
 

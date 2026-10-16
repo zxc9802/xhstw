@@ -2,7 +2,7 @@
 
 这是一个本地运行的多平台内容生产中台，用于选题管理、内容生成、检测筛选、素材规划、账号管理、模板复用和本地归档。当前重点场景是小红书防晒/护肤内容生产，但系统结构预留 TikTok、抖音、Instagram、Facebook 等平台扩展。
 
-新增「TikTok 爆款视频」：支持创作者候选采集（ScrapeCreators 优先、TikHub 备用）、账号国家下拉筛选（默认马来西亚，可选其他国家或不限）、JSON/CSV 导入及备份恢复、低粉高播放筛选，以及整段原片自动转录、音画时间轴、改写和拍摄脚本（OpenLux gemini-3.8-flash）。原片分析需 FFmpeg，当前支持 180 秒/64 MB 内的视频，识别结果需人工核对。挂车状态不参与筛选。配置、导入字段与能力范围见 [TikTok 视频工作流](docs/tiktok-video-workflow.md)。
+新增「TikTok 爆款视频」：支持创作者候选采集（TikHub 优先、ScrapeCreators 备用）、账号国家下拉筛选（默认马来西亚，可选其他国家或不限）、JSON/CSV 导入及备份恢复、低粉高播放筛选，以及整段原片自动转录、音画时间轴、改写和拍摄脚本（OpenLux gemini-3.8-flash）。原片分析需 FFmpeg，当前支持 180 秒/64 MB 内的视频，识别结果需人工核对。挂车状态不参与筛选。配置、导入字段与能力范围见 [TikTok 视频工作流](docs/tiktok-video-workflow.md)。
 
 ## 项目定位
 
