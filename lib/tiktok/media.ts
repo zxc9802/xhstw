@@ -8,11 +8,12 @@ import { getTikTokRewriteConfig, requestTikTokVideoJson } from "./rewrite";
 import { validateMediaOutput, validateStoredMedia, type MediaAnalysis } from "./media-format";
 import { normalizeVideo, record } from "./videos";
 import { countryOptions } from "./countries";
+import { createCollectionApi, hasCollectionKey } from "./collection-api";
 
 export const mediaLimits = { seconds: 180, bytes: 64 * 1024 * 1024, modelBytes: 18 * 1024 * 1024 };
 const defaultRoot = () => path.join(process.cwd(), "outputs", "tiktok-media");
 const hash = (value: Uint8Array | string) => createHash("sha256").update(value).digest("hex");
-type Options = { apiKey?: string; root?: string; fetcher?: typeof fetch; signal?: AbortSignal; onProgress?: (message: string) => void;
+type Options = { apiKey?: string; scrapeCreatorsApiKey?: string; root?: string; fetcher?: typeof fetch; signal?: AbortSignal; onProgress?: (message: string) => void;
   runCommand?: (command: string, args: string[], signal?: AbortSignal) => Promise<string>;
   requester?: (prompt: string, videoBase64: string, duration: number, signal?: AbortSignal) => Promise<Record<string, unknown>> };
 
@@ -58,8 +59,7 @@ export async function analyzeTikTokVideo(input: unknown, options: Options = {}):
   let video;
   try { video = normalizeVideo(record(input).video); } catch { throw new TikTokServiceError("需要身份一致的完整 TikTok 视频记录"); }
   const region = countryOptions.some(option => option.code === video.country) ? video.country! : "MY";
-  const apiKey = options.apiKey ?? process.env.TIKHUB_API_KEY?.trim();
-  if (!apiKey || !getTikTokRewriteConfig().apiKey) throw new TikTokServiceError("原视频分析需要配置 TikHub 和 OpenLux 服务", 503);
+  if (!hasCollectionKey(options) || !getTikTokRewriteConfig().apiKey) throw new TikTokServiceError("原视频分析需要配置 ScrapeCreators 或 TikHub，以及 OpenLux 服务", 503);
   const fetcher = options.fetcher ?? fetch, command = options.runCommand ?? runCommand;
   const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(240000)]) : AbortSignal.timeout(240000);
   const id = randomUUID(), root = options.root ?? defaultRoot(), directory = path.join(root, id);
@@ -76,9 +76,8 @@ export async function analyzeTikTokVideo(input: unknown, options: Options = {}):
   }
   try {
     options.onProgress?.("正在获取原视频详情并核验视频和作者身份…");
-    const metadataResponse = await fetcher(`https://api.tikhub.io/api/v1/tiktok/app/v3/fetch_one_video_v3?aweme_id=${video.id}&region=${region}`, { headers: { Authorization: `Bearer ${apiKey}` }, signal, cache: "no-store" });
-    const envelope = record(await metadataResponse.json().catch(() => null)), data = record(envelope.data), detail = record(data.aweme_detail), author = record(detail.author);
-    if (!metadataResponse.ok || envelope.code !== 200 || (data.status_code !== undefined && data.status_code !== 0)) throw new TikTokServiceError("TikHub 原视频详情读取失败", 502);
+    const metadata = await createCollectionApi({ ...options, signal, onFallback: message => options.onProgress?.(message) }).request("fetch_one_video_v3", { aweme_id: video.id, username: video.author, region });
+    const detail = record(metadata.data.aweme_detail), author = record(detail.author);
     if (detail.aweme_id !== video.id || typeof author.unique_id !== "string" || author.unique_id.toLowerCase() !== video.author.toLowerCase()) throw new TikTokServiceError("原视频媒体与请求身份不一致", 502);
     if (detail.image_post_info || detail.aweme_type === 150) throw new TikTokServiceError("图文作品不能作为原视频音画输入");
     if (Number(record(detail.video).duration) > mediaLimits.seconds * 1000) throw new TikTokServiceError("原视频超过 180 秒，暂不能完整处理", 413);
@@ -133,7 +132,7 @@ export async function analyzeTikTokVideo(input: unknown, options: Options = {}):
     await cleanup();
     const analysis: MediaAnalysis = { ...fields, id, videoId: video.id, url: video.url, author: video.author,
       capturedAt: new Date().toISOString(), generatedAt: new Date().toISOString(), model: getTikTokRewriteConfig().model, duration, basis: "video_audio",
-      evidence: { metadataId: video.id, sourceField: chosen.field, sourceUrlSha256: hash(chosen.url), videoSha256: hash(bytes), modelVideoSha256: hash(modelBytes),
+      evidence: { provider: metadata.provider, metadataId: video.id, sourceField: chosen.field, sourceUrlSha256: hash(chosen.url), videoSha256: hash(bytes), modelVideoSha256: hash(modelBytes),
         bytes: bytes.length, modelBytes: modelBytes.length, videoCodec: String(videoStream.codec_name), audioCodec: audioStream ? String(audioStream.codec_name) : null, hasAudio: Boolean(audioStream), decoded: true, temporaryMediaRemoved: true },
       warnings: ["AI 转录、时间戳和细小字幕可能有误，请核对原片。原片价格及促销不代表当前商品事实。", ...fields.warnings] };
     await fs.writeFile(path.join(directory, "analysis.json"), JSON.stringify(analysis, null, 2), "utf8");

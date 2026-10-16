@@ -11,11 +11,12 @@ import type { Production } from "@/lib/tiktok/production";
 import { restoreTikTokBackup, type CollectionRun } from "@/lib/tiktok/backup";
 import type { MediaAnalysis } from "@/lib/tiktok/media-format";
 import { countryOptions } from "@/lib/tiktok/countries";
+import type { CollectionProvider } from "@/lib/tiktok/collection-api";
 
 const storageKey = "content-production-studio.tiktok-videos.v1";
 const fieldClass = "w-full rounded-md border border-line bg-white px-3 py-2 text-sm text-ink focus:border-orange-400 focus:outline-none";
 type Capabilities = { collection: boolean; production: boolean; productionModel: string; visualAnalysis: boolean; transcription: boolean };
-type Collection = { videos: TikTokVideo[]; warnings: string[]; scanned: number; hasMore: boolean; nextOffset: number | null; capturedAt: string; evidencePages: unknown[]; keyword: string; country: string };
+type Collection = { videos: TikTokVideo[]; warnings: string[]; scanned: number; hasMore: boolean; nextOffset: number | null; capturedAt: string; evidencePages: unknown[]; keyword: string; country: string; provider?: CollectionProvider };
 type View = "all" | "matched" | "pending" | "excluded";
 const views: Array<{ key: View; label: string }> = [{ key: "all", label: "全部候选" }, { key: "matched", label: "命中" }, { key: "pending", label: "待核实" }, { key: "excluded", label: "不符合" }];
 const statusLabels = { matched: "命中", pending: "待核实", excluded: "不符合" };
@@ -40,7 +41,7 @@ export default function TikTokPage() {
   const [mode, setMode] = useState<"keyword" | "links">("keyword");
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(20);
-  const [continuation, setContinuation] = useState<{ query: string; offset: number; days: number; country: string } | null>(null);
+  const [continuation, setContinuation] = useState<{ query: string; offset: number; days: number; country: string; provider?: CollectionProvider } | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [warnings, setWarnings] = useState<string[]>([]);
@@ -95,7 +96,7 @@ export default function TikTokPage() {
     try {
       const response = await fetch("/api/tiktok/collect", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ country: filters.country, ...(mode === "links" ? { urls: query.split(/\s+/).filter(Boolean) } : { keyword: query.trim(), days: filters.days, limit, offset: next && continuation ? continuation.offset : 0 }) })
+        body: JSON.stringify({ country: filters.country, ...(mode === "links" ? { urls: query.split(/\s+/).filter(Boolean) } : { keyword: query.trim(), days: filters.days, limit, offset: next && continuation ? continuation.offset : 0, provider: next && continuation ? continuation.provider : undefined }) })
       });
       const payload = await response.json();
       if (!response.ok || !payload.ok) throw new Error(payload.error || "采集失败");
@@ -103,7 +104,7 @@ export default function TikTokPage() {
       addRows(result.videos);
       setRuns((current) => { const { videos: _videos, ...run } = result; return [...current.slice(-9), run]; });
       setWarnings(result.warnings);
-      setContinuation(result.hasMore && result.nextOffset !== null ? { query: query.trim(), offset: result.nextOffset, days: filters.days, country: filters.country } : null);
+      setContinuation(result.hasMore && result.nextOffset !== null ? { query: query.trim(), offset: result.nextOffset, days: filters.days, country: filters.country, provider: result.provider } : null);
       setMessage(`本批读取 ${result.scanned} 条候选，保留 ${result.videos.length} 条视频。${result.hasMore ? "搜索还有后续或尚未完成，详见采集说明。" : "本次搜索已结束。"}`);
     } catch (error) { setMessage(error instanceof Error ? error.message : "采集失败"); }
     finally { setBusy(false); }
@@ -150,7 +151,7 @@ export default function TikTokPage() {
                 <Button variant="primary" disabled={busy || !query.trim() || !capabilities?.collection} icon={<Search className="h-4 w-4" />} onClick={() => void collect()}>{busy ? "核验中…" : "开始采集"}</Button>
                 {canContinue && <Button disabled={busy || !capabilities?.collection} onClick={() => void collect(true)}>继续下一批</Button>}
               </div>
-              {capabilities && !capabilities.collection && <p className="text-xs leading-5 text-amber-800">尚未配置 TikHub 服务，先导入已有数据即可筛选。接口配置说明在页面底部。</p>}
+              {capabilities && !capabilities.collection && <p className="text-xs leading-5 text-amber-800">尚未配置 ScrapeCreators 或 TikHub 服务，先导入已有数据即可筛选。</p>}
             </div>
             <div className="grid content-start gap-3 sm:grid-cols-2 xl:grid-cols-3">
               <label className="text-sm font-medium">账号国家<select aria-label="账号国家" className={`${fieldClass} mt-1`} value={filters.country} onChange={(event) => { setFilters({ ...filters, country: event.target.value }); setContinuation(null); }}><option value="">国家不限</option>{countryOptions.map(country => <option key={country.code} value={country.code}>{country.label}</option>)}</select></label>

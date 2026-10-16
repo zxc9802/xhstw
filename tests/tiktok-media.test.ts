@@ -69,6 +69,33 @@ test("original media uses the video's known account country instead of forcing M
   assert.equal(result.basis, "video_audio");
 });
 
+test("ScrapeCreators original-media details work without TikHub and keys never reach the CDN", async t => {
+  const options = await setup(t);
+  const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (url.hostname === "api.scrapecreators.com") {
+      assert.equal(new Headers(init?.headers).get("x-api-key"), "sc-test-key");
+      assert.equal(url.searchParams.get("url"), video.url);
+      return Response.json({ success: true, aweme_detail: { aweme_id: id, author: { unique_id: "example" }, video: { duration: 17200, play_addr: { url_list: ["https://v19.tiktokcdn.com/source.mp4"] } } } });
+    }
+    assert.equal(url.hostname, "v19.tiktokcdn.com");
+    assert.equal(new Headers(init?.headers).has("x-api-key"), false);
+    return options.fetcher(input, init);
+  }) as typeof fetch;
+  const result = await analyzeTikTokVideo({ video }, { ...options, apiKey: "", scrapeCreatorsApiKey: "sc-test-key", fetcher });
+  assert.equal(result.evidence.provider, "scrapecreators");
+  assert.equal(result.evidence.temporaryMediaRemoved, true);
+});
+
+test("original-media metadata automatically falls back from ScrapeCreators to TikHub", async t => {
+  const options = await setup(t);
+  const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => new URL(String(input)).hostname === "api.scrapecreators.com"
+    ? new Response("unavailable", { status: 503 }) : options.fetcher(input, init)) as typeof fetch;
+  const result = await analyzeTikTokVideo({ video }, { ...options, scrapeCreatorsApiKey: "sc-test-key", fetcher });
+  assert.equal(result.evidence.provider, "tikhub");
+  assert.ok(options.phases.some(message => message.includes("已切换 TikHub")));
+});
+
 test("HTTP 200 HTML payloads, mismatched IDs and excess duration never become media analysis", async t => {
   const options = await setup(t);
   const originalFetcher = options.fetcher;

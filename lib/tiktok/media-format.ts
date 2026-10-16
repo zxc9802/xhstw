@@ -46,7 +46,7 @@ export function validateMediaOutput(input: unknown, duration: number, hasAudio: 
 export type MediaAnalysis = ReturnType<typeof validateMediaOutput> & {
   id: string; videoId: string; url: string; author: string; capturedAt: string; generatedAt: string; model: string; duration: number;
   basis: "video_audio";
-  evidence: { metadataId: string; sourceField: string; sourceUrlSha256: string; videoSha256: string; modelVideoSha256: string;
+  evidence: { provider?: "scrapecreators" | "tikhub"; metadataId: string; sourceField: string; sourceUrlSha256: string; videoSha256: string; modelVideoSha256: string;
     bytes: number; modelBytes: number; videoCodec: string; audioCodec: string | null; hasAudio: boolean; decoded: true; temporaryMediaRemoved: boolean };
 };
 
@@ -57,6 +57,7 @@ export function validateStoredMedia(input: unknown): MediaAnalysis {
     || ![row.capturedAt, row.generatedAt].every(value => typeof value === "string" && /T.*(?:Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(Date.parse(value)))) invalid("保存的原视频分析信息无效");
   const video = normalizeVideo({ id: row.videoId, url: row.url, author: row.author });
   if (evidence.metadataId !== video.id || evidence.decoded !== true || typeof evidence.hasAudio !== "boolean"
+    || (evidence.provider !== undefined && (typeof evidence.provider !== "string" || !["scrapecreators", "tikhub"].includes(evidence.provider)))
     || ![evidence.sourceUrlSha256, evidence.videoSha256, evidence.modelVideoSha256].every(value => typeof value === "string" && /^[a-f0-9]{64}$/i.test(value))) invalid("原视频来源或媒体验证信息无效");
   const fields = validateMediaOutput({ inputRecognized: true, durationSeconds: row.duration, transcript: row.transcript, timeline: row.timeline, summary: row.summary, warnings: row.warnings }, row.duration, evidence.hasAudio);
   return { ...row, ...fields } as MediaAnalysis;

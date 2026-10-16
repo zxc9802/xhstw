@@ -2,8 +2,7 @@ import { TikTokServiceError } from "./errors";
 import { extractVideoRows, mergeVideos, normalizeVideo, record, type TikTokVideo } from "./videos";
 import { getTikTokRewriteConfig } from "./rewrite";
 import { countryOptions } from "./countries";
-
-const baseUrl = "https://api.tikhub.io/api/v1/tiktok/";
+import { createCollectionApi, hasCollectionKey, providerLabel, type CollectionApiOptions, type CollectionProvider } from "./collection-api";
 
 function videoEvidence(value: unknown) {
   const row = record(value), author = record(row.author), video = record(row.video);
@@ -17,15 +16,15 @@ function videoEvidence(value: unknown) {
 
 export function getTikTokCapabilities() {
   return {
-    collection: Boolean(process.env.TIKHUB_API_KEY?.trim()),
+    collection: hasCollectionKey(),
     production: Boolean(getTikTokRewriteConfig().apiKey),
     productionModel: getTikTokRewriteConfig().model,
-    visualAnalysis: Boolean(process.env.TIKHUB_API_KEY?.trim()) && Boolean(getTikTokRewriteConfig().apiKey),
-    transcription: Boolean(process.env.TIKHUB_API_KEY?.trim()) && Boolean(getTikTokRewriteConfig().apiKey)
+    visualAnalysis: hasCollectionKey() && Boolean(getTikTokRewriteConfig().apiKey),
+    transcription: hasCollectionKey() && Boolean(getTikTokRewriteConfig().apiKey)
   };
 }
 
-export async function collectTikTokVideos(input: unknown, options: { apiKey?: string; fetcher?: typeof fetch } = {}) {
+export async function collectTikTokVideos(input: unknown, options: CollectionApiOptions = {}) {
   const body = record(input);
   const keyword = typeof body.keyword === "string" ? body.keyword.trim() : "";
   const urls = Array.isArray(body.urls) ? body.urls : [];
@@ -38,41 +37,37 @@ export async function collectTikTokVideos(input: unknown, options: { apiKey?: st
   if (!keyword && !urls.length) throw new TikTokServiceError("请输入关键词或完整视频链接");
   if (keyword.length > 100 || !Number.isInteger(limit) || Number(limit) < 1 || Number(limit) > 50) throw new TikTokServiceError("关键词最多 100 字，每批采集 1–50 条候选");
   if (!Number.isSafeInteger(offset) || Number(offset) < 0 || ![3, 7].includes(days as number)) throw new TikTokServiceError("分页或时间范围无效");
+  if (body.provider !== undefined && (typeof body.provider !== "string" || !["scrapecreators", "tikhub"].includes(body.provider))) throw new TikTokServiceError("采集来源无效，请重新开始采集");
+  if (Number(offset) > 0 && body.provider === undefined) throw new TikTokServiceError("下一批需要携带采集来源，请重新开始采集");
   if (urls.length > 20) throw new TikTokServiceError("一次最多采集 20 个视频链接");
   const linkRows = urls.map((url) => {
     if (typeof url !== "string") throw new TikTokServiceError("视频链接格式无效");
     const id = url.match(/\/video\/(\d+)/)?.[1];
     try { return normalizeVideo({ id, url }); } catch (error) { throw new TikTokServiceError(error instanceof Error ? error.message : "视频链接无效"); }
   });
-  const apiKey = options.apiKey ?? process.env.TIKHUB_API_KEY?.trim();
-  if (!apiKey) throw new TikTokServiceError("尚未配置 TIKHUB_API_KEY，无法真实采集；可先导入 JSON/CSV", 503);
-  const fetcher = options.fetcher ?? fetch;
+  if (!hasCollectionKey(options)) throw new TikTokServiceError("尚未配置 SCRAPECREATORS_API_KEY 或 TIKHUB_API_KEY，无法真实采集；可先导入 JSON/CSV", 503);
   const capturedAt = new Date().toISOString();
   const deadline = Date.now() + 110000;
   const warnings: string[] = [];
   const evidencePages: Array<{ offset: number; response: unknown }> = [];
+  const rowProviders = new WeakMap<object, CollectionProvider>();
+  const dataProviders = new WeakMap<object, CollectionProvider>();
+  let searchProvider = body.provider as CollectionProvider | undefined, searchOffset = Number(offset);
+  const api = createCollectionApi({ ...options, signal: AbortSignal.timeout(110000), onFallback: message => warnings.push(message) });
 
   async function request(endpoint: string, params: Record<string, string | number>) {
     if (Date.now() >= deadline) throw new TikTokServiceError("本批采集达到时间上限，未完成字段请下一批核实", 502);
-    const url = new URL(endpoint.startsWith("web/") ? endpoint : `app/v3/${endpoint}`, baseUrl);
-    for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
-    let response: Response;
-    try {
-      response = await fetcher(url.toString(), { headers: { Authorization: `Bearer ${apiKey}` }, cache: "no-store", signal: AbortSignal.timeout(Math.max(1, Math.min(20000, deadline - Date.now()))) });
-    } catch { throw new TikTokServiceError(`TikHub ${endpoint} 连接失败或超时`, 502); }
-    if (!response.ok) throw new TikTokServiceError(`TikHub ${endpoint} HTTP ${response.status}，请检查服务权限与额度`, 502);
-    const envelope = record(await response.json().catch(() => null));
-    if (envelope.code !== 200) throw new TikTokServiceError(`TikHub ${endpoint} 业务状态异常`, 502);
-    const data = record(envelope.data);
-    for (const key of ["status_code", "statusCode"]) {
-      if (data[key] !== undefined && data[key] !== 0) throw new TikTokServiceError(`TikHub ${endpoint} 上游业务状态异常`, 502);
+    const result = await api.request(endpoint, params, endpoint === "fetch_general_search_result" ? searchProvider : undefined);
+    dataProviders.set(result.data, result.provider);
+    if (endpoint === "fetch_general_search_result") {
+      searchProvider = result.provider; searchOffset = result.offset;
     }
-    if (record(data.search_nil_info).search_nil_item === "hit_shark") throw new TikTokServiceError("TikHub 上游搜索暂不可用（hit_shark），无法确认候选数量；请稍后重试或联系 TikHub", 502);
-    return data;
+    for (const row of extractVideoRows(result.data)) if (row && typeof row === "object") rowProviders.set(row, result.provider);
+    return result.data;
   }
 
   async function detailVideo(id: string, username: string) {
-    const data = await request("fetch_one_video_v3", { aweme_id: id, region });
+    const data = await request("fetch_one_video_v3", { aweme_id: id, username, region });
     const row = extractVideoRows(data).find((value) => record(value).aweme_id === id);
     if (!row) throw new Error("详情视频 ID 与请求不一致");
     const author = record(record(row).author);
@@ -95,7 +90,7 @@ export async function collectTikTokVideos(input: unknown, options: { apiKey?: st
       const evidence: Record<string, unknown> = {};
       if (profileResult.status === "fulfilled") {
         const profile = record(profileResult.value.user ?? profileResult.value);
-        evidence.profile = { unique_id: profile.unique_id, sec_uid: profile.sec_uid, follower_count: profile.follower_count };
+        evidence.profile = { provider: dataProviders.get(profileResult.value), unique_id: profile.unique_id, sec_uid: profile.sec_uid, follower_count: profile.follower_count };
         if (typeof profile.unique_id === "string" && profile.unique_id.toLowerCase() === key
           && !(typeof secUid === "string" && typeof profile.sec_uid === "string" && profile.sec_uid !== secUid)) {
           if (Number.isSafeInteger(profile.follower_count) && Number(profile.follower_count) >= 0) followers = Number(profile.follower_count);
@@ -103,7 +98,7 @@ export async function collectTikTokVideos(input: unknown, options: { apiKey?: st
       } else warnings.push(`@${username}：${profileResult.reason instanceof Error ? profileResult.reason.message : "粉丝数读取失败"}`);
       if (countryResult.status === "fulfilled") {
         const data = countryResult.value;
-        evidence.country = { username: data.username, sec_user_id: data.sec_user_id, country: data.country };
+        evidence.country = { provider: dataProviders.get(data), username: data.username, sec_user_id: data.sec_user_id, country: data.country };
         if (typeof data.username === "string" && data.username.toLowerCase() === key
           && !(typeof secUid === "string" && typeof data.sec_user_id === "string" && data.sec_user_id !== secUid)) {
           if (typeof data.country === "string" && /^[A-Za-z]{2}$/.test(data.country)) country = data.country.toUpperCase();
@@ -131,7 +126,8 @@ export async function collectTikTokVideos(input: unknown, options: { apiKey?: st
     for (let page = 0; page < 5 && rawRows.length < Number(limit); page++) {
       let data: Record<string, unknown>;
       try {
-        data = await request("fetch_general_search_result", { keyword, offset: cursor, count: Math.min(20, Number(limit) - rawRows.length), sort_type: 1, publish_time: 7 });
+        data = await request("fetch_general_search_result", { keyword, region, offset: cursor, count: Math.min(20, Number(limit) - rawRows.length), sort_type: 1, publish_time: 7 });
+        cursor = searchOffset;
       } catch (error) {
         if (!rawRows.length) throw error;
         warnings.push(error instanceof Error ? error.message : "后续页读取失败");
@@ -139,7 +135,8 @@ export async function collectTikTokVideos(input: unknown, options: { apiKey?: st
       }
       if (!Array.isArray(data.data) && !Array.isArray(data.aweme_list) && !Array.isArray(data.videos)) throw new TikTokServiceError("TikHub 搜索响应缺少视频列表，需核实接口结构", 502);
       const rows = extractVideoRows(data);
-      evidencePages.push({ offset: cursor, response: { status_code: data.status_code, has_more: data.has_more, cursor: data.cursor, offset: data.offset, videos: rows.map(videoEvidence) } });
+      if (rows.length > Number(limit) - rawRows.length) warnings.push(`上游本页返回 ${rows.length} 条，本批最多处理剩余 ${Number(limit) - rawRows.length} 条；超出部分未处理，可提高每批数量后重新采集`);
+      evidencePages.push({ offset: cursor, response: { provider: searchProvider, status_code: data.status_code, has_more: data.has_more, cursor: data.cursor, offset: data.offset, videos: rows.map(videoEvidence) } });
       let added = 0;
       for (const value of rows) {
         const id = record(value).aweme_id;
@@ -167,11 +164,11 @@ export async function collectTikTokVideos(input: unknown, options: { apiKey?: st
     const results = await Promise.allSettled(rawRows.slice(i, i + 4).map(async (value) => {
       let row = record(value);
       if (row.image_post_info || row.aweme_type === 150) throw new Error("图文作品已跳过");
-      let video = normalizeVideo(row, capturedAt, "TikHub App V3");
+      let video = normalizeVideo(row, capturedAt, providerLabel(rowProviders.get(row) ?? "tikhub"));
       if (!detailedIds.has(video.id)) {
         try {
           row = record(await detailVideo(video.id, video.author));
-          video = normalizeVideo(row, capturedAt, "TikHub App V3");
+          video = normalizeVideo(row, capturedAt, providerLabel(rowProviders.get(row) ?? "tikhub"));
         } catch (error) { warnings.push(`${video.id}：${error instanceof Error ? error.message : "详情补采失败"}`); }
       }
       if (row.image_post_info || row.aweme_type === 150) throw new Error("图文作品已跳过");
@@ -187,16 +184,16 @@ export async function collectTikTokVideos(input: unknown, options: { apiKey?: st
           && !(typeof record(row.author).sec_uid === "string" && typeof author.secUid === "string" && author.secUid !== record(row.author).sec_uid)) {
           const labels = Array.isArray(item.diversificationLabels) ? item.diversificationLabels.filter(value => typeof value === "string" && value.trim()) : [];
           category = typeof labels[0] === "string" ? labels[0] : null;
-          Object.assign(webEvidence, { id: item.id, author: { uniqueId: author.uniqueId, secUid: author.secUid }, diversificationLabels: labels });
+          Object.assign(webEvidence, { provider: dataProviders.get(webResult.data), id: item.id, author: { uniqueId: author.uniqueId, secUid: author.secUid }, diversificationLabels: labels });
         } else warnings.push(`${video.id} Web 详情身份不一致，内容类目待核实`);
       } else warnings.push(`${video.id}：${webResult.error instanceof Error ? webResult.error.message : "内容类目读取失败"}`);
       return { ...video, followers: facts.followers ?? (video.followers !== null && video.followers > 0 ? video.followers : null), country: facts.country,
-        hasProductLink: null, category, evidence: { video: videoEvidence(row), user: facts.evidence, web: webEvidence } };
+        hasProductLink: null, category, evidence: { video: { provider: rowProviders.get(row), ...videoEvidence(row) }, user: facts.evidence, web: webEvidence } };
     }));
     for (const result of results) {
       if (result.status === "fulfilled") videos = mergeVideos(videos, [result.value]);
       else warnings.push(result.reason instanceof Error ? result.reason.message : "视频记录无效");
     }
   }
-  return { videos, warnings, scanned: rawRows.length, hasMore, nextOffset, capturedAt, evidencePages, keyword, country, sample: "关键词或指定链接样本，非全站覆盖" };
+  return { videos, warnings, scanned: rawRows.length, hasMore, nextOffset, capturedAt, evidencePages, keyword, country, provider: searchProvider, sample: "关键词或指定链接样本，非全站覆盖" };
 }
