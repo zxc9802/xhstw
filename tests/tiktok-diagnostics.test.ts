@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { NextRequest } from "next/server";
 import { middleware } from "../middleware";
-import { POST } from "../app/api/tiktok/collect/route";
+import { GET, POST } from "../app/api/tiktok/collect/route";
 import { createMainAppSessionCookie } from "../lib/main-app-sso";
 import { createCollectionApi } from "../lib/tiktok/collection-api";
 import { collectionTraceHeader } from "../lib/tiktok/diagnostics";
@@ -60,17 +60,16 @@ test("failed upstream calls retain fallback and record HTTP status without input
   assert.doesNotMatch(JSON.stringify(logs), /secret-|private-search/);
 });
 
-test("route traces preserve success and error JSON and correlate with upstream calls", async t => {
-  environment(t, { SCRAPECREATORS_API_KEY: "secret-key", TIKHUB_API_KEY: "" });
+test("route traces preserve capability and input error JSON without starting paid requests", async t => {
+  environment(t, { DISABLE_SSO: "true", SCRAPECREATORS_API_KEY: "secret-key", TIKHUB_API_KEY: "" });
   const logs = capture(t), requestId = crypto.randomUUID();
-  t.mock.method(globalThis, "fetch", async () => Response.json({ success: true, search_item_list: [], has_more: 0 }));
-  const response = await POST(new Request("https://studio.example/api/tiktok/collect", { method: "POST", headers: { [collectionTraceHeader]: requestId, "Content-Type": "application/json" }, body: JSON.stringify({ keyword: "private-search", limit: 1 }) }));
+  const upstream = t.mock.method(globalThis, "fetch", async () => { throw new Error("Must not call upstream"); });
+  const response = await GET(new Request("https://studio.example/api/tiktok/collect", { headers: { [collectionTraceHeader]: requestId } }));
   assert.equal(response.status, 200);
-  assert.equal((await response.json()).data.scanned, 0);
+  assert.equal((await response.json()).data.collection, true);
   assert.equal(response.headers.get(collectionTraceHeader), requestId);
   assert.ok(logs.every(log => log.requestId === requestId));
-  assert.equal(logs[0].stage, "route.enter");
-  assert.equal(logs.at(-1)?.stage, "route.complete");
+  assert.equal(logs[0].stage, "route.status");
   assert.equal(logs.at(-1)?.status, 200);
   assert.doesNotMatch(JSON.stringify(logs), /secret-key|private-search/);
   const bad = await POST(new Request("https://studio.example/api/tiktok/collect", { method: "POST", body: "invalid-json" }));
@@ -78,4 +77,17 @@ test("route traces preserve success and error JSON and correlate with upstream c
   assert.equal((await bad.json()).ok, false);
   assert.equal(logs.at(-1)?.stage, "route.error");
   assert.equal(logs.at(-1)?.status, 400);
+  const oldClient = await POST(new Request("https://studio.example/api/tiktok/collect", { method: "POST", body: JSON.stringify({ keyword: "private-search" }) }));
+  assert.equal(oldClient.status, 400);
+  const invalidId = await POST(new Request("https://studio.example/api/tiktok/collect", { method: "POST", body: JSON.stringify({ keyword: "private-search", jobId: "invalid" }) }));
+  assert.equal(invalidId.status, 400);
+  assert.match((await invalidId.json()).error, /编号无效/);
+  assert.equal(upstream.mock.callCount(), 0);
+});
+
+test("job lookup requires a valid owner even when the route is invoked without middleware", async t => {
+  environment(t, { DISABLE_SSO: "false" });
+  const response = await GET(new Request(`https://studio.example/api/tiktok/collect?jobId=${crypto.randomUUID()}`));
+  assert.equal(response.status, 401);
+  assert.equal((await response.json()).ok, false);
 });

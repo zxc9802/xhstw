@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Download, Search, Upload, Video } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
@@ -12,11 +12,12 @@ import { restoreTikTokBackup, type CollectionRun } from "@/lib/tiktok/backup";
 import type { MediaAnalysis } from "@/lib/tiktok/media-format";
 import { countryOptions } from "@/lib/tiktok/countries";
 import type { CollectionProvider } from "@/lib/tiktok/collection-api";
+import { CollectionJobError, retrieveCollection, type PendingCollection } from "@/lib/tiktok/collection-client";
 
 const storageKey = "content-production-studio.tiktok-videos.v1";
+const pendingStorageKey = `${storageKey}.pending`;
 const fieldClass = "w-full rounded-md border border-line bg-white px-3 py-2 text-sm text-ink focus:border-orange-400 focus:outline-none";
 type Capabilities = { collection: boolean; production: boolean; productionModel: string; visualAnalysis: boolean; transcription: boolean };
-type Collection = { videos: TikTokVideo[]; warnings: string[]; scanned: number; hasMore: boolean; nextOffset: number | null; capturedAt: string; evidencePages: unknown[]; keyword: string; country: string; provider?: CollectionProvider };
 type View = "all" | "matched" | "pending" | "excluded";
 const views: Array<{ key: View; label: string }> = [{ key: "all", label: "全部候选" }, { key: "matched", label: "命中" }, { key: "pending", label: "待核实" }, { key: "excluded", label: "不符合" }];
 const statusLabels = { matched: "命中", pending: "待核实", excluded: "不符合" };
@@ -43,12 +44,16 @@ export default function TikTokPage() {
   const [limit, setLimit] = useState(20);
   const [continuation, setContinuation] = useState<{ query: string; offset: number; days: number; country: string; provider?: CollectionProvider } | null>(null);
   const [busy, setBusy] = useState(false);
+  const collectionBusy = useRef(false);
+  const [pendingCollection, setPendingCollection] = useState<PendingCollection | null>(null);
   const [message, setMessage] = useState("");
   const [warnings, setWarnings] = useState<string[]>([]);
   const [importText, setImportText] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [clock, setClock] = useState(() => new Date());
+  const latestBackup = useRef({ videos, productions, mediaAnalyses, runs });
+  latestBackup.current = { videos, productions, mediaAnalyses, runs };
 
   useEffect(() => {
     let active = true;
@@ -58,6 +63,14 @@ export default function TikTokPage() {
       if (active) setCapabilities(payload.data);
     }).catch(() => { if (active) setMessage("服务状态读取失败，请刷新页面重试。"); });
     try {
+      const pending = window.localStorage.getItem(pendingStorageKey);
+      if (pending) {
+        const parsed = JSON.parse(pending);
+        if (typeof parsed.id === "string" && parsed.input && typeof parsed.input === "object") {
+          setPendingCollection(parsed);
+          setMessage("上次采集任务编号已保留，请点击“继续获取结果”。");
+        }
+      }
       const saved = window.localStorage.getItem(storageKey);
       if (saved) {
         const parsed = JSON.parse(saved);
@@ -92,22 +105,35 @@ export default function TikTokPage() {
   }
 
   async function collect(next = false) {
-    setBusy(true); setMessage("正在采集并核实创作者国家与粉丝数…"); setWarnings([]);
+    if (collectionBusy.current) return;
+    collectionBusy.current = true;
+    setBusy(true); setMessage(pendingCollection ? "正在获取已提交任务的结果…" : "正在后台采集并核实创作者国家与粉丝数…"); setWarnings([]);
+    let pending = pendingCollection;
     try {
-      const response = await fetch("/api/tiktok/collect", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ country: filters.country, ...(mode === "links" ? { urls: query.split(/\s+/).filter(Boolean) } : { keyword: query.trim(), days: filters.days, limit, offset: next && continuation ? continuation.offset : 0, provider: next && continuation ? continuation.provider : undefined }) })
-      });
-      const payload = await response.json();
-      if (!response.ok || !payload.ok) throw new Error(payload.error || "采集失败");
-      const result = payload.data as Collection;
-      addRows(result.videos);
-      setRuns((current) => { const { videos: _videos, ...run } = result; return [...current.slice(-9), run]; });
+      const submit = !pending;
+      if (!pending) {
+        pending = { id: crypto.randomUUID(), input: { country: filters.country, ...(mode === "links" ? { urls: query.split(/\s+/).filter(Boolean) } : { keyword: query.trim(), days: filters.days, limit, offset: next && continuation ? continuation.offset : 0, provider: next && continuation ? continuation.provider : undefined }) } };
+        // Persist before the paid request so a lost response or a refresh can recover the same job.
+        window.localStorage.setItem(pendingStorageKey, JSON.stringify(pending));
+        setPendingCollection(pending);
+      }
+      const result = await retrieveCollection(pending, submit);
+      const { videos: incoming, ...run } = result;
+      const current = latestBackup.current;
+      const merged = mergeVideos(current.videos, incoming);
+      const nextRuns = [...current.runs.filter(previous => previous.capturedAt !== run.capturedAt).slice(-9), run];
+      // Save the results before forgetting the job ID, including when storage is full.
+      window.localStorage.setItem(storageKey, JSON.stringify({ ...current, videos: merged, runs: nextRuns }));
+      addRows(incoming); setRuns(nextRuns);
       setWarnings(result.warnings);
-      setContinuation(result.hasMore && result.nextOffset !== null ? { query: query.trim(), offset: result.nextOffset, days: filters.days, country: filters.country, provider: result.provider } : null);
+      setContinuation(result.hasMore && result.nextOffset !== null ? { query: result.keyword, offset: result.nextOffset, days: Number(pending.input.days ?? 7), country: result.country, provider: result.provider } : null);
+      window.localStorage.removeItem(pendingStorageKey); setPendingCollection(null);
       setMessage(`本批读取 ${result.scanned} 条候选，保留 ${result.videos.length} 条视频。${result.hasMore ? "搜索还有后续或尚未完成，详见采集说明。" : "本次搜索已结束。"}`);
-    } catch (error) { setMessage(error instanceof Error ? error.message : "采集失败"); }
-    finally { setBusy(false); }
+    } catch (error) {
+      if (error instanceof CollectionJobError && error.terminal) { window.localStorage.removeItem(pendingStorageKey); setPendingCollection(null); }
+      setMessage(error instanceof Error ? error.message : "采集失败");
+    }
+    finally { collectionBusy.current = false; setBusy(false); }
   }
 
   function importContent(content: string, format?: "json" | "csv") {
@@ -148,8 +174,12 @@ export default function TikTokPage() {
               <label className="block text-sm font-medium">{mode === "keyword" ? "搜索关键词" : "完整视频链接（每行一条）"}<textarea aria-label={mode === "keyword" ? "搜索关键词" : "完整视频链接"} className={`${fieldClass} mt-1`} rows={3} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={mode === "keyword" ? "输入产品、场景或马来语关键词" : "https://www.tiktok.com/@作者/video/视频ID"} /></label>
               <div className="flex flex-wrap items-center gap-2">
                 {mode === "keyword" && <select aria-label="每批候选数" className="rounded-md border border-line p-2 text-sm" value={limit} onChange={(event) => setLimit(Number(event.target.value))}><option value={20}>每批 20 条候选</option><option value={50}>每批 50 条候选</option></select>}
-                <Button variant="primary" disabled={busy || !query.trim() || !capabilities?.collection} icon={<Search className="h-4 w-4" />} onClick={() => void collect()}>{busy ? "核验中…" : "开始采集"}</Button>
-                {canContinue && <Button disabled={busy || !capabilities?.collection} onClick={() => void collect(true)}>继续下一批</Button>}
+                <Button variant="primary" disabled={busy || !hydrated || (!pendingCollection && (!query.trim() || !capabilities?.collection))} icon={<Search className="h-4 w-4" />} onClick={() => void collect()}>{busy ? "核验中…" : pendingCollection ? "继续获取结果" : "开始采集"}</Button>
+                {canContinue && !pendingCollection && <Button disabled={busy || !capabilities?.collection} onClick={() => void collect(true)}>继续下一批</Button>}
+                {pendingCollection && !busy && <Button onClick={() => {
+                  if (!window.confirm("清除记录不会取消后台任务。之后重新采集可能再次扣费，确定放弃获取本次结果？")) return;
+                  window.localStorage.removeItem(pendingStorageKey); setPendingCollection(null); setMessage("已清除本地任务编号，后台任务不会因此取消。");
+                }}>放弃获取</Button>}
               </div>
               {capabilities && !capabilities.collection && <p className="text-xs leading-5 text-amber-800">尚未配置 ScrapeCreators 或 TikHub 服务，先导入已有数据即可筛选。</p>}
             </div>

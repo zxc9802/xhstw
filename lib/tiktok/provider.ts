@@ -24,7 +24,7 @@ export function getTikTokCapabilities() {
   };
 }
 
-export async function collectTikTokVideos(input: unknown, options: CollectionApiOptions = {}) {
+export function validateCollectionInput(input: unknown, options: CollectionApiOptions = {}) {
   const body = record(input);
   const keyword = typeof body.keyword === "string" ? body.keyword.trim() : "";
   const urls = Array.isArray(body.urls) ? body.urls : [];
@@ -46,6 +46,13 @@ export async function collectTikTokVideos(input: unknown, options: CollectionApi
     try { return normalizeVideo({ id, url }); } catch (error) { throw new TikTokServiceError(error instanceof Error ? error.message : "视频链接无效"); }
   });
   if (!hasCollectionKey(options)) throw new TikTokServiceError("尚未配置 SCRAPECREATORS_API_KEY 或 TIKHUB_API_KEY，无法真实采集；可先导入 JSON/CSV", 503);
+  return { body, keyword, limit, offset, country, region, linkRows };
+}
+
+export type CollectionResult = Awaited<ReturnType<typeof collectTikTokVideos>>;
+
+export async function collectTikTokVideos(input: unknown, options: CollectionApiOptions = {}) {
+  const { body, keyword, limit, offset, country, region, linkRows } = validateCollectionInput(input, options);
   const capturedAt = new Date().toISOString();
   const deadline = Date.now() + 110000;
   const warnings: string[] = [];

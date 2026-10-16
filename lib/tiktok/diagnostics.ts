@@ -6,6 +6,7 @@ export function collectionRequestId(headers: Headers) {
 }
 
 type CollectionLogFields = {
+  jobId?: string;
   method?: string; status?: number | null; elapsedMs?: number;
   attempt?: number; provider?: string; endpoint?: string; contentType?: string;
   reason?: string; errorType?: string; scanned?: number; retained?: number; warnings?: number;
