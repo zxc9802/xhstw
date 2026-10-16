@@ -15,7 +15,7 @@ function mockData(url: URL) {
     if (url.pathname.endsWith("profile")) return response({ user: { uniqueId: "example", secUid: "bound-sec" }, stats: { followerCount: 1234 } });
     if (url.pathname.endsWith("video")) return response({ aweme_detail: item, privateCookie: "private-cookie", transcript: "ignored" });
   } else {
-    if (url.pathname.endsWith("fetch_general_search_result")) return fallback({ data: [{ aweme_info: item }], has_more: false });
+    if (url.pathname.endsWith("fetch_video_search_result")) return fallback({ data: [{ aweme_info: item }], has_more: false });
     if (url.pathname.endsWith("fetch_one_video_v3")) return fallback({ aweme_detail: item });
     if (url.pathname.endsWith("handler_user_profile")) return fallback({ user: { unique_id: "example", sec_uid: "bound-sec", follower_count: 5678 } });
     if (url.pathname.endsWith("fetch_user_country_by_username")) return fallback({ username: "example", country: "MY", sec_user_id: "bound-sec" });
@@ -63,11 +63,11 @@ test("TikHub is first for all collection fields when both providers are configur
 test("TikHub errors switch to ScrapeCreators and disclose the fallback", async () => {
   const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
-    if (url.hostname === "api.tikhub.io" && url.pathname.endsWith("fetch_general_search_result")) return new Response("rate limited", { status: 429 });
+    if (url.hostname === "api.tikhub.io" && url.pathname.endsWith("fetch_video_search_result")) return new Response("rate limited", { status: 429 });
     if (url.hostname === "api.tikhub.io") {
       assert.equal(new Headers(init?.headers).get("Authorization"), "Bearer backup-key");
       assert.equal(new Headers(init?.headers).has("x-api-key"), false);
-      if (url.pathname.endsWith("fetch_general_search_result")) assert.equal(url.searchParams.has("region"), false);
+      if (url.pathname.endsWith("fetch_video_search_result")) assert.equal(url.searchParams.has("region"), false);
     }
     return mockData(url);
   }) as typeof fetch;
@@ -82,7 +82,7 @@ test("provider cursors remain bound and switching providers restarts the backup 
   const fetcher = (async (input: RequestInfo | URL) => {
     const url = new URL(String(input));
     if (url.pathname.endsWith("search/keyword")) { assert.equal(url.searchParams.get("cursor"), "100"); throw new Error("offline"); }
-    if (url.pathname.endsWith("fetch_general_search_result")) { offsets.push(url.searchParams.get("offset")!); return fallback({ data: [{ aweme_info: item }], has_more: 1, cursor: 10 }); }
+    if (url.pathname.endsWith("fetch_video_search_result")) { offsets.push(url.searchParams.get("offset")!); return fallback({ data: [{ aweme_info: item }], has_more: 1, cursor: 10 }); }
     return mockData(url);
   }) as typeof fetch;
   const result = await collectTikTokVideos({ ...request, provider: "scrapecreators", offset: 100 }, options(fetcher, "backup-key"));
@@ -144,10 +144,10 @@ test("TikHub search fallback resets the cursor and subsequent pages stay with Sc
   }) as typeof fetch;
   const warnings: string[] = [];
   const api = createCollectionApi({ ...options(fetcher, "tikhub-key"), onFallback: message => warnings.push(message) });
-  const result = await api.request("fetch_general_search_result", { keyword: "test", offset: 100 }, "tikhub");
+  const result = await api.request("fetch_video_search_result", { keyword: "test", offset: 100 }, "tikhub");
   assert.equal(result.provider, "scrapecreators");
   assert.equal(result.offset, 0);
-  await api.request("fetch_general_search_result", { keyword: "test", offset: 12 }, result.provider);
+  await api.request("fetch_video_search_result", { keyword: "test", offset: 12 }, result.provider);
   assert.deepEqual(calls, ["api.tikhub.io", "api.scrapecreators.com", "api.scrapecreators.com"]);
   assert.match(warnings.join(" "), /hit_shark.*游标不通用/);
 });
@@ -167,7 +167,7 @@ test("a missing continuation provider resets the other provider's cursor", async
       return preferred === "tikhub" ? response({ search_item_list: [], has_more: 0 }) : fallback({ data: [], has_more: false });
     }) as typeof fetch;
     const api = createCollectionApi({ apiKey: preferred === "tikhub" ? "" : "test", scrapeCreatorsApiKey: preferred === "scrapecreators" ? "" : "test", fetcher });
-    assert.equal((await api.request("fetch_general_search_result", { keyword: "test", offset: 100 }, preferred)).offset, 0);
+    assert.equal((await api.request("fetch_video_search_result", { keyword: "test", offset: 100 }, preferred)).offset, 0);
   }
 });
 

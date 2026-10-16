@@ -58,7 +58,7 @@ function analysisPrompt(duration: number) {
 export async function analyzeTikTokVideo(input: unknown, options: Options = {}): Promise<MediaAnalysis> {
   let video;
   try { video = normalizeVideo(record(input).video); } catch { throw new TikTokServiceError("需要身份一致的完整 TikTok 视频记录"); }
-  const region = countryOptions.some(option => option.code === video.country) ? video.country! : "MY";
+  const region = video.searchRegion ?? (countryOptions.some(option => option.code === video.country) ? video.country! : "MY");
   if (!hasCollectionKey(options) || !getTikTokRewriteConfig().apiKey) throw new TikTokServiceError("原视频分析需要配置 ScrapeCreators 或 TikHub，以及 OpenLux 服务", 503);
   const fetcher = options.fetcher ?? fetch, command = options.runCommand ?? runCommand;
   const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(240000)]) : AbortSignal.timeout(240000);

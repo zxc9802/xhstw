@@ -3,6 +3,7 @@ import { extractVideoRows, mergeVideos, normalizeVideo, record, type TikTokVideo
 import { getTikTokRewriteConfig } from "./rewrite";
 import { countryOptions } from "./countries";
 import { createCollectionApi, hasCollectionKey, providerLabel, type CollectionApiOptions, type CollectionProvider } from "./collection-api";
+import { collectBatch, validateBatchInput, type BatchOptions } from "./batch-collection";
 
 function videoEvidence(value: unknown) {
   const row = record(value), author = record(row.author), video = record(row.video);
@@ -24,7 +25,7 @@ export function getTikTokCapabilities() {
   };
 }
 
-export function validateCollectionInput(input: unknown, options: CollectionApiOptions = {}) {
+function validateLegacyInput(input: unknown, options: CollectionApiOptions = {}) {
   const body = record(input);
   const keyword = typeof body.keyword === "string" ? body.keyword.trim() : "";
   const urls = Array.isArray(body.urls) ? body.urls : [];
@@ -51,8 +52,17 @@ export function validateCollectionInput(input: unknown, options: CollectionApiOp
 
 export type CollectionResult = Awaited<ReturnType<typeof collectTikTokVideos>>;
 
-export async function collectTikTokVideos(input: unknown, options: CollectionApiOptions = {}) {
-  const { body, keyword, limit, offset, country, region, linkRows } = validateCollectionInput(input, options);
+export function validateCollectionInput(input: unknown, options: CollectionApiOptions = {}) {
+  return record(input).target !== undefined ? validateBatchInput(input, options) : validateLegacyInput(input, options);
+}
+
+export async function collectTikTokVideos(input: unknown, options: BatchOptions = {}) {
+  // Preserve saved jobs from older clients and explicit-link collection.
+  return record(input).target !== undefined ? collectBatch(input, options) : collectLegacyVideos(input, options);
+}
+
+async function collectLegacyVideos(input: unknown, options: CollectionApiOptions = {}) {
+  const { body, keyword, limit, offset, country, region, linkRows } = validateLegacyInput(input, options);
   const capturedAt = new Date().toISOString();
   const deadline = Date.now() + 110000;
   const warnings: string[] = [];
@@ -64,9 +74,9 @@ export async function collectTikTokVideos(input: unknown, options: CollectionApi
 
   async function request(endpoint: string, params: Record<string, string | number>) {
     if (Date.now() >= deadline) throw new TikTokServiceError("本批采集达到时间上限，未完成字段请下一批核实", 502);
-    const result = await api.request(endpoint, params, endpoint === "fetch_general_search_result" ? searchProvider : undefined);
+    const result = await api.request(endpoint, params, endpoint === "fetch_video_search_result" ? searchProvider : undefined);
     dataProviders.set(result.data, result.provider);
-    if (endpoint === "fetch_general_search_result") {
+    if (endpoint === "fetch_video_search_result") {
       searchProvider = result.provider; searchOffset = result.offset;
     }
     for (const row of extractVideoRows(result.data)) if (row && typeof row === "object") rowProviders.set(row, result.provider);
@@ -133,14 +143,14 @@ export async function collectTikTokVideos(input: unknown, options: CollectionApi
     for (let page = 0; page < 5 && rawRows.length < Number(limit); page++) {
       let data: Record<string, unknown>;
       try {
-        data = await request("fetch_general_search_result", { keyword, region, offset: cursor, count: Math.min(20, Number(limit) - rawRows.length), sort_type: 1, publish_time: 7 });
+        data = await request("fetch_video_search_result", { keyword, region, offset: cursor, count: Math.min(20, Number(limit) - rawRows.length), sort_type: 1, publish_time: 7 });
         cursor = searchOffset;
       } catch (error) {
         if (!rawRows.length) throw error;
         warnings.push(error instanceof Error ? error.message : "后续页读取失败");
         hasMore = true; nextOffset = cursor; break;
       }
-      if (!Array.isArray(data.data) && !Array.isArray(data.aweme_list) && !Array.isArray(data.videos)) throw new TikTokServiceError("TikHub 搜索响应缺少视频列表，需核实接口结构", 502);
+      if (!Array.isArray(data.data) && !Array.isArray(data.aweme_list) && !Array.isArray(data.search_item_list) && !Array.isArray(data.videos)) throw new TikTokServiceError("TikHub 搜索响应缺少视频列表，需核实接口结构", 502);
       const rows = extractVideoRows(data);
       if (rows.length > Number(limit) - rawRows.length) warnings.push(`上游本页返回 ${rows.length} 条，本批最多处理剩余 ${Number(limit) - rawRows.length} 条；超出部分未处理，可提高每批数量后重新采集`);
       evidencePages.push({ offset: cursor, response: { provider: searchProvider, status_code: data.status_code, has_more: data.has_more, cursor: data.cursor, offset: data.offset, videos: rows.map(videoEvidence) } });

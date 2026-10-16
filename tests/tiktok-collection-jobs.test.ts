@@ -6,6 +6,7 @@ import test from "node:test";
 import { collectionJobStore } from "../lib/tiktok/collection-jobs";
 import { CollectionJobError, retrieveCollection } from "../lib/tiktok/collection-client";
 import type { CollectionResult } from "../lib/tiktok/provider";
+import type { CollectionProgress } from "../lib/tiktok/batch-collection";
 
 const result: CollectionResult = { videos: [], warnings: [], scanned: 20, hasMore: false, nextOffset: null, capturedAt: "2026-10-16T05:12:53Z", evidencePages: [], keyword: "test", country: "MY", sample: "test", provider: "scrapecreators" };
 const pending = () => ({ id: crypto.randomUUID(), input: { keyword: "test", limit: 20 } });
@@ -38,7 +39,7 @@ test("interrupted jobs are reported as interrupted, never automatically restarte
   store.create("owner", job.id, job.input, crypto.randomUUID());
   const file = path.join(root, readdirSync(root)[0], `${job.id}.json`);
   const saved = JSON.parse(readFileSync(file, "utf8"));
-  writeFileSync(file, JSON.stringify({ ...saved, updatedAt: Date.now() - 181000 }));
+  writeFileSync(file, JSON.stringify({ ...saved, updatedAt: Date.now() - 421000 }));
   assert.equal(store.get("owner", job.id)?.status, "failed");
   await store.run("owner", job.id, async () => { throw new Error("Must not restart"); });
   assert.match(store.get("owner", job.id)?.error ?? "", /已中断/);
@@ -70,4 +71,30 @@ test("unknown jobs and polling timeout keep their IDs, failed jobs do not loop",
   await assert.rejects(retrieveCollection(pending(), false, { fetcher: (async () => Response.json({ ok: false, error: "未找到任务" }, { status: 404 })) as typeof fetch }), error => error instanceof CollectionJobError && !error.terminal);
   await assert.rejects(retrieveCollection(pending(), false, { timeoutMs: 0, sleep: async () => {}, fetcher: (async () => reply("running")) as typeof fetch }), error => error instanceof CollectionJobError && !error.terminal);
   await assert.rejects(retrieveCollection(pending(), false, { fetcher: (async () => reply("failed", { error: "upstream failed" })) as typeof fetch }), error => error instanceof CollectionJobError && error.terminal);
+});
+
+test("running progress and partial results survive polling and a failed worker", async t => {
+  t.mock.method(console, "info", () => {});
+  const root = mkdtempSync(path.join(tmpdir(), "tiktok-progress-")), store = collectionJobStore(root), job = pending();
+  const progress: CollectionProgress = { scanned: 50, unique: 40, matched: 0, pending: 0, target: 20, requests: 6, elapsedMs: 10000, keywordsSearched: 6, videos: [] };
+  store.create("owner", job.id, job.input, crypto.randomUUID());
+  await store.run("owner", job.id, async update => {
+    update(progress);
+    assert.deepEqual(collectionJobStore(root).get("owner", job.id)?.progress, progress);
+    assert.equal(store.get("someone-else", job.id), null);
+    throw new Error("worker failed");
+  });
+  assert.deepEqual(store.get("owner", job.id)?.progress, progress);
+  const updates: CollectionProgress[] = [];
+  await assert.rejects(retrieveCollection(job, false, { onProgress: p => updates.push(p), fetcher: (async () => reply("failed", { progress, error: "worker failed" })) as typeof fetch }));
+  assert.deepEqual(updates, [progress]);
+});
+
+test("a six-minute collection is not treated as stale at the former three-minute cutoff", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "tiktok-timeout-")), store = collectionJobStore(root), job = pending();
+  store.create("owner", job.id, job.input, crypto.randomUUID());
+  const file = path.join(root, readdirSync(root)[0], `${job.id}.json`);
+  const saved = JSON.parse(readFileSync(file, "utf8"));
+  writeFileSync(file, JSON.stringify({ ...saved, status: "running", updatedAt: Date.now() - 300000 }));
+  assert.equal(store.get("owner", job.id)?.status, "running");
 });

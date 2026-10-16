@@ -3,7 +3,7 @@ import { extractVideoRows, record } from "./videos";
 import { logCollectionRequest } from "./diagnostics";
 
 export type CollectionProvider = "scrapecreators" | "tikhub";
-export type CollectionApiOptions = { apiKey?: string; scrapeCreatorsApiKey?: string; fetcher?: typeof fetch; signal?: AbortSignal; onFallback?: (message: string) => void; requestId?: string };
+export type CollectionApiOptions = { apiKey?: string; scrapeCreatorsApiKey?: string; fetcher?: typeof fetch; signal?: AbortSignal; onFallback?: (message: string) => void; requestId?: string; maxRequests?: number; onRateLimit?: () => void };
 export const providerLabel = (provider: CollectionProvider) => provider === "scrapecreators" ? "ScrapeCreators" : "TikHub App V3";
 
 export function hasCollectionKey(options: CollectionApiOptions = {}) {
@@ -14,17 +14,22 @@ export function createCollectionApi(options: CollectionApiOptions = {}) {
   const keys = { scrapecreators: (options.scrapeCreatorsApiKey ?? process.env.SCRAPECREATORS_API_KEY)?.trim(), tikhub: (options.apiKey ?? process.env.TIKHUB_API_KEY)?.trim() };
   const fetcher = options.fetcher ?? fetch;
   let attemptNumber = 0;
+  const unavailable = new Set<CollectionProvider>();
   return {
+    get requestCount() { return attemptNumber; },
+    get exhausted() { return attemptNumber >= (options.maxRequests ?? Infinity); },
     async request(endpoint: string, params: Record<string, string | number>, preferred?: CollectionProvider): Promise<{ data: Record<string, unknown>; provider: CollectionProvider; offset: number }> {
       const providers: CollectionProvider[] = endpoint.startsWith("web/") ? ["tikhub"] : preferred === "scrapecreators" ? ["scrapecreators", "tikhub"] : ["tikhub", "scrapecreators"];
-      const availableProviders = providers.filter(provider => keys[provider]);
+      const availableProviders = providers.filter(provider => keys[provider] && !unavailable.has(provider));
       const errors: string[] = [];
       let offset = Number(params.offset ?? 0);
-      if (preferred && !keys[preferred] && availableProviders[0] && endpoint === "fetch_general_search_result") {
+      if (preferred && !keys[preferred] && availableProviders[0] && endpoint === "fetch_video_search_result") {
         offset = 0;
         options.onFallback?.(`${providerLabel(preferred)} 未配置，已切换 ${providerLabel(availableProviders[0])} 并从首批重新采集；两者分页游标不通用`);
       }
       for (const [index, provider] of availableProviders.entries()) {
+        if (options.signal?.aborted) throw new TikTokServiceError("本轮采集已停止，未继续发起请求", 502);
+        if (attemptNumber >= (options.maxRequests ?? Infinity)) throw new TikTokServiceError("本轮已达到接口请求上限，已停止付费请求", 429);
         const key = keys[provider];
         if (!key) continue;
         let url: URL;
@@ -32,13 +37,12 @@ export function createCollectionApi(options: CollectionApiOptions = {}) {
           url = new URL(endpoint.startsWith("web/") ? endpoint : `app/v3/${endpoint}`, "https://api.tikhub.io/api/v1/tiktok/");
           for (const [name, value] of Object.entries(params)) {
             if (endpoint === "fetch_one_video_v3" && name === "username") continue;
-            if (endpoint === "fetch_general_search_result" && name === "region") continue;
             url.searchParams.set(name, String(name === "offset" ? offset : value));
           }
         } else {
-          const paths: Record<string, string> = { fetch_general_search_result: "/v1/tiktok/search/keyword", fetch_one_video_v3: "/v2/tiktok/video", handler_user_profile: "/v1/tiktok/profile", fetch_user_country_by_username: "/v1/tiktok/profile/region" };
+          const paths: Record<string, string> = { fetch_video_search_result: "/v1/tiktok/search/keyword", fetch_one_video_v3: "/v2/tiktok/video", handler_user_profile: "/v1/tiktok/profile", fetch_user_country_by_username: "/v1/tiktok/profile/region" };
           url = new URL(paths[endpoint], "https://api.scrapecreators.com");
-          const query = endpoint === "fetch_general_search_result" ? { query: params.keyword, date_posted: "this-week", sort_by: "most-liked", region: params.region, cursor: offset }
+          const query = endpoint === "fetch_video_search_result" ? { query: params.keyword, date_posted: "this-week", sort_by: "most-liked", region: params.region, cursor: offset }
             : endpoint === "fetch_one_video_v3" ? { url: `https://www.tiktok.com/@${encodeURIComponent(String(params.username))}/video/${params.aweme_id}`, region: params.region, get_transcript: "false" }
             : { handle: params.unique_id ?? params.username };
           for (const [name, value] of Object.entries(query)) if (value !== undefined) url.searchParams.set(name, String(value));
@@ -53,6 +57,8 @@ export function createCollectionApi(options: CollectionApiOptions = {}) {
           catch { throw new TikTokServiceError(`${providerLabel(provider)} ${endpoint} 连接失败或超时`, 502); }
           status = response.status;
           logCollectionRequest(options.requestId, "upstream.response", { attempt, provider, endpoint, status, elapsedMs: Date.now() - started, contentType: (response.headers.get("content-type") ?? "").split(";")[0].slice(0, 80) });
+          if (response.status === 429) options.onRateLimit?.();
+          if ([401, 402, 403].includes(response.status)) unavailable.add(provider);
           if (!response.ok) throw new TikTokServiceError(`${providerLabel(provider)} ${endpoint} HTTP ${response.status}，请检查服务权限与额度`, 502);
           const envelope = record(await response.json().catch(() => null));
           if (provider === "scrapecreators" ? envelope.success !== true : envelope.code !== 200) throw new TikTokServiceError(`${providerLabel(provider)} ${endpoint} 业务状态异常`, 502);
@@ -60,7 +66,7 @@ export function createCollectionApi(options: CollectionApiOptions = {}) {
           for (const name of ["status_code", "statusCode"]) if (data[name] !== undefined && data[name] !== 0) throw new TikTokServiceError(`${providerLabel(provider)} ${endpoint} 上游业务状态异常`, 502);
           if (record(data.search_nil_info).search_nil_item === "hit_shark") throw new TikTokServiceError(`${providerLabel(provider)} 上游搜索暂不可用（hit_shark），无法确认候选数量；请稍后重试或联系服务商`, 502);
           if (provider === "scrapecreators") {
-            if (endpoint === "fetch_general_search_result") {
+            if (endpoint === "fetch_video_search_result") {
               if (!Array.isArray(data.search_item_list)) throw new TikTokServiceError("ScrapeCreators 搜索响应缺少视频列表", 502);
               const rows = data.search_item_list.map(value => record(value).aweme_info ?? value);
               if (rows.length && !rows.some(value => typeof record(value).aweme_id === "string" && typeof record(record(value).author).unique_id === "string")) throw new TikTokServiceError("ScrapeCreators 搜索未提供有效视频身份", 502);
@@ -88,8 +94,8 @@ export function createCollectionApi(options: CollectionApiOptions = {}) {
           errors.push(message);
           const backup = availableProviders[index + 1];
           if (backup && !options.signal?.aborted) {
-            if (endpoint === "fetch_general_search_result") offset = 0;
-            options.onFallback?.(`${message}；已切换 ${providerLabel(backup)}${endpoint === "fetch_general_search_result" && Number(params.offset) > 0 ? " 并从首批重新采集；两者分页游标不通用" : " 备用接口"}`);
+            if (endpoint === "fetch_video_search_result") offset = 0;
+            options.onFallback?.(`${message}；已切换 ${providerLabel(backup)}${endpoint === "fetch_video_search_result" && Number(params.offset) > 0 ? " 并从首批重新采集；两者分页游标不通用" : " 备用接口"}`);
           }
         }
         if (options.signal?.aborted) break;

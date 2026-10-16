@@ -11,7 +11,6 @@ import type { Production } from "@/lib/tiktok/production";
 import { restoreTikTokBackup, type CollectionRun } from "@/lib/tiktok/backup";
 import type { MediaAnalysis } from "@/lib/tiktok/media-format";
 import { countryOptions } from "@/lib/tiktok/countries";
-import type { CollectionProvider } from "@/lib/tiktok/collection-api";
 import { CollectionJobError, retrieveCollection, type PendingCollection } from "@/lib/tiktok/collection-client";
 
 const storageKey = "content-production-studio.tiktok-videos.v1";
@@ -38,11 +37,10 @@ export default function TikTokPage() {
   const [hydrated, setHydrated] = useState(false);
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
   const [filters, setFilters] = useState<VideoFilters>(defaultFilters);
-  const [view, setView] = useState<View>("all");
+  const [view, setView] = useState<View>("matched");
   const [mode, setMode] = useState<"keyword" | "links">("keyword");
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(20);
-  const [continuation, setContinuation] = useState<{ query: string; offset: number; days: number; country: string; provider?: CollectionProvider } | null>(null);
   const [busy, setBusy] = useState(false);
   const collectionBusy = useRef(false);
   const [pendingCollection, setPendingCollection] = useState<PendingCollection | null>(null);
@@ -96,7 +94,6 @@ export default function TikTokPage() {
   const shown = evaluated.filter((row) => view === "all" || row.status === view).sort((a, b) => (b.ratio ?? -1) - (a.ratio ?? -1));
   const selected = videos.find((video) => video.id === selectedId);
   const selectedEvaluation = evaluated.find((row) => row.video.id === selectedId);
-  const canContinue = continuation && mode === "keyword" && query.trim() === continuation.query && filters.days === continuation.days && filters.country === continuation.country;
 
   function addRows(incoming: TikTokVideo[]) {
     setVideos((current) => mergeVideos(current, incoming));
@@ -104,20 +101,26 @@ export default function TikTokPage() {
     setClock(new Date());
   }
 
-  async function collect(next = false) {
+  async function collect() {
     if (collectionBusy.current) return;
     collectionBusy.current = true;
-    setBusy(true); setMessage(pendingCollection ? "正在获取已提交任务的结果…" : "正在后台采集并核实创作者国家与粉丝数…"); setWarnings([]);
+    setBusy(true); setMessage(pendingCollection ? "正在获取已提交任务的结果…" : "正在并发搜索，筛选并核实符合条件的视频…"); setWarnings([]);
     let pending = pendingCollection;
     try {
       const submit = !pending;
       if (!pending) {
-        pending = { id: crypto.randomUUID(), input: { country: filters.country, ...(mode === "links" ? { urls: query.split(/\s+/).filter(Boolean) } : { keyword: query.trim(), days: filters.days, limit, offset: next && continuation ? continuation.offset : 0, provider: next && continuation ? continuation.provider : undefined }) } };
+        pending = { id: crypto.randomUUID(), input: mode === "links"
+          ? { country: filters.region, urls: query.split(/\s+/).filter(Boolean) }
+          : { keyword: query.trim(), target: limit, filters, excludeIds: videos.filter(video => evaluateVideo(video, filters).status === "matched").map(video => video.id).slice(-5000) } };
         // Persist before the paid request so a lost response or a refresh can recover the same job.
         window.localStorage.setItem(pendingStorageKey, JSON.stringify(pending));
         setPendingCollection(pending);
       }
-      const result = await retrieveCollection(pending, submit);
+      const result = await retrieveCollection(pending, submit, { onProgress: progress => {
+        addRows(progress.videos);
+        setView("matched");
+        setMessage(`已读取 ${progress.scanned} 条，去重 ${progress.unique} 条；已找到 ${progress.matched}/${progress.target} 条合格视频，耗时 ${Math.round(progress.elapsedMs / 1000)} 秒。后台仍在采集…`);
+      } });
       const { videos: incoming, ...run } = result;
       const current = latestBackup.current;
       const merged = mergeVideos(current.videos, incoming);
@@ -126,9 +129,11 @@ export default function TikTokPage() {
       window.localStorage.setItem(storageKey, JSON.stringify({ ...current, videos: merged, runs: nextRuns }));
       addRows(incoming); setRuns(nextRuns);
       setWarnings(result.warnings);
-      setContinuation(result.hasMore && result.nextOffset !== null ? { query: result.keyword, offset: result.nextOffset, days: Number(pending.input.days ?? 7), country: result.country, provider: result.provider } : null);
       window.localStorage.removeItem(pendingStorageKey); setPendingCollection(null);
-      setMessage(`本批读取 ${result.scanned} 条候选，保留 ${result.videos.length} 条视频。${result.hasMore ? "搜索还有后续或尚未完成，详见采集说明。" : "本次搜索已结束。"}`);
+      if ("stats" in result) {
+        setView("matched");
+        setMessage(`本轮找到 ${result.stats.matched}/${result.stats.target} 条合格视频，读取 ${result.scanned} 条、去重 ${result.stats.unique} 条，耗时 ${Math.round(result.stats.elapsedMs / 1000)} 秒。${result.stats.matched < result.stats.target ? "未凑足目标，已保留现有结果，详见采集说明。" : "已达到目标，停止新增请求。"}`);
+      } else setMessage(`本批读取 ${result.scanned} 条候选，保留 ${result.videos.length} 条视频。`);
     } catch (error) {
       if (error instanceof CollectionJobError && error.terminal) { window.localStorage.removeItem(pendingStorageKey); setPendingCollection(null); }
       setMessage(error instanceof Error ? error.message : "采集失败");
@@ -166,16 +171,15 @@ export default function TikTokPage() {
       <PageHeader title="TikTok 爆款视频" description="寻找低粉高播放视频，自动转录与拆解原片音画，改写文案并生成新拍脚本。" action={<Button disabled={!videos.length} icon={<Download className="h-4 w-4" />} onClick={() => downloadText("tiktok-candidates.json", JSON.stringify({ version: 1, exportedAt: new Date().toISOString(), filters, videos, productions, mediaAnalyses, runs }, null, 2), "application/json")}>导出候选与拍摄包</Button>} />
 
       <Card>
-        <CardHeader title="采集与筛选" subtitle="关键词搜索是候选样本；每条视频单独核验，不保证全站覆盖或命中数量。" />
+        <CardHeader title="采集与筛选" subtitle="自动扩展关键词并发搜索，后台筛选并核验；达到目标或本轮上限后停止。" />
         <CardBody>
           <div className="grid gap-4 lg:grid-cols-[minmax(240px,1fr)_2fr]">
             <div className="space-y-3">
-              <label className="block text-sm font-medium">采集方式<select aria-label="采集方式" className={`${fieldClass} mt-1`} value={mode} onChange={(event) => { setMode(event.target.value as typeof mode); setQuery(""); setContinuation(null); }}><option value="keyword">按关键词搜索</option><option value="links">按视频链接采集</option></select></label>
+              <label className="block text-sm font-medium">采集方式<select aria-label="采集方式" className={`${fieldClass} mt-1`} value={mode} onChange={(event) => { setMode(event.target.value as typeof mode); setQuery(""); }}><option value="keyword">按关键词搜索</option><option value="links">按视频链接采集</option></select></label>
               <label className="block text-sm font-medium">{mode === "keyword" ? "搜索关键词" : "完整视频链接（每行一条）"}<textarea aria-label={mode === "keyword" ? "搜索关键词" : "完整视频链接"} className={`${fieldClass} mt-1`} rows={3} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={mode === "keyword" ? "输入产品、场景或马来语关键词" : "https://www.tiktok.com/@作者/video/视频ID"} /></label>
               <div className="flex flex-wrap items-center gap-2">
-                {mode === "keyword" && <select aria-label="每批候选数" className="rounded-md border border-line p-2 text-sm" value={limit} onChange={(event) => setLimit(Number(event.target.value))}><option value={20}>每批 20 条候选</option><option value={50}>每批 50 条候选</option></select>}
+                {mode === "keyword" && <select aria-label="目标合格数" className="rounded-md border border-line p-2 text-sm" value={limit} onChange={(event) => setLimit(Number(event.target.value))}><option value={20}>目标 20 条合格视频</option><option value={50}>目标 50 条合格视频</option></select>}
                 <Button variant="primary" disabled={busy || !hydrated || (!pendingCollection && (!query.trim() || !capabilities?.collection))} icon={<Search className="h-4 w-4" />} onClick={() => void collect()}>{busy ? "核验中…" : pendingCollection ? "继续获取结果" : "开始采集"}</Button>
-                {canContinue && !pendingCollection && <Button disabled={busy || !capabilities?.collection} onClick={() => void collect(true)}>继续下一批</Button>}
                 {pendingCollection && !busy && <Button onClick={() => {
                   if (!window.confirm("清除记录不会取消后台任务。之后重新采集可能再次扣费，确定放弃获取本次结果？")) return;
                   window.localStorage.removeItem(pendingStorageKey); setPendingCollection(null); setMessage("已清除本地任务编号，后台任务不会因此取消。");
@@ -184,13 +188,13 @@ export default function TikTokPage() {
               {capabilities && !capabilities.collection && <p className="text-xs leading-5 text-amber-800">尚未配置 ScrapeCreators 或 TikHub 服务，先导入已有数据即可筛选。</p>}
             </div>
             <div className="grid content-start gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              <label className="text-sm font-medium">账号国家<select aria-label="账号国家" className={`${fieldClass} mt-1`} value={filters.country} onChange={(event) => { setFilters({ ...filters, country: event.target.value }); setContinuation(null); }}><option value="">国家不限</option>{countryOptions.map(country => <option key={country.code} value={country.code}>{country.label}</option>)}</select></label>
+              <label className="text-sm font-medium">搜索地区<select aria-label="搜索地区" className={`${fieldClass} mt-1`} value={filters.region} onChange={(event) => setFilters({ ...filters, region: event.target.value })}>{countryOptions.map(country => <option key={country.code} value={country.code}>{country.label}</option>)}</select></label>
               <label className="text-sm font-medium">粉丝上限<input aria-label="粉丝上限" className={`${fieldClass} mt-1`} type="number" min={1} value={filters.maxFollowers} onChange={(event) => setFilters({ ...filters, maxFollowers: Math.max(1, Number(event.target.value)) })} /></label>
               <label className="text-sm font-medium">最低播放<input aria-label="最低播放" className={`${fieldClass} mt-1`} type="number" min={1} value={filters.minViews} onChange={(event) => setFilters({ ...filters, minViews: Math.max(1, Number(event.target.value)) })} /></label>
               <label className="text-sm font-medium">发布时间<select aria-label="发布时间" className={`${fieldClass} mt-1`} value={filters.days} onChange={(event) => setFilters({ ...filters, days: Number(event.target.value) as 3 | 7 })}><option value={7}>近 7 天</option><option value={3}>近 3 天</option></select></label>
               <label className="text-sm font-medium">播放 / 粉丝比<select aria-label="播放粉丝比" className={`${fieldClass} mt-1`} value={filters.maxRatio === 5 ? "3-5" : String(filters.minRatio)} onChange={(event) => setFilters({ ...filters, minRatio: event.target.value === "5" ? 5 : 3, maxRatio: event.target.value === "3-5" ? 5 : null })}><option value="3-5">严格 3–5 倍</option><option value="3">至少 3 倍 · 无上限</option><option value="5">至少 5 倍 · 无上限</option></select></label>
               <label className="text-sm font-medium">类目<input aria-label="类目" className={`${fieldClass} mt-1`} value={filters.category} onChange={(event) => setFilters({ ...filters, category: event.target.value })} placeholder="不限；填写后精确匹配" /></label>
-              <p className="text-xs leading-5 text-muted sm:col-span-2 xl:col-span-3">倍数 = 播放量 ÷ 当前采集粉丝数。默认至少 3 倍，上不封顶；这项指标不能证明粉丝增长。缺少必要数据会进入“待核实”。</p>
+              <p className="text-xs leading-5 text-muted sm:col-span-2 xl:col-span-3">搜索地区不代表作者国籍或观众所在地。倍数 = 播放量 ÷ 当前作者粉丝数。缺少必要数据会进入“待核实”。关键词可每行一个；本轮最多运行6分钟，实际数量取决于搜索结果。</p>
             </div>
           </div>
           <details className="mt-5 border-t border-line pt-4">
@@ -215,11 +219,11 @@ export default function TikTokPage() {
       <Card>
         <CardHeader title="视频候选" subtitle={`共 ${videos.length} 条。数据按采集时间保存，刷新后仍保留在当前浏览器。`} />
         <div className="flex flex-wrap gap-2 border-b border-line px-5 py-3">{views.map((item) => <Button key={item.key} variant={view === item.key ? "primary" : "ghost"} onClick={() => setView(item.key)}>{item.label} {item.key === "all" ? videos.length : evaluated.filter((row) => row.status === item.key).length}</Button>)}</div>
-        {shown.length ? <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead className="bg-slate-50 text-xs text-muted"><tr>{["视频 / 作者", "粉丝 / 播放", "倍数", "发布 / 国家", "内容类目", "筛选结果", "操作"].map((label) => <th key={label} className="whitespace-nowrap px-4 py-3 font-medium">{label}</th>)}</tr></thead><tbody>{shown.map(({ video, status, reasons, ratio }) => <tr key={video.id} className={`border-t border-line ${selectedId === video.id ? "bg-orange-50/60" : ""}`}>
+        {shown.length ? <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead className="bg-slate-50 text-xs text-muted"><tr>{["视频 / 作者", "粉丝 / 播放", "倍数", "发布 / 搜索地区", "内容类目", "筛选结果", "操作"].map((label) => <th key={label} className="whitespace-nowrap px-4 py-3 font-medium">{label}</th>)}</tr></thead><tbody>{shown.map(({ video, status, reasons, ratio }) => <tr key={video.id} className={`border-t border-line ${selectedId === video.id ? "bg-orange-50/60" : ""}`}>
           <td className="min-w-[210px] max-w-[310px] px-4 py-4"><a href={video.url} target="_blank" rel="noreferrer" className="line-clamp-2 font-medium text-ink hover:text-orange-700">{video.description || "无视频说明 · 打开原视频"}</a><p className="mt-1 text-xs text-muted">@{video.author} · {video.source}</p><p className="mt-1 text-xs text-muted">采集：{new Date(video.capturedAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}</p></td>
           <td className="whitespace-nowrap px-4 py-4 tabular-nums">{video.followers?.toLocaleString() ?? "待核实"}<br /><span className="text-muted">{video.views?.toLocaleString() ?? "待核实"}</span></td>
           <td className="whitespace-nowrap px-4 py-4 font-medium tabular-nums">{ratio === null ? "—" : `${ratio.toFixed(2)}×`}</td>
-          <td className="whitespace-nowrap px-4 py-4">{video.publishedAt ? new Date(video.publishedAt).toLocaleDateString("zh-CN", { timeZone: "Asia/Kuala_Lumpur" }) : "发布时间待核实"}<br /><span className="text-muted">{video.country ?? "国家待核实"}</span></td>
+          <td className="whitespace-nowrap px-4 py-4">{video.publishedAt ? new Date(video.publishedAt).toLocaleDateString("zh-CN", { timeZone: "Asia/Kuala_Lumpur" }) : "发布时间待核实"}<br /><span className="text-muted">{video.searchRegion ? `搜索地区 ${video.searchRegion}` : "搜索地区未记录"}</span></td>
           <td className="whitespace-nowrap px-4 py-4">{video.category ?? "类目待核实"}</td>
           <td className="min-w-[145px] px-4 py-4"><span className={`rounded px-2 py-1 text-xs ${statusClasses[status]}`}>{statusLabels[status]}</span>{reasons.length > 0 && <p className="mt-2 max-w-[180px] text-xs leading-5 text-muted">{reasons.join("；")}</p>}</td>
           <td className="whitespace-nowrap px-4 py-4"><Button onClick={() => setSelectedId(video.id)}>拆解与创作</Button>{pendingDeleteId === video.id ? <span className="ml-2 inline-flex gap-2 text-xs"><button className="text-red-700" onClick={() => remove(video.id)}>确认删除</button><button className="text-muted" onClick={() => setPendingDeleteId(null)}>取消</button></span> : <button className="ml-2 text-xs text-muted hover:text-red-600" onClick={() => setPendingDeleteId(video.id)}>删除</button>}</td>

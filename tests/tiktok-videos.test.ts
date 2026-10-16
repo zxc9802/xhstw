@@ -24,7 +24,7 @@ test("default ratio is at least three with no ceiling; strict mode remains avail
 });
 
 test("missing facts and zero followers never become matched", () => {
-  for (const changes of [{ country: null }, { followers: null }, { views: null }, { publishedAt: null }, { followers: 0 }]) {
+  for (const changes of [{ followers: null }, { views: null }, { publishedAt: null }, { followers: 0 }]) {
     assert.equal(evaluateVideo(video(changes), defaultFilters, now).status, "pending");
   }
   assert.equal(video({ followers: null }).followers, null);
@@ -32,20 +32,19 @@ test("missing facts and zero followers never become matched", () => {
   assert.equal(evaluateVideo(video({ country: null, views: 1 }), defaultFilters, now).status, "excluded");
 });
 
-test("country can be selected or unrestricted without inventing missing country facts", () => {
-  assert.equal(evaluateVideo(video({ country: "US" }), { ...defaultFilters, country: "US" }, now).status, "matched");
-  assert.equal(evaluateVideo(video(), { ...defaultFilters, country: "US" }, now).status, "excluded");
-  assert.equal(evaluateVideo(video({ country: null }), { ...defaultFilters, country: "US" }, now).status, "pending");
-  assert.equal(evaluateVideo(video({ country: "US" }), { ...defaultFilters, country: "" }, now).status, "matched");
-  assert.equal(evaluateVideo(video({ country: null }), { ...defaultFilters, country: "" }, now).status, "matched");
-  assert.equal(evaluateVideo(video({ country: null, views: 1 }), { ...defaultFilters, country: "" }, now).status, "excluded");
+test("search region is independent of author nationality and unknown verification stays pending", () => {
+  assert.equal(evaluateVideo(video({ country: "ID", searchRegion: "MY" }), defaultFilters, now).status, "matched");
+  assert.equal(evaluateVideo(video({ country: null, searchRegion: "MY" }), defaultFilters, now).status, "matched");
+  assert.equal(evaluateVideo(video({ searchRegion: "US" }), defaultFilters, now).status, "excluded");
+  assert.equal(evaluateVideo(video({ searchRegion: "US" }), { ...defaultFilters, region: "US" }, now).status, "matched");
+  assert.equal(evaluateVideo(video({ evidence: { verificationPending: true } }), defaultFilters, now).status, "pending");
 });
 
-test("uses posting time rather than capture time; rejects future posts and non-MY creators", () => {
+test("uses posting time rather than capture time; future posts need verification", () => {
   assert.equal(evaluateVideo(video({ publishedAt: "2026-10-06T04:00:00Z" }), defaultFilters, now).status, "matched");
   assert.equal(evaluateVideo(video({ publishedAt: "2026-10-06T03:59:59Z" }), defaultFilters, now).status, "excluded");
   assert.equal(evaluateVideo(video({ publishedAt: "2026-10-14T04:00:00Z" }), defaultFilters, now).status, "pending");
-  assert.equal(evaluateVideo(video({ country: "SG" }), defaultFilters, now).status, "excluded");
+  assert.equal(evaluateVideo(video({ country: "SG" }), defaultFilters, now).status, "matched");
 });
 
 test("cart state is ignored, including legacy filters; explicit content category is still checked", () => {
@@ -86,7 +85,7 @@ test("TikHub raw exports normalize metadata without inventing region or shop sta
   assert.equal(imported.videos[0].hasProductLink, null);
   assert.equal(imported.videos[0].duration, 18);
   assert.equal(imported.videos[0].transcript, "");
-  assert.equal(evaluateVideo(imported.videos[0], defaultFilters, now).status, "pending");
+  assert.equal(evaluateVideo(imported.videos[0], defaultFilters, now).status, "matched");
 });
 
 test("invalid rows are reported and same-ID older captures cannot overwrite newer data", () => {

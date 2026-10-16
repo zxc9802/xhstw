@@ -21,7 +21,7 @@ test("search verifies account country and missing followers through bound user e
   const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input)); urls.push(url);
     assert.equal(new Headers(init?.headers).get("Authorization"), "Bearer test-key");
-    if (url.pathname.endsWith("fetch_general_search_result")) return reply({ data: [{ aweme_info: item }], has_more: 0, cursor: 1 });
+    if (url.pathname.endsWith("fetch_video_search_result")) return reply({ data: [{ aweme_info: item }], has_more: 0, cursor: 1 });
     if (url.pathname.endsWith("handler_user_profile")) return reply({ user: { unique_id: "example", follower_count: 20000 } });
     if (url.pathname.endsWith("fetch_user_country_by_username")) return reply({ username: "example", country: "MY" });
     throw new Error(`unexpected ${url.pathname}`);
@@ -32,7 +32,7 @@ test("search verifies account country and missing followers through bound user e
   assert.equal(result.videos[0].followers, 20000);
   assert.equal(result.videos[0].source, "TikHub App V3");
   assert.equal(urls[0].searchParams.get("publish_time"), "7");
-  assert.equal(urls[0].searchParams.has("region"), false);
+  assert.equal(urls[0].searchParams.get("region"), "MY");
   assert.equal(result.hasMore, false);
 });
 
@@ -61,7 +61,7 @@ test("a blocked later page keeps prior candidates and reports incomplete collect
   let searchCalls = 0;
   const fetcher = (async (input: RequestInfo | URL) => {
     const path = new URL(String(input)).pathname;
-    if (path.endsWith("fetch_general_search_result")) {
+    if (path.endsWith("fetch_video_search_result")) {
       searchCalls++;
       return reply(searchCalls === 1 ? { data: [{ aweme_info: item }], has_more: true, cursor: 10 }
         : { status_code: 0, data: [], has_more: false, search_nil_info: { search_nil_item: "hit_shark" } });
@@ -81,7 +81,7 @@ test("a blocked later page keeps prior candidates and reports incomplete collect
 test("wrong creator identity leaves country and followers unverified", async () => {
   const fetcher = (async (input: RequestInfo | URL) => {
     const path = new URL(String(input)).pathname;
-    if (path.endsWith("fetch_general_search_result")) return reply({ data: [{ aweme_info: item }], has_more: false });
+    if (path.endsWith("fetch_video_search_result")) return reply({ data: [{ aweme_info: item }], has_more: false });
     if (path.endsWith("handler_user_profile")) return reply({ user: { unique_id: "wrong", follower_count: 20000 } });
     return reply({ username: "wrong", country: "MY" });
   }) as typeof fetch;
@@ -103,7 +103,7 @@ test("repeated search cursors stop honestly and keep unique records", async () =
   let searchCalls = 0;
   const fetcher = (async (input: RequestInfo | URL) => {
     const path = new URL(String(input)).pathname;
-    if (path.endsWith("fetch_general_search_result")) { searchCalls++; return reply({ data: [{ aweme_info: item }], has_more: 1, cursor: 10 }); }
+    if (path.endsWith("fetch_video_search_result")) { searchCalls++; return reply({ data: [{ aweme_info: item }], has_more: 1, cursor: 10 }); }
     if (path.endsWith("handler_user_profile")) return reply({ user: { unique_id: "example", follower_count: 20000 } });
     return reply({ username: "example", country: "MY" });
   }) as typeof fetch;
@@ -143,7 +143,7 @@ test("selected country controls detail requests but never overwrites the verifie
 test("missing pagination state is not presented as search exhaustion", async () => {
   const fetcher = (async (input: RequestInfo | URL) => {
     const path = new URL(String(input)).pathname;
-    if (path.endsWith("fetch_general_search_result")) return reply({ data: [] });
+    if (path.endsWith("fetch_video_search_result")) return reply({ data: [] });
     throw new Error("unexpected enrichment");
   }) as typeof fetch;
   const result = await collectTikTokVideos(request, { apiKey: "test-key", fetcher });
@@ -181,7 +181,7 @@ test("MY video details and bound Web content labels enrich link records without 
 test("sec UID mismatches and embedded zero followers remain unknown", async () => {
   const fetcher = (async (input: RequestInfo | URL) => {
     const path = new URL(String(input)).pathname;
-    if (path.endsWith("fetch_general_search_result")) return reply({ data: [{ aweme_info: { ...item, author: { unique_id: "example", sec_uid: "correct", follower_count: 0 } } }], has_more: false });
+    if (path.endsWith("fetch_video_search_result")) return reply({ data: [{ aweme_info: { ...item, author: { unique_id: "example", sec_uid: "correct", follower_count: 0 } } }], has_more: false });
     if (path.endsWith("fetch_one_video_v3")) return reply({ aweme_detail: { ...item, author: { unique_id: "example", sec_uid: "correct", follower_count: 0 } } });
     if (path.endsWith("handler_user_profile")) return reply({ user: { unique_id: "example", sec_uid: "wrong", follower_count: 1234 } });
     if (path.endsWith("fetch_user_country_by_username")) return reply({ username: "example", sec_user_id: "wrong", country: "MY" });
@@ -198,7 +198,7 @@ test("a search candidate proven to be a photo by its detail is skipped", async (
   let userRequests = 0;
   const fetcher = (async (input: RequestInfo | URL) => {
     const path = new URL(String(input)).pathname;
-    if (path.endsWith("fetch_general_search_result")) return reply({ data: [{ aweme_info: item }], has_more: false });
+    if (path.endsWith("fetch_video_search_result")) return reply({ data: [{ aweme_info: item }], has_more: false });
     if (path.endsWith("fetch_one_video_v3")) return reply({ aweme_detail: { ...item, aweme_type: 150, image_post_info: {} } });
     userRequests++;
     return reply({});

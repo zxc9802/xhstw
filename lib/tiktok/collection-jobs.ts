@@ -4,6 +4,8 @@ import path from "node:path";
 import type { CollectionResult } from "./provider";
 import { TikTokServiceError } from "./errors";
 import { logCollectionRequest } from "./diagnostics";
+import type { CollectionProgress } from "./batch-collection";
+import { collectionLimits } from "./videos";
 
 export type CollectionJob = {
   id: string;
@@ -12,6 +14,7 @@ export type CollectionJob = {
   updatedAt: number;
   requestId: string;
   result?: CollectionResult;
+  progress?: CollectionProgress;
   error?: string;
 };
 type StoredJob = CollectionJob & { inputHash: string };
@@ -36,7 +39,7 @@ export function collectionJobStore(root = path.join(process.cwd(), "outputs", "t
     const stored = read(owner, id);
     if (!stored) return null;
     // A killed worker must never silently rerun paid requests on the next poll.
-    if (["queued", "running"].includes(stored.status) && Date.now() - stored.updatedAt > 180000) {
+    if (["queued", "running"].includes(stored.status) && Date.now() - stored.updatedAt > collectionLimits.milliseconds + 60000) {
       stored.status = "failed";
       stored.error = "采集任务已中断，未自动重试；部分上游请求可能已经计费。";
       stored.updatedAt = Date.now();
@@ -57,13 +60,13 @@ export function collectionJobStore(root = path.join(process.cwd(), "outputs", "t
     }
     return { created: true, job: get(owner, id)! };
   }
-  async function run(owner: string, id: string, task: () => Promise<CollectionResult>) {
+  async function run(owner: string, id: string, task: (update: (progress: CollectionProgress) => void) => Promise<CollectionResult>) {
     const job = read(owner, id);
     if (!job || job.status !== "queued") return;
     job.status = "running"; job.updatedAt = Date.now(); save(owner, job);
     logCollectionRequest(job.requestId, "job.start", { jobId: id });
     try {
-      job.result = await task(); job.status = "completed";
+      job.result = await task(progress => { job.progress = progress; job.updatedAt = Date.now(); save(owner, job); }); job.status = "completed";
     } catch (error) {
       job.status = "failed";
       job.error = error instanceof TikTokServiceError ? error.message : "采集任务失败，请查看服务日志；未自动重新采集。";

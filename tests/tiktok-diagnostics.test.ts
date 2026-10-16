@@ -51,7 +51,7 @@ test("failed upstream calls retain fallback and record HTTP status without input
   const api = createCollectionApi({ requestId, scrapeCreatorsApiKey: "secret-sc-key", apiKey: "secret-tikhub-key", fetcher: (async input => {
     return String(input).includes("tikhub") ? new Response("secret-upstream-body", { status: 502, headers: { "Content-Type": "text/html" } }) : Response.json({ success: true, search_item_list: [], has_more: false });
   }) as typeof fetch });
-  const result = await api.request("fetch_general_search_result", { keyword: "private-search", region: "MY", offset: 0 });
+  const result = await api.request("fetch_video_search_result", { keyword: "private-search", region: "MY", offset: 0 });
   assert.equal(result.provider, "scrapecreators");
   assert.ok(logs.every(log => log.requestId === requestId));
   assert.deepEqual(logs.filter(log => log.stage === "upstream.response").map(log => [log.provider, log.status]), [["tikhub", 502], ["scrapecreators", 200]]);

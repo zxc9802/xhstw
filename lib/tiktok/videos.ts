@@ -9,6 +9,7 @@ export type TikTokVideo = {
   views: number | null;
   publishedAt: string | null;
   country: string | null;
+  searchRegion?: string;
   hasProductLink: boolean | null;
   category: string | null;
   duration: number | null;
@@ -19,7 +20,7 @@ export type TikTokVideo = {
 };
 
 export type VideoFilters = {
-  country: string;
+  region: string;
   maxFollowers: number;
   minViews: number;
   days: 3 | 7;
@@ -29,9 +30,11 @@ export type VideoFilters = {
 };
 
 export const defaultFilters: VideoFilters = {
-  country: "MY", maxFollowers: 20000, minViews: 50000, days: 7,
+  region: "MY", maxFollowers: 20000, minViews: 50000, days: 7,
   minRatio: 3, maxRatio: null, category: ""
 };
+
+export const collectionLimits = { candidates: 5000, requests: 300, milliseconds: 360000, pages: 5, concurrency: 6 };
 
 export function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -96,6 +99,7 @@ export function normalizeVideo(input: unknown, capturedAt = new Date().toISOStri
     followers: count(row.followers ?? author.follower_count), views: count(row.views ?? statistics.play_count),
     publishedAt: date(row.publishedAt ?? row.create_time),
     country: country ? (country.toLowerCase() === "malaysia" ? "MY" : country.toUpperCase()) : null,
+    ...(typeof row.searchRegion === "string" && countryOptions.some(option => option.code === row.searchRegion) ? { searchRegion: row.searchRegion } : {}),
     hasProductLink: productLink(row), category: text(row.category) || null,
     duration: count(row.duration) ?? (msDuration === null ? null : msDuration / 1000),
     transcript: text(row.transcript), capturedAt: capture, source: text(row.source) || source,
@@ -107,11 +111,8 @@ export function evaluateVideo(video: TikTokVideo, filters: VideoFilters, now = n
   const rejected: string[] = [];
   const missing: string[] = [];
   const ratio = video.views !== null && video.followers !== null && video.followers > 0 ? video.views / video.followers : null;
-  const country = filters.country ?? "MY";
-  if (country) {
-    if (!video.country) missing.push("账号国家待核实");
-    else if (video.country !== country) rejected.push(`账号国家不是${countryOptions.find(option => option.code === country)?.label ?? country}`);
-  }
+  if (video.searchRegion && video.searchRegion !== filters.region) rejected.push("搜索地区与当前选择不同");
+  if (video.evidence.verificationPending === true) missing.push("来源资料待核实");
   if (video.followers === null) missing.push("缺少粉丝数");
   else if (video.followers > filters.maxFollowers) rejected.push("粉丝数超过上限");
   if (video.views === null) missing.push("缺少播放量");
@@ -138,12 +139,12 @@ export function mergeVideos(existing: TikTokVideo[], incoming: TikTokVideo[]) {
   return [...rows.values()];
 }
 
-// TikHub 不同搜索版本的原始行可位于 aweme_list 或 data[].aweme_info。
+// 空 aweme_list 不能遮盖视频搜索实际返回的 search_item_list。
 export function extractVideoRows(input: unknown): unknown[] {
   if (Array.isArray(input)) return input.map((value) => record(value).aweme_info ?? value);
   const row = record(input);
   if (row.aweme_id || row.id) return [input];
-  for (const key of ["videos", "aweme_list", "items", "data", "aweme_detail"]) {
+  for (const key of ["videos", "aweme_list", "search_item_list", "items", "data", "aweme_detail"]) {
     if (row[key] !== undefined) {
       const found = extractVideoRows(row[key]);
       if (found.length) return found;

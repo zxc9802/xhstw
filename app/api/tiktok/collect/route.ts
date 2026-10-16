@@ -7,7 +7,7 @@ import { ok } from "@/lib/utils/api";
 import { collectionRequestId, collectionTraceHeader, logCollectionRequest } from "@/lib/tiktok/diagnostics";
 
 export const runtime = "nodejs";
-export const maxDuration = 180;
+export const maxDuration = 420;
 
 async function owner(request: Request) {
   const session = await resolveMainAppSession(new NextRequest(request.url, { headers: request.headers }).cookies.get(getMainAppSessionCookieName())?.value);
@@ -44,7 +44,7 @@ export async function POST(request: Request) {
     const store = collectionJobStore();
     const { job, created } = store.create(userId, jobId, input, requestId);
     if (created) after(async () => {
-      try { await store.run(userId, jobId, () => collectTikTokVideos(input, { requestId })); }
+      try { await store.run(userId, jobId, onProgress => collectTikTokVideos(input, { requestId, onProgress })); }
       catch (error) { logCollectionRequest(requestId, "job.persistence_error", { jobId, errorType: error instanceof Error ? error.name : "unknown" }); }
     });
     logCollectionRequest(requestId, "route.accepted", { jobId, status: 202, elapsedMs: Date.now() - started });
